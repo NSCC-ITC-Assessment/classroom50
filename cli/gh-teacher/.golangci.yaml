@@ -1,0 +1,12 @@
+version: "2"
+
+# Formatters are run separately from linters. CI invokes
+# `golangci-lint fmt --diff` and fails on non-empty output, which catches:
+#   - gofmt:     whitespace, struct alignment, semantic-equivalent rewrites
+#   - goimports: stdlib / blank line / third-party grouping
+#
+# Apply locally with `golangci-lint fmt`.
+formatters:
+  enable:
+    - gofmt
+    - goimports

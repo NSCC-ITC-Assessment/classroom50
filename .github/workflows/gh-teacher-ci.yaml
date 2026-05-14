@@ -1,0 +1,53 @@
+name: gh-teacher CI
+
+on:
+  push:
+    branches: [main, v1]
+    paths:
+      - 'cli/gh-teacher/**'
+      - '.github/workflows/gh-teacher-ci.yml'
+  pull_request:
+    paths:
+      - 'cli/gh-teacher/**'
+      - '.github/workflows/gh-teacher-ci.yml'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: cli/gh-teacher
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: cli/gh-teacher/go.mod
+          cache-dependency-path: cli/gh-teacher/go.sum
+
+      - name: Verify go.mod / go.sum are tidy
+        run: |
+          go mod tidy
+          git diff --exit-code go.mod go.sum
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v9
+        with:
+          working-directory: cli/gh-teacher
+          version: v2.11.4
+
+      - name: Format (gofmt + goimports)
+        run: |
+          diff=$(golangci-lint fmt --diff)
+          if [ -n "$diff" ]; then
+            echo "::error::Formatter diffs detected (run \`golangci-lint fmt\` locally to apply):"
+            echo "$diff"
+            exit 1
+          fi
+
+      - name: Build
+        run: go build ./...
+
+      - name: Test
+        run: go test ./...
