@@ -93,8 +93,8 @@ func classroomAddCmd() *cobra.Command {
 			"If <org>/classroom50 doesn't exist yet, run `gh teacher init\n" +
 			"<org>` first. If <short-name> already exists in the repo, the\n" +
 			"command exits with an error rather than overwriting state —\n" +
-			"use `gh teacher roster add` or `gh teacher assignment add`\n" +
-			"(assignment add forthcoming) to modify an existing classroom.",
+			"use `gh teacher roster add` or `gh teacher assignment add` to\n" +
+			"modify an existing classroom.",
 		Example: "  gh teacher classroom add cs50-fall-2026 cs-principles --name \"CS Principles\" --term Spring-2026\n" +
 			"  gh teacher classroom add cs50-fall-2026 intro-java",
 		Args: cobra.ExactArgs(2),
@@ -202,21 +202,19 @@ func addClassroom(client *api.RESTClient, out, errOut io.Writer, org, shortName,
 	return nil
 }
 
-// classroomJSON / assignmentsJSON / scoresJSON pin the on-disk shape
-// of the scaffolded files. Field order is deliberate: schema
-// sentinel first (so readers can branch on schema before parsing the
-// rest), then domain fields.
+// classroomJSON / scoresJSON pin the on-disk shape of the scaffolded
+// files. Field order is deliberate: schema sentinel first (so readers
+// can branch on schema before parsing the rest), then domain fields.
+// The third scaffolded JSON file (assignments.json) is described by
+// assignmentsJSON in assignments_json.go — that file is the one
+// `gh teacher assignment add` reads, mutates, and re-encodes, so its
+// typed shape lives next to those helpers rather than here.
 type classroomJSON struct {
 	Schema    string `json:"schema"`
 	Name      string `json:"name"`
 	ShortName string `json:"short_name"`
 	Term      string `json:"term"`
 	Org       string `json:"org"`
-}
-
-type assignmentsJSON struct {
-	Schema      string           `json:"schema"`
-	Assignments []map[string]any `json:"assignments"`
 }
 
 type scoresJSON struct {
@@ -243,7 +241,7 @@ func classroomScaffold(org, shortName, name, term string) (map[string]string, er
 
 	assignments := assignmentsJSON{
 		Schema:      assignmentsSchemaV1,
-		Assignments: []map[string]any{},
+		Assignments: []assignmentEntry{},
 	}
 	assignmentsBytes, err := encodeJSONPretty(assignments)
 	if err != nil {

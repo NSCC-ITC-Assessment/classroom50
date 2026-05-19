@@ -18,4 +18,5 @@ Bootstrapped by `gh teacher init <org>`. From there:
 
 - `gh teacher classroom add <org> <short-name>` — scaffold a new classroom directory (the four files above).
 - `gh teacher roster add|remove|import <org> <classroom> ...` — manage `students.csv` (and auto-invite new students to the org).
-- `gh teacher assignment add <org> <classroom> <slug>` (forthcoming) — register an assignment in `assignments.json`.
+- `gh teacher assignment add|remove <org> <classroom> <slug>` — register or drop an assignment in `assignments.json`.
+- `gh teacher assignment list <org> <classroom>` — print every assignment slug registered in a classroom (`--json` for the full entries array).
