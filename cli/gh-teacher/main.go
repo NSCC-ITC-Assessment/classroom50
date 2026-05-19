@@ -28,6 +28,7 @@ func main() {
 	root.AddCommand(initCmd())
 	root.AddCommand(rotateCollectTokenCmd())
 	root.AddCommand(classroomCmd())
+	root.AddCommand(rosterCmd())
 	root.AddCommand(inviteCmd())
 	root.AddCommand(removeCmd())
 	root.AddCommand(downloadCmd())

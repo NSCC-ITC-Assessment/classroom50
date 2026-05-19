@@ -6,6 +6,40 @@ import (
 	"testing"
 )
 
+func TestValidateClassroomSlug(t *testing.T) {
+	// Covers the defense-in-depth case: a malicious or hand-typed
+	// classroom argument shouldn't reach the contents API as a path.
+	cases := []struct {
+		in     string
+		wantOK bool
+	}{
+		{"cs-principles", true},
+		{"intro-java", true},
+		// Path-traversal and separator attempts.
+		{"../.github/workflows", false},
+		{"..", false},
+		{"foo/bar", false},
+		{".github", false},
+		{"./foo", false},
+		// Other invalid shapes.
+		{"", false},
+		{"FOO", false},
+		{"-foo", false},
+		{"foo_bar", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.in, func(t *testing.T) {
+			err := validateClassroomSlug(tc.in)
+			if tc.wantOK && err != nil {
+				t.Fatalf("validateClassroomSlug(%q) = %v, want nil", tc.in, err)
+			}
+			if !tc.wantOK && err == nil {
+				t.Fatalf("validateClassroomSlug(%q) = nil, want error", tc.in)
+			}
+		})
+	}
+}
+
 func TestShortNamePattern(t *testing.T) {
 	cases := []struct {
 		in   string

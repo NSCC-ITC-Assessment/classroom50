@@ -22,6 +22,21 @@ import (
 // within GitHub's repo-naming constraints.
 var shortNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{1,38}$`)
 
+// validateClassroomSlug enforces shortNamePattern on a classroom
+// argument supplied to any teacher command that addresses a classroom
+// directory. Beyond catching typos, this is the defense-in-depth that
+// keeps a malicious `classroom` value (e.g. `../.github/workflows`)
+// from ever reaching the contents/tree API as a path. `gh teacher
+// classroom add` validates against the same pattern at the write
+// site; the roster commands validate here because they trust the
+// directory to exist.
+func validateClassroomSlug(classroom string) error {
+	if !shortNamePattern.MatchString(classroom) {
+		return fmt.Errorf("invalid classroom %q: must match ^[a-z0-9][a-z0-9-]{1,38}$ (2-39 chars, lowercase letters/digits/hyphens, starting with a letter or digit)", classroom)
+	}
+	return nil
+}
+
 // Schema sentinels for the four scaffolded files. Both CLI writers
 // and the ingest/reconcile scripts MUST branch on the schema field
 // before reading so today's readers can handle files produced by
@@ -32,11 +47,13 @@ const (
 	scoresSchemaV1      = "classroom50/scores/v1"
 )
 
-// studentsCSVHeader is the canonical roster header. The trailing
-// `user_id` column is populated by `gh teacher roster add/import` from
-// `GET /users/{username}` so a mid-semester username change doesn't
-// desynchronize score lookups. Teachers should not hand-edit it.
-const studentsCSVHeader = "username,first_name,last_name,section,user_id\n"
+// studentsCSVHeader is the canonical roster header derived from
+// rosterColumns so the two definitions can't drift. The trailing
+// `github_id` column is populated by `gh teacher roster add/import`
+// from `GET /users/{username}` so a mid-semester username change
+// doesn't desynchronize score lookups. Teachers should not hand-edit
+// it.
+var studentsCSVHeader = strings.Join(rosterColumns, ",") + "\n"
 
 func classroomCmd() *cobra.Command {
 	cmd := &cobra.Command{
@@ -77,7 +94,7 @@ func classroomAddCmd() *cobra.Command {
 			"<org>` first. If <short-name> already exists in the repo, the\n" +
 			"command exits with an error rather than overwriting state —\n" +
 			"use `gh teacher roster add` or `gh teacher assignment add`\n" +
-			"(forthcoming) to modify an existing classroom.",
+			"(assignment add forthcoming) to modify an existing classroom.",
 		Example: "  gh teacher classroom add cs50-fall-2026 cs-principles --name \"CS Principles\" --term Spring-2026\n" +
 			"  gh teacher classroom add cs50-fall-2026 intro-java",
 		Args: cobra.ExactArgs(2),
@@ -100,7 +117,7 @@ func classroomAddCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return addClassroom(client, cmd.OutOrStdout(), org, shortName, strings.TrimSpace(name), strings.TrimSpace(term))
+			return addClassroom(client, cmd.OutOrStdout(), cmd.ErrOrStderr(), org, shortName, strings.TrimSpace(name), strings.TrimSpace(term))
 		},
 	}
 
@@ -126,7 +143,7 @@ func classroomAddCmd() *cobra.Command {
 //     assignments.json / students.csv / scores.json in place).
 //  3. Single Tree commit of the four files using the same helpers
 //     `commitSkeleton` uses for `gh teacher init`'s skeleton drop.
-func addClassroom(client *api.RESTClient, out io.Writer, org, shortName, name, term string) error {
+func addClassroom(client *api.RESTClient, out, errOut io.Writer, org, shortName, name, term string) error {
 	repoPath := fmt.Sprintf("repos/%s/%s", url.PathEscape(org), configRepoName)
 	var repo configRepo
 	if err := client.Get(repoPath, &repo); err != nil {
@@ -176,9 +193,12 @@ func addClassroom(client *api.RESTClient, out io.Writer, org, shortName, name, t
 		return err
 	}
 
+	// Primary confirmation on stdout (parseable by scripts). Advisory
+	// "View at" and "Next:" lines go to stderr so a CI script
+	// capturing stdout gets exactly one line.
 	_, _ = fmt.Fprintf(out, "%s/%s: added classroom %s (%d files)\n", org, configRepoName, shortName, len(entries))
-	_, _ = fmt.Fprintf(out, "View at https://github.com/%s/%s/tree/%s/%s\n", org, configRepoName, branch, shortName)
-	_, _ = fmt.Fprintf(out, "Next: gh teacher invite %s <username>\n", org)
+	_, _ = fmt.Fprintf(errOut, "View at https://github.com/%s/%s/tree/%s/%s\n", org, configRepoName, branch, shortName)
+	_, _ = fmt.Fprintf(errOut, "Next: gh teacher roster add %s %s <username>\n", org, shortName)
 	return nil
 }
 

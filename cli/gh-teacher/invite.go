@@ -101,24 +101,13 @@ func validRepoPermission(p string) bool {
 }
 
 func inviteToOrg(client *api.RESTClient, out, errOut io.Writer, org, username, role string, quiet bool) error {
-	userID, err := lookupUserID(client, username)
+	_, userID, err := lookupUser(client, username)
 	if err != nil {
 		return err
 	}
-
-	body, err := json.Marshal(map[string]any{
-		"invitee_id": userID,
-		"role":       role,
-	})
-	if err != nil {
-		return fmt.Errorf("encode body: %w", err)
+	if err := inviteOrgByID(client, org, username, userID, role); err != nil {
+		return err
 	}
-
-	path := fmt.Sprintf("orgs/%s/invitations", url.PathEscape(org))
-	if err := client.Post(path, bytes.NewReader(body), nil); err != nil {
-		return classifyOrgInviteError(client, org, username, path, err)
-	}
-
 	if !quiet {
 		_, _ = fmt.Fprintf(out, "%s: invited %s as %s\n", org, username, role)
 		_, _ = fmt.Fprintf(errOut, "Advise %s to sign in to https://github.com as %s, then visit https://github.com/%s to accept the invitation at the top of the page.\n", username, username, org)
@@ -126,19 +115,68 @@ func inviteToOrg(client *api.RESTClient, out, errOut io.Writer, org, username, r
 	return nil
 }
 
-func lookupUserID(client *api.RESTClient, username string) (int64, error) {
+// inviteOrgByID is the resolved-userID variant of inviteToOrg: it
+// skips the GET /users/{username} call when the caller already has
+// the numeric user ID. Used by the roster commands so a `roster
+// import` with N new students doesn't double the user-resolution
+// call count (the rows already carry userID from the up-front
+// lookupUser pass).
+//
+// `username` is still required so classifyOrgInviteError can produce
+// human-readable "already a member" / "pending invite" messages
+// without an extra lookup.
+func inviteOrgByID(client *api.RESTClient, org, username string, userID int64, role string) error {
+	body, err := json.Marshal(map[string]any{
+		"invitee_id": userID,
+		"role":       role,
+	})
+	if err != nil {
+		return fmt.Errorf("encode body: %w", err)
+	}
+	path := fmt.Sprintf("orgs/%s/invitations", url.PathEscape(org))
+	if err := client.Post(path, bytes.NewReader(body), nil); err != nil {
+		return classifyOrgInviteError(client, org, username, path, err)
+	}
+	return nil
+}
+
+// lookupUser resolves a GitHub username to its canonical login (case
+// as GitHub stores it) and immutable numeric ID via
+// GET /users/{username}. Used by every command that needs either
+// piece — the roster commands carry both through to roster row
+// writes, and inviteToOrg uses only the userID. A 404 produces a
+// clear "GitHub user not found" message; other failures wrap the
+// request context.
+func lookupUser(client *api.RESTClient, username string) (login string, userID int64, err error) {
 	path := fmt.Sprintf("users/%s", url.PathEscape(username))
 	var user struct {
-		ID int64 `json:"id"`
+		Login string `json:"login"`
+		ID    int64  `json:"id"`
 	}
 	if err := client.Get(path, &user); err != nil {
 		if httpErr, ok := errors.AsType[*api.HTTPError](err); ok && httpErr.StatusCode == http.StatusNotFound {
-			return 0, fmt.Errorf("GitHub user %q not found", username)
+			return "", 0, fmt.Errorf("GitHub user %q not found", username)
 		}
-		return 0, fmt.Errorf("GET %s: %w", path, err)
+		return "", 0, fmt.Errorf("GET %s: %w", path, err)
 	}
-	return user.ID, nil
+	return user.Login, user.ID, nil
 }
+
+// orgMembershipKnownError is a typed error returned by
+// classifyOrgInviteError when GitHub rejects an org invite with a
+// 422 and a follow-up membership lookup confirms the user is already
+// active or pending. The roster commands match on this via
+// `errors.As` so a successful "already a member" outcome doesn't
+// surface as a user-visible "org invite failed" — which would
+// otherwise happen when a TOCTOU race between getMembershipState
+// (returning `false` on transient failure) and inviteOrgByID slips
+// past the pre-check.
+type orgMembershipKnownError struct {
+	state string // "active" or "pending"
+	msg   string
+}
+
+func (e *orgMembershipKnownError) Error() string { return e.msg }
 
 // classifyOrgInviteError converts a POST /orgs/{org}/invitations error into a
 // user-facing message for common failure modes. Unrecognized errors fall
@@ -171,9 +209,15 @@ func classifyOrgInviteError(client *api.RESTClient, org, username, path string, 
 			if state, ok := getMembershipState(client, org, username); ok {
 				switch state {
 				case "active":
-					return fmt.Errorf("%s is already a member of %s", username, org)
+					return &orgMembershipKnownError{
+						state: "active",
+						msg:   fmt.Sprintf("%s is already a member of %s", username, org),
+					}
 				case "pending":
-					return fmt.Errorf("%s already has a pending invitation to %s; advise them to visit https://github.com/%s to accept", username, org, org)
+					return &orgMembershipKnownError{
+						state: "pending",
+						msg:   fmt.Sprintf("%s already has a pending invitation to %s; advise them to visit https://github.com/%s to accept", username, org, org),
+					}
 				}
 			}
 		}

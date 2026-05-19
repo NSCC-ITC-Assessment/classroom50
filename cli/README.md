@@ -20,7 +20,7 @@ End-user documentation — installation, walkthroughs, and per-command reference
 | Topic | Page |
 | --- | --- |
 | Install both extensions | [Installation](https://github.com/foundation50/classroom50/wiki/Installation) |
-| Teacher walkthrough (org setup → `init` → classroom → invite → download) | [Teacher Guide](https://github.com/foundation50/classroom50/wiki/Teacher-Guide) |
+| Teacher walkthrough (org setup → `init` → classroom → roster → invite → download) | [Teacher Guide](https://github.com/foundation50/classroom50/wiki/Teacher-Guide) |
 | Student walkthrough (accept → submit) | [Student Guide](https://github.com/foundation50/classroom50/wiki/Student-Guide) |
 | Every `gh teacher` command and flag | [`gh teacher` reference](https://github.com/foundation50/classroom50/wiki/gh-teacher) |
 | Every `gh student` command and flag | [`gh student` reference](https://github.com/foundation50/classroom50/wiki/gh-student) |
