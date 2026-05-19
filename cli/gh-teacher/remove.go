@@ -67,7 +67,7 @@ func removeFromOrg(client *api.RESTClient, out io.Writer, org, username string, 
 	resp, err := client.Request(http.MethodDelete, path, nil)
 	if err != nil {
 		// 404 means already gone; idempotent no-op.
-		if httpErr, ok := errors.AsType[*api.HTTPError](err); ok && httpErr.StatusCode == http.StatusNotFound {
+		if isHTTPStatus(err, http.StatusNotFound) {
 			if !quiet {
 				_, _ = fmt.Fprintf(out, "%s: %s is not a member\n", org, username)
 			}
@@ -93,7 +93,7 @@ func removeFromRepo(client *api.RESTClient, out io.Writer, owner, repo, username
 	resp, err := client.Request(http.MethodDelete, path, nil)
 	if err != nil {
 		// 404 means already gone; idempotent no-op.
-		if httpErr, ok := errors.AsType[*api.HTTPError](err); ok && httpErr.StatusCode == http.StatusNotFound {
+		if isHTTPStatus(err, http.StatusNotFound) {
 			if !quiet {
 				_, _ = fmt.Fprintf(out, "%s/%s: %s is not a collaborator\n", owner, repo, username)
 			}

@@ -115,16 +115,12 @@ func inviteToOrg(client *api.RESTClient, out, errOut io.Writer, org, username, r
 	return nil
 }
 
-// inviteOrgByID is the resolved-userID variant of inviteToOrg: it
-// skips the GET /users/{username} call when the caller already has
-// the numeric user ID. Used by the roster commands so a `roster
-// import` with N new students doesn't double the user-resolution
-// call count (the rows already carry userID from the up-front
-// lookupUser pass).
-//
-// `username` is still required so classifyOrgInviteError can produce
-// human-readable "already a member" / "pending invite" messages
-// without an extra lookup.
+// inviteOrgByID is the resolved-userID variant of inviteToOrg: skips
+// GET /users/{username} when the caller already has the numeric ID.
+// Used by the roster commands so a `roster import` with N rows
+// doesn't double its user-resolution call count. `username` is still
+// needed so classifyOrgInviteError can produce
+// "already a member" / "pending invite" messages.
 func inviteOrgByID(client *api.RESTClient, org, username string, userID int64, role string) error {
 	body, err := json.Marshal(map[string]any{
 		"invitee_id": userID,
@@ -140,13 +136,10 @@ func inviteOrgByID(client *api.RESTClient, org, username string, userID int64, r
 	return nil
 }
 
-// lookupUser resolves a GitHub username to its canonical login (case
-// as GitHub stores it) and immutable numeric ID via
-// GET /users/{username}. Used by every command that needs either
-// piece — the roster commands carry both through to roster row
-// writes, and inviteToOrg uses only the userID. A 404 produces a
-// clear "GitHub user not found" message; other failures wrap the
-// request context.
+// lookupUser resolves a GitHub username to its canonical login (the
+// case GitHub stores it as) and immutable numeric ID. Roster
+// commands keep both; inviteToOrg uses only the userID. 404 produces
+// "GitHub user not found"; other failures wrap the request context.
 func lookupUser(client *api.RESTClient, username string) (login string, userID int64, err error) {
 	path := fmt.Sprintf("users/%s", url.PathEscape(username))
 	var user struct {
@@ -154,7 +147,7 @@ func lookupUser(client *api.RESTClient, username string) (login string, userID i
 		ID    int64  `json:"id"`
 	}
 	if err := client.Get(path, &user); err != nil {
-		if httpErr, ok := errors.AsType[*api.HTTPError](err); ok && httpErr.StatusCode == http.StatusNotFound {
+		if isHTTPStatus(err, http.StatusNotFound) {
 			return "", 0, fmt.Errorf("GitHub user %q not found", username)
 		}
 		return "", 0, fmt.Errorf("GET %s: %w", path, err)
@@ -162,15 +155,12 @@ func lookupUser(client *api.RESTClient, username string) (login string, userID i
 	return user.Login, user.ID, nil
 }
 
-// orgMembershipKnownError is a typed error returned by
-// classifyOrgInviteError when GitHub rejects an org invite with a
-// 422 and a follow-up membership lookup confirms the user is already
-// active or pending. The roster commands match on this via
-// `errors.As` so a successful "already a member" outcome doesn't
-// surface as a user-visible "org invite failed" — which would
-// otherwise happen when a TOCTOU race between getMembershipState
-// (returning `false` on transient failure) and inviteOrgByID slips
-// past the pre-check.
+// orgMembershipKnownError is returned by classifyOrgInviteError
+// when GitHub rejects an org invite with 422 and a follow-up
+// membership lookup confirms the user is already active or pending.
+// Roster commands match on this via `errors.As` so an "already a
+// member" outcome from a TOCTOU race past getMembershipState's
+// pre-check doesn't surface as "org invite failed".
 type orgMembershipKnownError struct {
 	state string // "active" or "pending"
 	msg   string

@@ -62,9 +62,10 @@ VSCode users: install the [Go extension](https://marketplace.visualstudio.com/it
 
 Bootstrap commands (`init`, `rotate-collect-token`) live alongside `init_repo.go`, `init_skeleton.go`, and `collect_token.go`; the embedded skeleton is under `skeleton/` (committed into `<org>/classroom50` at init time).
 
-Commands that mutate tracked files in `<org>/classroom50` (`classroom.go`, `roster.go`, `assignment.go`) share two helpers:
+Commands that mutate tracked files in `<org>/classroom50` (`classroom.go`, `roster.go`, `assignment.go`) share these helpers:
 
-- `tree_commit.go` — `commitTree` is the shared optimistic-update-with-rebase loop. It reads the current branch tip, calls a `build` callback to produce the new path → content map, and PATCHes the ref with a fast-forward check. On a non-fast-forward (concurrent writer won the race), it re-invokes `build` against the fresh tip — up to 5 attempts with exponential backoff. Any new command that edits a tracked file should go through `commitTree` so multi-teacher edits stay consistent.
+- `helpers.go` — cross-cutting CLI helpers: `isHTTPStatus(err, code)` collapses the `*api.HTTPError` → `StatusCode` pattern used everywhere; `validateShortName(name, label)` enforces `shortNamePattern` consistently for classroom short-names and assignment slugs; `addServiceAccountConfirmFlag` / `printServiceAccountReminder` share the `--service-account-confirm` flag between `init` and `rotate-collect-token`.
+- `tree_commit.go` — `commitTree` is the shared optimistic-update-with-rebase loop. It reads the current branch tip, calls a `build` callback to produce the new path → content map, and PATCHes the ref with a fast-forward check. On a non-fast-forward (concurrent writer won the race), it re-invokes `build` against the fresh tip — up to 5 attempts with exponential backoff. `commitTree` is also used by `classroom add` so even the four-file scaffold lands through the same race-safe path. Any new command that edits a tracked file should go through `commitTree`.
 - `students_csv.go` — RFC 4180 parse/encode plus case-insensitive upsert/remove for the roster. Pure-logic helpers, covered by `students_csv_test.go`.
 - `assignments_json.go` — typed JSON parse/encode plus case-sensitive upsert/remove for the assignment manifest, plus the autograding-tests schema validator. Same shape as `students_csv.go` — pure-logic helpers covered by `assignments_json_test.go`. The `expectEOF` helper in this file is shared with `assignment.go`'s `loadTestsFile` to enforce trailing-content rejection on every JSON read path.
 

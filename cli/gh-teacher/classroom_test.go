@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-func TestValidateClassroomSlug(t *testing.T) {
+func TestValidateShortName(t *testing.T) {
 	// Covers the defense-in-depth case: a malicious or hand-typed
 	// classroom argument shouldn't reach the contents API as a path.
 	cases := []struct {
@@ -29,12 +29,12 @@ func TestValidateClassroomSlug(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.in, func(t *testing.T) {
-			err := validateClassroomSlug(tc.in)
+			err := validateShortName(tc.in, "classroom")
 			if tc.wantOK && err != nil {
-				t.Fatalf("validateClassroomSlug(%q) = %v, want nil", tc.in, err)
+				t.Fatalf("validateShortName(%q) = %v, want nil", tc.in, err)
 			}
 			if !tc.wantOK && err == nil {
-				t.Fatalf("validateClassroomSlug(%q) = nil, want error", tc.in)
+				t.Fatalf("validateShortName(%q) = nil, want error", tc.in)
 			}
 		})
 	}

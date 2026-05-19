@@ -5,7 +5,6 @@ import (
 	"embed"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -18,28 +17,28 @@ import (
 	"github.com/cli/go-gh/v2/pkg/api"
 )
 
-// skeletonFS embeds the files committed by `gh teacher init` into the
-// new config repo. The source tree uses `dotgithub/` because Go's embed
-// (without the `all:` prefix) skips paths starting with `.`; the prefix
-// is rewritten to `.github/` at commit time.
+// skeletonFS embeds the files committed by `gh teacher init`. The
+// source tree uses `dotgithub/` because Go's embed (without the
+// `all:` prefix) skips paths starting with `.`; rewritten to
+// `.github/` at commit time.
 //
 //go:embed skeleton
 var skeletonFS embed.FS
 
 // skeletonProbePath detects "skeleton already committed" on re-runs.
-// publish-pages.yml is unique to the config repo — README.md is not
+// publish-pages.yml is unique to the config repo — README.md isn't
 // reliable because auto_init creates one.
 const skeletonProbePath = ".github/workflows/publish-pages.yml"
 
-// defaultBranchPlaceholder is substituted in embedded workflow YAML at
-// commit time so publish-pages.yml listens on the org's actual default
-// branch rather than hardcoding "main".
+// defaultBranchPlaceholder is substituted in embedded workflow YAML
+// at commit time so publish-pages.yml listens on the org's actual
+// default branch.
 const defaultBranchPlaceholder = "{{DEFAULT_BRANCH}}"
 
 // skeletonFiles returns destination-path → content for every file
-// `commitSkeleton` writes. The local `skeleton/` prefix is stripped,
+// commitSkeleton writes. The `skeleton/` prefix is stripped,
 // `dotgithub/` is rewritten to `.github/`, and {{DEFAULT_BRANCH}} is
-// replaced with `defaultBranch`.
+// substituted.
 func skeletonFiles(defaultBranch string) (map[string]string, error) {
 	files := make(map[string]string)
 	walkErr := fs.WalkDir(skeletonFS, "skeleton", func(p string, d fs.DirEntry, err error) error {
@@ -68,12 +67,10 @@ func skeletonFiles(defaultBranch string) (map[string]string, error) {
 	return files, nil
 }
 
-// commitSkeleton lands the embedded skeleton on `defaultBranch` as a
-// single Tree commit. Re-runs are a no-op: the probe file's presence at
-// HEAD signals the skeleton already landed, and we never overwrite
-// teacher edits. When `created` is true (fresh auto_init), refAndTree
-// is retried briefly on 404 because GitHub doesn't propagate the
-// initial ref synchronously.
+// commitSkeleton lands the embedded skeleton on defaultBranch in a
+// single Tree commit. Re-runs no-op via the probe file. When
+// `created` is true (fresh auto_init), refAndTree retries briefly on
+// 404 — GitHub doesn't propagate the initial ref synchronously.
 func commitSkeleton(client *api.RESTClient, out io.Writer, owner, repo, defaultBranch string, created bool) error {
 	files, err := skeletonFiles(defaultBranch)
 	if err != nil {
@@ -99,7 +96,7 @@ func commitSkeleton(client *api.RESTClient, out io.Writer, owner, repo, defaultB
 		if err == nil {
 			break
 		}
-		if httpErr, ok := errors.AsType[*api.HTTPError](err); ok && httpErr.StatusCode == http.StatusNotFound && i < attempts-1 {
+		if isHTTPStatus(err, http.StatusNotFound) && i < attempts-1 {
 			time.Sleep(time.Duration(200*(1<<i)) * time.Millisecond)
 			continue
 		}
@@ -130,8 +127,8 @@ func commitSkeleton(client *api.RESTClient, out io.Writer, owner, repo, defaultB
 	return nil
 }
 
-// contentsExists reports whether `path` exists at `ref`. 404 → false,
-// 200 → true, anything else → error.
+// contentsExists reports whether `path` exists at `ref`. 404 →
+// false, 200 → true, anything else → error.
 func contentsExists(client *api.RESTClient, owner, repo, path, ref string) (bool, error) {
 	segs := strings.Split(path, "/")
 	for i := range segs {
@@ -141,7 +138,7 @@ func contentsExists(client *api.RESTClient, owner, repo, path, ref string) (bool
 		url.PathEscape(owner), url.PathEscape(repo),
 		strings.Join(segs, "/"), url.PathEscape(ref))
 	if err := client.Get(apiPath, nil); err != nil {
-		if httpErr, ok := errors.AsType[*api.HTTPError](err); ok && httpErr.StatusCode == http.StatusNotFound {
+		if isHTTPStatus(err, http.StatusNotFound) {
 			return false, nil
 		}
 		return false, fmt.Errorf("GET %s: %w", apiPath, err)
@@ -150,9 +147,9 @@ func contentsExists(client *api.RESTClient, owner, repo, path, ref string) (bool
 }
 
 // refAndTree returns the parent commit SHA and its tree SHA for
-// `defaultBranch`. Parent SHA goes into the new commit's `parents`
-// array; tree SHA becomes the new tree's `base_tree` so unchanged paths
-// inherit without re-uploading.
+// `defaultBranch`. Parent SHA becomes the new commit's parent; tree
+// SHA becomes the new tree's `base_tree` so unchanged paths inherit
+// without re-uploading.
 func refAndTree(client *api.RESTClient, owner, repo, defaultBranch string) (commitSHA, treeSHA string, err error) {
 	refPath := fmt.Sprintf("repos/%s/%s/git/refs/heads/%s",
 		url.PathEscape(owner), url.PathEscape(repo), url.PathEscape(defaultBranch))
@@ -186,9 +183,9 @@ type treeEntry struct {
 }
 
 // uploadBlobs creates one blob per file and returns tree entries
-// pointing at them. Always base64-encoded — the overhead is negligible
-// and the correctness story is simpler than detecting per-file encoding
-// (future skeleton files may contain non-UTF-8 bytes).
+// pointing at them. Always base64-encoded — the overhead is
+// negligible and the correctness story is simpler than per-file
+// encoding detection.
 func uploadBlobs(client *api.RESTClient, owner, repo string, files map[string]string) ([]treeEntry, error) {
 	paths := make([]string, 0, len(files))
 	for p := range files {

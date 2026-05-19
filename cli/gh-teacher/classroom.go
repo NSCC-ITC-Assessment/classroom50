@@ -6,8 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net/http"
-	"net/url"
 	"regexp"
 	"strings"
 
@@ -19,40 +17,30 @@ import (
 // starting with a lowercase letter or digit, then lowercase letters,
 // digits, or hyphens. The short-name flows into student-side repo
 // names like `<short-name>-<assignment>-<username>`, so it must stay
-// within GitHub's repo-naming constraints.
+// within GitHub's repo-naming constraints. Assignment slugs share
+// the same rule for the same reason. Write-time callers use
+// `validateShortName` in helpers.go for a consistent "invalid <X>"
+// error; `validateExistingEntry` checks this pattern directly because
+// its parse-time error frames the file context instead ("entry %q has
+// invalid slug ...").
 var shortNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{1,38}$`)
 
-// validateClassroomSlug enforces shortNamePattern on a classroom
-// argument supplied to any teacher command that addresses a classroom
-// directory. Beyond catching typos, this is the defense-in-depth that
-// keeps a malicious `classroom` value (e.g. `../.github/workflows`)
-// from ever reaching the contents/tree API as a path. `gh teacher
-// classroom add` validates against the same pattern at the write
-// site; the roster commands validate here because they trust the
-// directory to exist.
-func validateClassroomSlug(classroom string) error {
-	if !shortNamePattern.MatchString(classroom) {
-		return fmt.Errorf("invalid classroom %q: must match ^[a-z0-9][a-z0-9-]{1,38}$ (2-39 chars, lowercase letters/digits/hyphens, starting with a letter or digit)", classroom)
-	}
-	return nil
-}
-
-// Schema sentinels for the four scaffolded files. Both CLI writers
-// and the ingest/reconcile scripts MUST branch on the schema field
-// before reading so today's readers can handle files produced by
-// future schema versions without a flag day.
+// Schema sentinels for the four scaffolded files. Every schema-aware
+// reader (the CLI writers themselves, the collect-scores workflow,
+// the future autograde workflow §4.3, and any later consumer) MUST
+// branch on the schema field before reading so today's readers can
+// handle files produced by future schema versions without a flag
+// day. Content-agnostic copiers like publish-pages.yml don't need
+// the check.
 const (
 	classroomSchemaV1   = "classroom50/classroom/v1"
 	assignmentsSchemaV1 = "classroom50/assignments/v1"
 	scoresSchemaV1      = "classroom50/scores/v1"
 )
 
-// studentsCSVHeader is the canonical roster header derived from
-// rosterColumns so the two definitions can't drift. The trailing
-// `github_id` column is populated by `gh teacher roster add/import`
-// from `GET /users/{username}` so a mid-semester username change
-// doesn't desynchronize score lookups. Teachers should not hand-edit
-// it.
+// studentsCSVHeader is derived from rosterColumns so the two
+// definitions can't drift. See students_csv.go for the trailing
+// github_id column's purpose.
 var studentsCSVHeader = strings.Join(rosterColumns, ",") + "\n"
 
 func classroomCmd() *cobra.Command {
@@ -109,8 +97,8 @@ func classroomAddCmd() *cobra.Command {
 			if shortName == "" {
 				return errors.New("short-name must not be empty")
 			}
-			if !shortNamePattern.MatchString(shortName) {
-				return fmt.Errorf("invalid short-name %q: must match ^[a-z0-9][a-z0-9-]{1,38}$ (2-39 chars, lowercase letters/digits/hyphens, starting with a letter or digit)", shortName)
+			if err := validateShortName(shortName, "short-name"); err != nil {
+				return err
 			}
 
 			client, err := requireAuthClient(cmd)
@@ -127,44 +115,15 @@ func classroomAddCmd() *cobra.Command {
 }
 
 // addClassroom creates the four-file scaffold in a single Tree commit
-// against <org>/classroom50. Steps:
-//
-//  1. GET /repos/{org}/classroom50 — surface a clear "run `gh teacher
-//     init`" message on 404. Non-404 errors propagate with the
-//     request context wrapped (auth/permission errors surface as the
-//     underlying GitHub API error).
-//  2. contentsExists probe for the `<shortName>/` directory on the
-//     default branch — refuse to overwrite an existing classroom
-//     rather than silently merging or clobbering. The contents API
-//     returns 200 for a directory (with a JSON array body that
-//     contentsExists discards) and 404 only when nothing exists at
-//     that path, so a single probe defends against partial state
-//     (e.g. a teacher who renamed classroom.json by hand but left
-//     assignments.json / students.csv / scores.json in place).
-//  3. Single Tree commit of the four files using the same helpers
-//     `commitSkeleton` uses for `gh teacher init`'s skeleton drop.
+// against <org>/classroom50, going through commitTree so a concurrent
+// writer racing on a different file can't lose this classroom's
+// commit. The existence probe runs inside the build callback (against
+// each attempt's parent SHA) so a same-classroom race surfaces as
+// "already exists" rather than silently clobbering the winner.
 func addClassroom(client *api.RESTClient, out, errOut io.Writer, org, shortName, name, term string) error {
-	repoPath := fmt.Sprintf("repos/%s/%s", url.PathEscape(org), configRepoName)
-	var repo configRepo
-	if err := client.Get(repoPath, &repo); err != nil {
-		if httpErr, ok := errors.AsType[*api.HTTPError](err); ok && httpErr.StatusCode == http.StatusNotFound {
-			return fmt.Errorf("%s/%s not found — run `gh teacher init %s` first", org, configRepoName, org)
-		}
-		return fmt.Errorf("GET %s: %w", repoPath, err)
-	}
-	branch := repo.DefaultBranch
-	if branch == "" {
-		branch = "main"
-	}
-
-	exists, err := contentsExists(client, org, configRepoName, shortName, branch)
+	branch, err := resolveConfigRepoBranch(client, org)
 	if err != nil {
 		return err
-	}
-	if exists {
-		return fmt.Errorf("classroom %q already exists in %s/%s — refusing to overwrite (inspect or edit at https://github.com/%s/%s/tree/%s/%s)",
-			shortName, org, configRepoName,
-			org, configRepoName, branch, shortName)
 	}
 
 	files, err := classroomScaffold(org, shortName, name, term)
@@ -172,43 +131,42 @@ func addClassroom(client *api.RESTClient, out, errOut io.Writer, org, shortName,
 		return err
 	}
 
-	parentSHA, parentTreeSHA, err := refAndTree(client, org, configRepoName, branch)
-	if err != nil {
-		return err
+	build := func(parentSHA string) (map[string]string, error) {
+		// contentsExists returns 200 for a directory (with a JSON
+		// array body it discards) and 404 only when nothing exists
+		// at that path, so a single probe defends against partial
+		// state (e.g. a teacher who hand-renamed classroom.json but
+		// left the other three files in place).
+		exists, err := contentsExists(client, org, configRepoName, shortName, parentSHA)
+		if err != nil {
+			return nil, err
+		}
+		if exists {
+			return nil, fmt.Errorf("classroom %q already exists in %s/%s — refusing to overwrite (inspect or edit at https://github.com/%s/%s/tree/%s/%s)",
+				shortName, org, configRepoName,
+				org, configRepoName, branch, shortName)
+		}
+		return files, nil
 	}
-	entries, err := uploadBlobs(client, org, configRepoName, files)
-	if err != nil {
-		return err
-	}
-	treeSHA, err := createTree(client, org, configRepoName, parentTreeSHA, entries)
-	if err != nil {
-		return err
-	}
-	commitSHA, err := createCommit(client, org, configRepoName, treeSHA, parentSHA,
-		fmt.Sprintf("Add %s classroom (gh teacher classroom add)", shortName))
-	if err != nil {
-		return err
-	}
-	if err := updateRef(client, org, configRepoName, branch, commitSHA); err != nil {
+
+	message := fmt.Sprintf("Add %s classroom (gh teacher classroom add)", shortName)
+	if _, err := commitTree(client, org, configRepoName, branch, message, build); err != nil {
 		return err
 	}
 
 	// Primary confirmation on stdout (parseable by scripts). Advisory
 	// "View at" and "Next:" lines go to stderr so a CI script
 	// capturing stdout gets exactly one line.
-	_, _ = fmt.Fprintf(out, "%s/%s: added classroom %s (%d files)\n", org, configRepoName, shortName, len(entries))
+	_, _ = fmt.Fprintf(out, "%s/%s: added classroom %s (%d files)\n", org, configRepoName, shortName, len(files))
 	_, _ = fmt.Fprintf(errOut, "View at https://github.com/%s/%s/tree/%s/%s\n", org, configRepoName, branch, shortName)
 	_, _ = fmt.Fprintf(errOut, "Next: gh teacher roster add %s %s <username>\n", org, shortName)
 	return nil
 }
 
 // classroomJSON / scoresJSON pin the on-disk shape of the scaffolded
-// files. Field order is deliberate: schema sentinel first (so readers
-// can branch on schema before parsing the rest), then domain fields.
-// The third scaffolded JSON file (assignments.json) is described by
-// assignmentsJSON in assignments_json.go — that file is the one
-// `gh teacher assignment add` reads, mutates, and re-encodes, so its
-// typed shape lives next to those helpers rather than here.
+// files. Schema sentinel comes first so readers can branch before
+// parsing the rest. assignments.json's typed shape lives in
+// assignments_json.go next to its parse/encode helpers.
 type classroomJSON struct {
 	Schema    string `json:"schema"`
 	Name      string `json:"name"`
@@ -221,11 +179,10 @@ type scoresJSON struct {
 	Schema string `json:"schema"`
 }
 
-// classroomScaffold returns the destination-path → content map for
-// the four files this command scaffolds. Path keys are written
-// verbatim into the Tree commit; an empty Assignments slice marshals
-// to `[]` (not `null`) so the on-disk shape stays stable as
-// assignments get appended.
+// classroomScaffold returns destination-path → content for the four
+// scaffolded files. An empty Assignments slice marshals to `[]`
+// (not `null`) so the on-disk shape stays stable as assignments get
+// appended.
 func classroomScaffold(org, shortName, name, term string) (map[string]string, error) {
 	classroom := classroomJSON{
 		Schema:    classroomSchemaV1,
@@ -262,11 +219,10 @@ func classroomScaffold(org, shortName, name, term string) (map[string]string, er
 	}, nil
 }
 
-// encodeJSONPretty marshals v with 2-space indentation and a trailing
-// newline. Teachers may inspect or hand-edit these files, so
-// pretty-printed output is the better default. SetEscapeHTML(false)
-// keeps `<`/`>` literal in case future fields hold URLs or
-// angle-bracketed text.
+// encodeJSONPretty marshals v with 2-space indent and a trailing
+// newline — teachers may inspect or hand-edit these files.
+// SetEscapeHTML(false) keeps `<`/`>` literal in case a future field
+// holds URLs or angle-bracketed text.
 func encodeJSONPretty(v any) ([]byte, error) {
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)

@@ -20,35 +20,32 @@ import (
 	"golang.org/x/term"
 )
 
-// readHiddenLine reads a single line with terminal echo disabled. Used
-// for the collect-token prompt so the PAT never appears on screen.
+// readHiddenLine reads one line with terminal echo disabled so the
+// PAT never appears on screen.
 func readHiddenLine(f *os.File) (string, error) {
 	b, err := term.ReadPassword(int(f.Fd()))
 	return string(b), err
 }
 
 // collectSecretName is the repo-level Actions secret that
-// `collect-scores.yml` consumes to read student-repo releases. The
-// name is hardcoded because it appears verbatim in the workflow YAML.
+// collect-scores.yml consumes. Hardcoded because it appears verbatim
+// in the workflow YAML.
 const collectSecretName = "CLASSROOM50_COLLECT_TOKEN"
 
 // envCollectToken is the environment variable carrying the token
-// value. A `--collect-token <value>` CLI flag is deliberately not
-// offered: flag values leak via shell history, process listings, and
-// CI logs. The token only grants `Contents: read` on org repos
-// matching `<classroom>-*`, so the blast radius is small, but
-// avoiding flag-based supply costs nothing.
+// value. A `--collect-token <value>` flag is deliberately not
+// offered: flag values leak via shell history, process listings,
+// and CI logs.
 const envCollectToken = "CLASSROOM50_COLLECT_TOKEN"
 
-// readCollectToken returns the token value from the env var or, if
-// unset, from stdin. Behavior splits on whether stdin/stderr are TTYs:
+// readCollectToken returns the token from env or stdin. Behavior
+// splits on whether stdin/stderr are TTYs:
 //
-//   - env set: use it (most CI / scripted flows)
+//   - env set: use it (most CI/scripted flows)
 //   - env unset, stdin piped: read one line (`echo $T | gh ...`)
 //   - env unset, stdin and stderr both TTY: hidden-echo prompt
-//   - env unset, stdin TTY, stderr piped: error — we can't both prompt
-//     and stay quiet, and silently consuming TTY input would surprise
-//     anyone running under `tee` / `script`
+//   - env unset, stdin TTY, stderr piped: error — can't both prompt
+//     and stay quiet without surprising anyone under tee/script
 func readCollectToken(cmd *cobra.Command) ([]byte, error) {
 	if v := strings.TrimSpace(os.Getenv(envCollectToken)); v != "" {
 		return []byte(v), nil
@@ -89,15 +86,13 @@ func readCollectToken(cmd *cobra.Command) ([]byte, error) {
 	return []byte(v), nil
 }
 
-// provisionCollectSecret sealbox-encrypts `token` against the
-// classroom50 repo's Actions public key and uploads it as the
-// repo-level CLASSROOM50_COLLECT_TOKEN secret. Repo-level (not
-// org-level) keeps the secret out of every other repo in the org —
-// only collect-scores.yml in <org>/classroom50 can read it.
-//
-// The PUT is idempotent — re-running replaces the encrypted value in
-// place. Used by both init (first provisioning) and rotate
-// (replacement after PAT expiry).
+// provisionCollectSecret sealbox-encrypts `token` against the repo's
+// Actions public key and uploads it as the repo-level
+// CLASSROOM50_COLLECT_TOKEN secret. Repo-level (not org-level) keeps
+// the secret out of every other repo in the org — only
+// collect-scores.yml in <org>/classroom50 can read it. Idempotent —
+// the PUT replaces the encrypted value in place. Shared by `init`
+// and `rotate-collect-token`.
 func provisionCollectSecret(client *api.RESTClient, out io.Writer, owner, repo string, token []byte, verb string) error {
 	keyPath := fmt.Sprintf("repos/%s/%s/actions/secrets/public-key",
 		url.PathEscape(owner), url.PathEscape(repo))
@@ -148,10 +143,9 @@ func provisionCollectSecret(client *api.RESTClient, out io.Writer, owner, repo s
 	return nil
 }
 
-// rotateCollectTokenCmd re-runs only the secret-provisioning step of
-// `init`. Used when the underlying PAT approaches expiry, when the
-// owning service account changes, or as part of incident response
-// after a suspected token compromise.
+// rotateCollectTokenCmd re-runs only the secret-provisioning step
+// of `init`. Used when the PAT nears expiry, when the owning service
+// account changes, or as part of incident response.
 func rotateCollectTokenCmd() *cobra.Command {
 	var confirmSvc bool
 	cmd := &cobra.Command{
@@ -181,18 +175,16 @@ func rotateCollectTokenCmd() *cobra.Command {
 			errOut := cmd.ErrOrStderr()
 
 			// Don't rotate the secret for an org that hasn't been
-			// init'd yet — the user almost certainly mistyped the org.
+			// init'd yet — the user probably mistyped the org.
 			repoPath := fmt.Sprintf("repos/%s/%s", url.PathEscape(org), configRepoName)
 			if err := client.Get(repoPath, nil); err != nil {
-				if httpErr, ok := errors.AsType[*api.HTTPError](err); ok && httpErr.StatusCode == http.StatusNotFound {
+				if isHTTPStatus(err, http.StatusNotFound) {
 					return fmt.Errorf("%s/%s does not exist; run `gh teacher init %s` first", org, configRepoName, org)
 				}
 				return fmt.Errorf("GET %s: %w", repoPath, err)
 			}
 
-			if !confirmSvc {
-				_, _ = fmt.Fprintln(errOut, "Note: the collect token should belong to an org-owned service account, not a personal teacher account. Pass --service-account-confirm to silence this notice.")
-			}
+			printServiceAccountReminder(errOut, confirmSvc)
 
 			token, err := readCollectToken(cmd)
 			if err != nil {
@@ -201,7 +193,6 @@ func rotateCollectTokenCmd() *cobra.Command {
 			return provisionCollectSecret(client, out, org, configRepoName, token, "rotated")
 		},
 	}
-	cmd.Flags().BoolVar(&confirmSvc, "service-account-confirm", false,
-		"Suppress the service-account ownership reminder")
+	addServiceAccountConfirmFlag(cmd, &confirmSvc)
 	return cmd
 }

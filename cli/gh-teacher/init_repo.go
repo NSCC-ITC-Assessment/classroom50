@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -12,8 +11,8 @@ import (
 	"github.com/cli/go-gh/v2/pkg/api"
 )
 
-// plansThatSupportPrivatePages enumerates the GitHub plan slugs that allow
-// Pages from a private source repo.
+// plansThatSupportPrivatePages enumerates GitHub plan slugs that
+// allow Pages from a private source repo.
 var plansThatSupportPrivatePages = map[string]bool{
 	"team":          true,
 	"business":      true,
@@ -21,10 +20,10 @@ var plansThatSupportPrivatePages = map[string]bool{
 	"enterprise":    true,
 }
 
-// checkOrgPlan warns when the org is on a tier that can't serve Pages
-// from a private repo. Advisory only — the teacher might still want to
-// proceed (host config publicly, or use a different Pages strategy);
-// if Pages enable fails later they get a concrete error there.
+// checkOrgPlan warns when the org's plan can't serve Pages from a
+// private repo. Advisory only — the teacher may still want to
+// proceed; if Pages enable fails later they get a concrete error
+// there.
 func checkOrgPlan(client *api.RESTClient, errOut io.Writer, org string) error {
 	path := fmt.Sprintf("orgs/%s", url.PathEscape(org))
 	var resp struct {
@@ -53,11 +52,11 @@ type configRepo struct {
 	DefaultBranch string `json:"default_branch"`
 }
 
-// ensureConfigRepo returns the classroom50 repo for `<org>`, creating it
-// if it doesn't exist. 422 from POST /orgs/{org}/repos means the name is
-// taken; we fall back to a GET so re-runs of init succeed. The
-// `default_branch` field flows through to later steps because org policy
-// can rename the default branch.
+// ensureConfigRepo returns the classroom50 repo for <org>, creating
+// it if absent. 422 from POST /orgs/{org}/repos means the name is
+// taken — fall back to GET so re-runs of init succeed. The
+// `default_branch` flows through to later steps so org policy can
+// rename the default branch without breaking the bootstrap.
 func ensureConfigRepo(client *api.RESTClient, org string) (repo configRepo, created bool, err error) {
 	body, err := json.Marshal(struct {
 		Name     string `json:"name"`
@@ -74,7 +73,7 @@ func ensureConfigRepo(client *api.RESTClient, org string) (repo configRepo, crea
 
 	createPath := fmt.Sprintf("orgs/%s/repos", url.PathEscape(org))
 	if err := client.Post(createPath, bytes.NewReader(body), &repo); err != nil {
-		if httpErr, ok := errors.AsType[*api.HTTPError](err); ok && httpErr.StatusCode == http.StatusUnprocessableEntity {
+		if isHTTPStatus(err, http.StatusUnprocessableEntity) {
 			getPath := fmt.Sprintf("repos/%s/%s", url.PathEscape(org), configRepoName)
 			if getErr := client.Get(getPath, &repo); getErr != nil {
 				return configRepo{}, false, fmt.Errorf("GET %s: %w", getPath, getErr)
@@ -86,10 +85,8 @@ func ensureConfigRepo(client *api.RESTClient, org string) (repo configRepo, crea
 	return repo, true, nil
 }
 
-// enablePages turns on Pages built from GitHub Actions. 409 is GitHub's
-// "already configured" signal; we treat it as success so init stays
-// idempotent and a partial-failure recovery doesn't invalidate the
-// deploy URL.
+// enablePages turns on Pages built from GitHub Actions. 409 means
+// "already configured"; treated as success so init stays idempotent.
 func enablePages(client *api.RESTClient, out io.Writer, owner, repo string) error {
 	body, err := json.Marshal(struct {
 		BuildType string `json:"build_type"`
@@ -99,7 +96,7 @@ func enablePages(client *api.RESTClient, out io.Writer, owner, repo string) erro
 	}
 	path := fmt.Sprintf("repos/%s/%s/pages", url.PathEscape(owner), url.PathEscape(repo))
 	if err := client.Post(path, bytes.NewReader(body), nil); err != nil {
-		if httpErr, ok := errors.AsType[*api.HTTPError](err); ok && httpErr.StatusCode == http.StatusConflict {
+		if isHTTPStatus(err, http.StatusConflict) {
 			_, _ = fmt.Fprintf(out, "%s/%s: Pages already enabled\n", owner, repo)
 			return nil
 		}
@@ -109,17 +106,18 @@ func enablePages(client *api.RESTClient, out io.Writer, owner, repo string) erro
 	return nil
 }
 
-// applyBranchProtection sets minimal protection on the default branch:
-// no force pushes, no deletions. PR-required is deliberately not
-// enabled — collect-scores.yml pushes directly to main via its own
-// GITHUB_TOKEN, and the classroom/roster/assignment CLI writes use
-// the contents API. Ruleset-based bypass for those actors is a
-// meaningfully bigger API surface. Blocking force-push + delete
-// bounds the blast radius of an account compromise.
+// applyBranchProtection sets minimal protection on the default
+// branch: no force pushes, no deletions. PR-required is deliberately
+// NOT enabled — collect-scores.yml pushes directly to main, and the
+// classroom/roster/assignment CLIs PATCH `refs/heads/main` via the
+// Git Data API (blobs/trees/commits/refs). Either path would be
+// blocked by a PR requirement. Blocking force-push + delete bounds
+// the blast radius of an account compromise without taking on
+// ruleset-bypass complexity.
 func applyBranchProtection(client *api.RESTClient, out io.Writer, owner, repo, branch string) error {
 	// Classic branch protection requires the four null fields to be
-	// present (not just omitted); a JSON literal is simpler than juggling
-	// pointer types for a one-shot call.
+	// present (not just omitted); a JSON literal is simpler than
+	// juggling pointer types for a one-shot call.
 	body := []byte(`{
   "required_status_checks": null,
   "enforce_admins": false,
@@ -143,18 +141,14 @@ func applyBranchProtection(client *api.RESTClient, out io.Writer, owner, repo, b
 	return nil
 }
 
-// setWorkflowPermissions raises the default GITHUB_TOKEN to write at
-// the repo level. This is belt-and-suspenders — every skeleton workflow
-// already declares workflow-level `permissions:` — but it future-proofs
-// any new workflow a teacher adds without thinking about permissions.
-//
-// GitHub set the default to read-only across new repos in 2023, so this
-// PUT is required even though it looks like the obvious default.
-//
-// 409 means the org enforces a unified workflow-permissions policy and
-// repo-level overrides are rejected. That's not fatal for the skeleton
-// workflows, so we read the effective org-level setting, log it, and
-// move on rather than aborting the bootstrap.
+// setWorkflowPermissions raises the default GITHUB_TOKEN to `write`.
+// Belt-and-suspenders — every skeleton workflow declares its own
+// workflow-level `permissions:` — but this future-proofs any new
+// workflow a teacher adds without thinking about it. (GitHub flipped
+// the new-repo default to read-only in 2023.) 409 means the org
+// enforces a unified policy; reportOrgWorkflowPermissions reads the
+// effective setting and continues — the skeleton workflows still
+// work.
 func setWorkflowPermissions(client *api.RESTClient, out io.Writer, owner, repo string) error {
 	body, err := json.Marshal(struct {
 		DefaultWorkflowPermissions   string `json:"default_workflow_permissions"`
@@ -170,7 +164,7 @@ func setWorkflowPermissions(client *api.RESTClient, out io.Writer, owner, repo s
 		url.PathEscape(owner), url.PathEscape(repo))
 	resp, err := client.Request(http.MethodPut, path, bytes.NewReader(body))
 	if err != nil {
-		if httpErr, ok := errors.AsType[*api.HTTPError](err); ok && httpErr.StatusCode == http.StatusConflict {
+		if isHTTPStatus(err, http.StatusConflict) {
 			return reportOrgWorkflowPermissions(client, out, owner, repo)
 		}
 		return fmt.Errorf("PUT %s: %w", path, err)
@@ -184,11 +178,10 @@ func setWorkflowPermissions(client *api.RESTClient, out io.Writer, owner, repo s
 	return nil
 }
 
-// reportOrgWorkflowPermissions reads the effective workflow-permissions
-// setting (which under an enforced org policy returns the org value)
-// and surfaces it. Always returns nil — the skeleton workflows carry
-// workflow-level `permissions:` blocks, so a `read` default doesn't
-// break the bootstrap.
+// reportOrgWorkflowPermissions reads the effective setting (returns
+// the org value under an enforced policy) and surfaces it. Always
+// returns nil — a `read` default doesn't break the bootstrap because
+// the skeleton workflows declare workflow-level permissions.
 func reportOrgWorkflowPermissions(client *api.RESTClient, out io.Writer, owner, repo string) error {
 	path := fmt.Sprintf("repos/%s/%s/actions/permissions/workflow",
 		url.PathEscape(owner), url.PathEscape(repo))

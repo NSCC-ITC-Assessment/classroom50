@@ -9,7 +9,7 @@ import (
 )
 
 // configRepoName is the fixed name of the per-org classroom config repo.
-// Student repos and ingest/reconcile workflows hardcode the path, so this
+// Student repos and the collect-scores workflow hardcode the path, so this
 // is part of the public contract.
 const configRepoName = "classroom50"
 
@@ -51,15 +51,14 @@ func initCmd() *cobra.Command {
 			out := cmd.OutOrStdout()
 			errOut := cmd.ErrOrStderr()
 
-			// Read-only plan check first: warns on free tiers where Pages
-			// from a private repo isn't supported, then continues.
+			// Read-only plan check first: warns on free tiers where
+			// Pages from a private repo isn't supported, then continues.
 			if err := checkOrgPlan(client, errOut, org); err != nil {
 				return err
 			}
 
-			// The default branch comes from the create/fetch response —
-			// org policy can rename it, and subsequent steps need the
-			// correct ref.
+			// Default branch flows from the create/fetch response — org
+			// policy can rename it, and later steps need the correct ref.
 			repo, created, err := ensureConfigRepo(client, org)
 			if err != nil {
 				return err
@@ -87,9 +86,7 @@ func initCmd() *cobra.Command {
 				return err
 			}
 
-			if !confirmSvc {
-				_, _ = fmt.Fprintln(errOut, "Note: the collect token should belong to an org-owned service account, not a personal teacher account. Pass --service-account-confirm to silence this notice.")
-			}
+			printServiceAccountReminder(errOut, confirmSvc)
 			token, err := readCollectToken(cmd)
 			if err != nil {
 				return err
@@ -98,9 +95,8 @@ func initCmd() *cobra.Command {
 				return err
 			}
 
-			// Surface the future URL — Pages takes a few seconds to deploy
-			// after the first publish-pages run, but the teacher needs to
-			// know where to look.
+			// Surface the future URL — Pages takes a few seconds to
+			// deploy after the first publish-pages run.
 			pagesURL := fmt.Sprintf("https://%s.github.io/%s/", org, configRepoName)
 			_, _ = fmt.Fprintf(out, "Pages will serve at %s once publish-pages completes its first run.\n", pagesURL)
 			_, _ = fmt.Fprintf(out, "Next: gh teacher classroom add %s <short-name>\n", org)
@@ -108,8 +104,6 @@ func initCmd() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().BoolVar(&confirmSvc, "service-account-confirm", false,
-		"Suppress the service-account ownership reminder")
-
+	addServiceAccountConfirmFlag(cmd, &confirmSvc)
 	return cmd
 }

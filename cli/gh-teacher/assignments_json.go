@@ -9,75 +9,54 @@ import (
 	"strings"
 )
 
-// assignmentModeIndividual is the only mode currently supported. The
-// `--mode` flag accepts this exact string; `mode: group` is reserved
-// for a future release and produces an explicit error rather than a
-// silent acceptance — the autograde workflow and `gh student accept`
-// both branch on this field, so any unsupported value reaching disk
-// would surface as a confusing downstream failure.
+// assignmentModeIndividual is the only mode currently supported.
+// `mode: group` is reserved for a future release and explicitly
+// rejected at every write/parse site — the autograde workflow and
+// `gh student accept` both branch on this field.
 const assignmentModeIndividual = "individual"
 
-// Test-type sentinels are the only values this CLI knows how to
-// validate. Extending this set requires a coordinated change to the
-// autograde workflow's matrix-step `if:` filters, so future
-// test-types like `check50` or `python_pytest` are guarded behind
-// both a CLI schema bump and a workflow update.
+// Test-type sentinels are the only values this CLI validates.
+// Extending this set requires a coordinated change to the autograde
+// workflow's matrix-step `if:` filters, so future types like
+// `check50` need both a CLI schema bump and a workflow update.
 const (
 	testTypeInputOutput = "input_output"
 	testTypeRunCommand  = "run_command"
 )
 
-// allowedComparisonMethods is the comparison-method enum for
-// input_output tests. Mirrors the values the upstream
-// `classroom-resources/autograding-io-grader@v1` action accepts.
+// allowedComparisonMethods mirrors the values
+// `classroom-resources/autograding-io-grader@v1` accepts.
 var allowedComparisonMethods = []string{"included", "exact", "regex"}
 
 // maxAssignmentsBytes caps the encoded size of assignments.json
-// before it lands in a commit. The GitHub contents API ceiling is
-// 1 MiB raw; files larger than that come back from the contents
-// endpoint with `encoding:"none"` and an empty content field, at
-// which point `readFileContents` hard-errors and *no* assignment
-// add/remove can recover the file without out-of-band repair. The
-// cap leaves ~120 KiB of headroom for git blob/commit metadata,
-// future schema fields, and the kind of irregular base64 padding
-// the contents API occasionally returns. A teacher hitting the cap
-// has a concrete fix (split classrooms, shrink test payloads) and
-// — crucially — sees the error *before* the write lands, not after
-// the file has wedged.
+// before commit. GitHub's contents API returns `encoding:"none"` for
+// files past ~1 MiB, at which point readFileContents hard-errors and
+// *no* assignment add/remove can recover without out-of-band repair.
+// The 900 KiB ceiling leaves ~120 KiB of headroom for git metadata,
+// future schema fields, and base64 padding. A teacher hitting it
+// sees the error *before* the write lands, not after the file has
+// wedged.
 const maxAssignmentsBytes = 900 * 1024
 
-// assignmentsJSON is the typed on-disk shape of assignments.json. The
-// schema sentinel comes first so a reader (CLI, autograde workflow,
-// or future Pages-driven consumer) can branch on it before touching
-// the rest of the file. Assignments is a typed slice (the previous
-// scaffold used []map[string]any because the file was always empty;
-// now `assignment add` reads, mutates, and re-encodes it, so the
-// shape needs to round-trip safely).
-//
-// Assignments always serializes as a JSON array, even when empty —
-// `gh teacher classroom add` writes an empty `[]` at scaffold time
-// and downstream readers expect that shape.
+// assignmentsJSON is the typed on-disk shape of assignments.json.
+// Schema sentinel comes first so any reader can branch on it before
+// touching the rest. Assignments always serializes as a JSON array
+// (never null), matching what `gh teacher classroom add` writes at
+// scaffold time.
 type assignmentsJSON struct {
 	Schema      string            `json:"schema"`
 	Assignments []assignmentEntry `json:"assignments"`
 }
 
-// assignmentEntry is one row in assignments.json. Field order is
-// arranged so the on-disk output of `assignment add` reads naturally
-// to a teacher inspecting the file: identity (slug, name) first,
-// then description, then the template ref, then schedule/mode, then
-// tests.
+// assignmentEntry is one row in assignments.json. Field order matches
+// the natural reading order for a teacher inspecting the file:
+// identity → template → schedule/mode → tests.
 //
-// Description and Due are `omitempty` because optional flags should
-// produce a clean file when omitted, not noisy empty-string keys.
-// Mode is always emitted (it's required) so the file is unambiguous
-// even while only one value is currently supported — a future
-// migration that adds a second mode won't have to differentiate
-// "absent → individual" from "explicit individual".
-//
-// Tests is `omitempty: false` — an assignment with no tests still
-// emits `"tests": []` so the autograde workflow can use a stable
-// `fromJSON(...)` shape without per-attribute existence checks.
+// Description and Due use `omitempty` so optional flags produce a
+// clean file. Mode is always emitted (it's required) so a future
+// second mode value doesn't have to disambiguate "absent → individual"
+// from "explicit individual". Tests omits omitempty so the workflow's
+// `fromJSON` matrix step can index without nil guards.
 type assignmentEntry struct {
 	Slug        string           `json:"slug"`
 	Name        string           `json:"name"`
@@ -88,12 +67,12 @@ type assignmentEntry struct {
 	Tests       []assignmentTest `json:"tests"`
 }
 
-// templateRef is the assignment's starter-code source: <owner>/<repo>
-// at <branch>. Stored as three explicit fields (instead of a single
-// "owner/repo@branch" string) so the autograde workflow and
-// `gh student accept` can read each component without re-parsing.
-// Branch is always populated by `assignment add` — defaulting to the
-// template repo's `default_branch` when the teacher omits `@branch`.
+// templateRef is the assignment's starter-code source. Stored as
+// three explicit fields (not a single "owner/repo@branch" string) so
+// the autograde workflow and `gh student accept` can read each part
+// without re-parsing. Branch is always populated — `assignment add`
+// resolves the template's `default_branch` when the teacher omits
+// `@branch`.
 type templateRef struct {
 	Owner  string `json:"owner"`
 	Repo   string `json:"repo"`
@@ -102,15 +81,9 @@ type templateRef struct {
 
 // assignmentTest is one entry in an assignment's `tests` array. JSON
 // tags use the kebab-case names the autograde workflow's matrix step
-// indexes against, so the same payload round-trips between this
-// struct and the workflow YAML's `matrix.test['test-name']` lookups
-// without per-key translation.
-//
-// I/O fields (Input, ExpectedOutput, ComparisonMethod) are
-// `omitempty` so a run_command test doesn't carry empty strings that
-// the workflow would have to filter out. A future migration to
-// always-emit semantics requires only flipping the tag — readers
-// shouldn't need a per-field existence check.
+// indexes against, so the payload round-trips without per-key
+// translation. I/O fields are `omitempty` so a run_command test
+// doesn't carry empty strings the workflow would have to filter out.
 type assignmentTest struct {
 	TestName         string `json:"test-name"`
 	TestDescription  string `json:"test-description,omitempty"`
@@ -124,32 +97,21 @@ type assignmentTest struct {
 	MaxScore         int    `json:"max-score"`
 }
 
-// parseAssignments decodes assignments.json. The schema sentinel
-// MUST be `classroom50/assignments/v1` — readers branch on it to
-// keep flag-day-free schema evolution possible. An empty input is
-// rejected because `gh teacher classroom add` writes the scaffolded
-// `{"schema":..., "assignments":[]}` on classroom creation; a missing
-// or zero-byte file means something earlier in the lifecycle broke
-// and the right answer is to surface that, not invent state.
+// parseAssignments decodes assignments.json. Two-pass decode: the
+// first pass reads only the schema sentinel into a probe struct
+// *without* DisallowUnknownFields, so a future v2 file (which will
+// carry additional top-level fields) surfaces the actionable "this
+// CLI handles only v1" message instead of "json: unknown field".
+// The strict pass runs only once v1 is confirmed.
 //
-// Per-entry validation here matches what the CLI enforces at write
-// time (slug regex, name non-empty, mode allow-list, template
-// owner/repo/branch non-empty, full per-test schema). A
-// hand-edited or web-UI-inserted entry with malicious fields must
-// not survive parse and re-bless itself on the next CLI write — see
-// validateExistingEntry for the rationale.
+// Per-entry validation matches what the CLI enforces at write time —
+// see validateExistingEntry. The bar is the same so a hand-edited or
+// web-UI-inserted entry with malicious fields can't survive parse
+// and re-bless itself on the next CLI write.
 func parseAssignments(data []byte) (assignmentsJSON, error) {
 	if len(bytes.TrimSpace(data)) == 0 {
 		return assignmentsJSON{}, errors.New("assignments.json is empty")
 	}
-	// Two-pass decode. The first pass reads only the schema sentinel
-	// into a probe struct *without* DisallowUnknownFields, so a
-	// future v2 file (which will carry additional top-level fields)
-	// fails with the actionable "this CLI handles only v1" message
-	// instead of an opaque "json: unknown field" decode error. The
-	// schema sentinel is the documented escape hatch for forward
-	// compatibility; the strict-fields pass only runs once we've
-	// confirmed the file is v1 and we know the full v1 surface.
 	var probe struct {
 		Schema string `json:"schema"`
 	}
@@ -166,18 +128,13 @@ func parseAssignments(data []byte) (assignmentsJSON, error) {
 	if err := dec.Decode(&file); err != nil {
 		return assignmentsJSON{}, fmt.Errorf("parse assignments.json: %w", err)
 	}
-	// Reject trailing content after the first top-level value.
-	// Without this guard, a hand-edited assignments.json with a
-	// stray duplicate object or garbage after the canonical body
-	// parses cleanly and gets silently truncated on the next
-	// re-encode.
+	// Reject trailing content (concatenated duplicate object, stray
+	// text). Without this, the next re-encode silently truncates it.
 	if err := expectEOF(dec); err != nil {
 		return assignmentsJSON{}, fmt.Errorf("parse assignments.json: %w", err)
 	}
-	// Nil → []: parsers should treat a missing or null "assignments"
-	// the same as an empty list, and encodeAssignments below depends
-	// on a non-nil slice marshaling as `[]` (not `null`) so downstream
-	// readers see a stable shape.
+	// Normalize nil → []: callers and encodeAssignments depend on a
+	// non-nil slice marshaling as `[]` (not `null`).
 	if file.Assignments == nil {
 		file.Assignments = []assignmentEntry{}
 	}
@@ -185,9 +142,6 @@ func parseAssignments(data []byte) (assignmentsJSON, error) {
 		if err := validateExistingEntry(entry); err != nil {
 			return assignmentsJSON{}, fmt.Errorf("assignments[%d]: %w", i, err)
 		}
-		// Normalize: a freshly-decoded entry with no tests at all
-		// becomes a non-nil empty slice so re-encode produces `[]`
-		// rather than `null`.
 		if file.Assignments[i].Tests == nil {
 			file.Assignments[i].Tests = []assignmentTest{}
 		}
@@ -195,22 +149,12 @@ func parseAssignments(data []byte) (assignmentsJSON, error) {
 	return file, nil
 }
 
-// encodeAssignments serializes file with the same 2-space indented
-// pretty-print classroom.go's `encodeJSONPretty` uses. The trailing
-// newline matches what `gh teacher classroom add` originally wrote so
-// teachers (and downstream diffs) see a stable shape across CLI
-// versions.
-//
-// A nil Assignments is replaced with an empty slice so `[]` (not
-// `null`) always lands on disk. The caller is responsible for
-// validating before calling this — encodeAssignments performs no
-// per-entry validation itself.
-//
-// One whole-file safety check fires here: if the encoded result
-// exceeds maxAssignmentsBytes, return an error rather than letting
-// the wedge land on disk. The caller (typically the commitTree
-// build callback) propagates the error up before any blob/tree/
-// commit/ref-patch round trips.
+// encodeAssignments serializes file via encodeJSONPretty (2-space
+// indent, trailing newline) so on-disk diffs stay stable across CLI
+// versions. Normalizes nil → [] for Assignments and per-entry Tests
+// so the wire shape is always `[]` not `null`. Per-entry validation
+// is the caller's responsibility — only the whole-file size cap
+// fires here (see maxAssignmentsBytes).
 func encodeAssignments(file assignmentsJSON) ([]byte, error) {
 	if file.Schema == "" {
 		file.Schema = assignmentsSchemaV1
@@ -234,14 +178,10 @@ func encodeAssignments(file assignmentsJSON) ([]byte, error) {
 }
 
 // upsertAssignment replaces the entry with matching Slug
-// (case-sensitive — slugs already match `shortNamePattern`'s
-// lowercase-only alphabet, so case-insensitive matching would only
-// hide a slug-rule violation that the validator already rejects).
-// Position is preserved on replace so a teacher's assignment ordering
-// survives upserts; new slugs are appended.
-//
-// Returns the new slice and whether the operation was a replace
-// (true) or an append (false).
+// (case-sensitive — shortNamePattern's lowercase-only alphabet makes
+// case-insensitive matching only hide validator-rejected typos).
+// Position is preserved on replace; new slugs append. Returns the
+// new slice and whether the operation was a replace.
 func upsertAssignment(entries []assignmentEntry, entry assignmentEntry) ([]assignmentEntry, bool) {
 	for i := range entries {
 		if entries[i].Slug == entry.Slug {
@@ -252,9 +192,9 @@ func upsertAssignment(entries []assignmentEntry, entry assignmentEntry) ([]assig
 	return append(entries, entry), false
 }
 
-// removeAssignment drops the entry with matching Slug. Returns the
-// new slice and whether a row was actually removed. The
-// case-sensitive match mirrors upsertAssignment.
+// removeAssignment drops the entry with matching Slug (case-sensitive,
+// mirroring upsertAssignment). Returns the new slice and whether a
+// row was removed.
 func removeAssignment(entries []assignmentEntry, slug string) ([]assignmentEntry, bool) {
 	for i := range entries {
 		if entries[i].Slug == slug {
@@ -265,21 +205,21 @@ func removeAssignment(entries []assignmentEntry, slug string) ([]assignmentEntry
 }
 
 // validateAssignmentEntry checks a fresh entry the CLI is about to
-// write. Distinct from validateExistingEntry (called on parse) so the
-// `assignment add` write path can enforce its full constraint set
-// (slug regex, template owner/repo non-empty, mode allow-list, full
-// tests-array validation) while a parse of existing on-disk state
-// only rejects shape problems that would corrupt the file.
+// write. Distinct from validateExistingEntry (called on parse) only
+// in error wording — write-path errors reference CLI flags ("use
+// --name"), parse-path errors reference the file ("entry %q has...").
+// Same structural bar in both paths so a hand-edited entry can't
+// re-bless itself on the next CLI write.
 //
-// Field order matches the surface — a teacher seeing "invalid mode
-// `group`" should not first have had to fix a missing template, and
-// vice versa. Run the cheapest, most-likely-to-trip checks first.
+// Field order is "cheapest and most-likely-to-trip first" — a
+// teacher seeing "invalid mode" shouldn't first have had to fix a
+// missing template.
 func validateAssignmentEntry(entry assignmentEntry) error {
 	if entry.Slug == "" {
 		return errors.New("slug must not be empty")
 	}
-	if !shortNamePattern.MatchString(entry.Slug) {
-		return fmt.Errorf("invalid slug %q: must match ^[a-z0-9][a-z0-9-]{1,38}$ (2-39 chars, lowercase letters/digits/hyphens, starting with a letter or digit)", entry.Slug)
+	if err := validateShortName(entry.Slug, "slug"); err != nil {
+		return err
 	}
 	if entry.Name == "" {
 		return errors.New("name must not be empty (use --name)")
@@ -302,31 +242,17 @@ func validateAssignmentEntry(entry assignmentEntry) error {
 	return nil
 }
 
-// validateExistingEntry runs the same structural checks on an entry
-// loaded from assignments.json that validateAssignmentEntry runs on
-// a fresh entry the CLI is about to write. The two paths share a
-// single bar: a hand-edited or web-UI-inserted entry with malicious
-// fields (garbage mode, empty template branch, crafted test
-// commands) MUST NOT survive parse and re-bless itself under a
-// legitimate teacher's commit on the next CLI write.
-//
-// The "loose parse, strict write" pattern that previously lived here
-// was the wrong trade-off. Forward compatibility across CLI versions
-// is the schema sentinel's job (see parseAssignments's two-pass
-// decode) — once an entry is inside a v1 file, the v1 invariants
-// hold strictly. Patch releases that want to loosen a rule do so
-// behind a new schema sentinel, not by relaxing per-entry checks.
-//
-// Error messages are framed for parse context ("entry %q has ...")
-// rather than CLI-flag context ("use --name") so a teacher fixing a
-// file by hand sees actionable text rather than a misleading
-// pointer at a flag they aren't currently passing.
+// validateExistingEntry is validateAssignmentEntry's parse-time twin:
+// same structural bar, but error messages frame the file context
+// ("entry %q has...") instead of CLI flags ("use --name"). Forward
+// compatibility lives in the schema sentinel, not in per-entry
+// laxness — once a file is v1, the v1 invariants hold strictly.
 func validateExistingEntry(entry assignmentEntry) error {
 	if entry.Slug == "" {
 		return errors.New("entry has empty slug")
 	}
 	if !shortNamePattern.MatchString(entry.Slug) {
-		return fmt.Errorf("entry has invalid slug %q (must match ^[a-z0-9][a-z0-9-]{1,38}$)", entry.Slug)
+		return fmt.Errorf("entry has invalid slug %q (must match %s)", entry.Slug, shortNamePatternDescription)
 	}
 	if entry.Name == "" {
 		return fmt.Errorf("entry %q has empty name", entry.Slug)
@@ -349,15 +275,11 @@ func validateExistingEntry(entry assignmentEntry) error {
 	return nil
 }
 
-// validateAssignmentTests walks the whole tests array in one pass:
-// unique test-names, plus each entry's per-test-type constraints.
-// Error messages cite the 0-based index and the test-name when
-// present so a teacher fixing a JSON file can locate the offending
-// entry quickly.
-//
-// An empty tests array is valid — an assignment can ship without
-// autograding, e.g. an in-class exercise where the teacher grades
-// the work directly.
+// validateAssignmentTests checks the whole array in one pass:
+// per-test-type constraints (delegated to validateAssignmentTest)
+// plus unique test-names. Empty array is valid — an assignment can
+// ship without autograding (e.g. an in-class exercise). Error
+// messages cite tests[N] + test-name to help locate the offender.
 func validateAssignmentTests(tests []assignmentTest) error {
 	seen := make(map[string]int, len(tests))
 	for i, t := range tests {
@@ -373,20 +295,17 @@ func validateAssignmentTests(tests []assignmentTest) error {
 }
 
 // validateAssignmentTest enforces the autograding-tests schema on
-// one entry. Required fields: test-name, test-type, command, timeout,
+// one entry. Required: test-name, test-type, command, timeout,
 // max-score. Per-test-type:
 //
-//   - input_output: comparison-method, when present, MUST be in the
-//     allowed set. `input` and `expected-output` may be empty (an
-//     empty-stdin test is a legitimate "no input" smoke check).
-//   - run_command: input, expected-output, and comparison-method
-//     MUST be absent. Setting them implicitly suggests the teacher
-//     meant input_output and the workflow would silently ignore them
-//     — hard-fail at write time instead.
+//   - input_output: comparison-method (when present) must be in the
+//     allowed set. Empty input / expected-output are valid.
+//   - run_command: input, expected-output, comparison-method must be
+//     absent — the upstream action silently ignores them, so we
+//     hard-fail rather than letting the teacher's intent get lost.
 //
-// The index argument flows into the error message so
-// validateAssignmentTests can produce useful "tests[N]" labels
-// without re-implementing the formatting.
+// `index` flows into "tests[N]" labels so validateAssignmentTests
+// doesn't have to reformat them.
 func validateAssignmentTest(index int, t assignmentTest) error {
 	label := fmt.Sprintf("tests[%d]", index)
 	if t.TestName != "" {
@@ -440,15 +359,11 @@ func stringInSlice(s string, set []string) bool {
 }
 
 // expectEOF rejects any remaining content on a decoder that has just
-// finished its top-level Decode. A second Decode that returns io.EOF
-// confirms the stream contained exactly one JSON value (whitespace
-// is skipped by the decoder); anything else — a trailing object,
-// stray text, a duplicate copy of the canonical body — surfaces here
-// instead of being silently dropped on the next re-encode.
-//
-// Shared between parseAssignments (assignments.json on disk) and
-// loadTestsFile (a teacher-supplied --tests payload) so both reading
-// paths get the same trailing-content invariant.
+// finished its top-level Decode. A second Decode returning io.EOF
+// confirms the stream contained exactly one JSON value; anything
+// else (trailing object, stray text, duplicate body) surfaces here
+// rather than being silently dropped on re-encode. Shared between
+// parseAssignments and loadTestsFile.
 func expectEOF(dec *json.Decoder) error {
 	var rest json.RawMessage
 	err := dec.Decode(&rest)

@@ -1,39 +1,17 @@
 package main
 
-import "testing"
+import (
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"strings"
+	"sync"
+	"testing"
 
-func TestApiErrorMessage(t *testing.T) {
-	cases := []struct {
-		name string
-		body string
-		want string
-	}{
-		{
-			name: "json with message",
-			body: `{"message":"Update is not a fast forward","documentation_url":"https://..."}`,
-			want: "Update is not a fast forward",
-		},
-		{
-			name: "json without message field",
-			body: `{"documentation_url":"https://..."}`,
-			want: `{"documentation_url":"https://..."}`,
-		},
-		{
-			name: "non-json body",
-			body: "internal server error\n",
-			want: "internal server error",
-		},
-		{name: "empty", body: "", want: ""},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got := apiErrorMessage([]byte(tc.body))
-			if got != tc.want {
-				t.Fatalf("apiErrorMessage(%q) = %q, want %q", tc.body, got, tc.want)
-			}
-		})
-	}
-}
+	"github.com/cli/go-gh/v2/pkg/api"
+)
 
 func TestIsNonFastForwardMessage(t *testing.T) {
 	cases := []struct {
@@ -61,3 +39,313 @@ func TestIsNonFastForwardMessage(t *testing.T) {
 		})
 	}
 }
+
+// hostRewriteTransport routes every request to a single test server,
+// preserving the original path so the handler can dispatch on it. The
+// stock api.RESTClient otherwise targets api.github.com; this is the
+// canonical seam the go-gh docs recommend for testing (ClientOptions
+// .Transport "should be reserved for testing purposes").
+type hostRewriteTransport struct {
+	target *url.URL
+}
+
+func (h *hostRewriteTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	req.URL.Scheme = h.target.Scheme
+	req.URL.Host = h.target.Host
+	return http.DefaultTransport.RoundTrip(req)
+}
+
+// newTestRESTClient wires a real api.RESTClient at the given test
+// server. AuthToken is non-empty so the header-injection layer leaves
+// the Authorization header alone (the test server doesn't validate it).
+func newTestRESTClient(t *testing.T, server *httptest.Server) *api.RESTClient {
+	t.Helper()
+	u, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatalf("parse server URL: %v", err)
+	}
+	client, err := api.NewRESTClient(api.ClientOptions{
+		Host:         "github.com",
+		AuthToken:    "test-token",
+		Transport:    &hostRewriteTransport{target: u},
+		LogIgnoreEnv: true,
+	})
+	if err != nil {
+		t.Fatalf("api.NewRESTClient: %v", err)
+	}
+	return client
+}
+
+// TestCommitTree_RetriesOnNonFastForward exercises the rebase loop
+// end-to-end: a single concurrent-writer race injected on the first
+// patchRef attempt forces commitTree to re-invoke build against the
+// rebased parent SHA, then succeed on attempt 2. Pins the contract
+// for every caller (classroom add, roster add/remove/import,
+// assignment add/remove).
+//
+// One retry × 200ms backoff keeps the test well under a second; the
+// constant lives in tree_commit.go as rebaseAttempts × 200ms × 2^n.
+func TestCommitTree_RetriesOnNonFastForward(t *testing.T) {
+	var (
+		mu             sync.Mutex
+		patchAttempts  int
+		buildCallCount int
+		seenParentSHAs []string
+	)
+	parents := []string{"parent-sha-1", "parent-sha-2"}
+	parentTrees := []string{"parent-tree-1", "parent-tree-2"}
+
+	mux := http.NewServeMux()
+	// refAndTree: GET the ref to find the parent commit SHA, then GET
+	// the commit to find its tree SHA. The attempt counter on the
+	// patch endpoint drives which parent commit the test server
+	// advertises on subsequent reads — simulating a real concurrent
+	// writer advancing the branch between attempts.
+	mux.HandleFunc("/repos/o/r/git/refs/heads/main", func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		attempt := patchAttempts
+		mu.Unlock()
+		switch r.Method {
+		case http.MethodGet:
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"object": map[string]string{"sha": parents[attempt]},
+			})
+		case http.MethodPatch:
+			mu.Lock()
+			patchAttempts++
+			n := patchAttempts
+			mu.Unlock()
+			if n == 1 {
+				// First attempt: concurrent writer won — return the
+				// real-shape non-FF rejection so isNonFastForwardMessage
+				// triggers the retry path. Content-Type matters here:
+				// go-gh's HandleHTTPError parses the `message` field
+				// out of the body only when the response advertises
+				// application/json.
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusUnprocessableEntity)
+				_, _ = io.WriteString(w, `{"message":"Update is not a fast forward"}`)
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Errorf("unexpected method %s on refs/heads/main", r.Method)
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}
+	})
+	mux.HandleFunc("/repos/o/r/git/commits/", func(w http.ResponseWriter, r *http.Request) {
+		// commits/{sha} responds with the matching tree SHA from the
+		// parents/parentTrees pair above.
+		sha := strings.TrimPrefix(r.URL.Path, "/repos/o/r/git/commits/")
+		var tree string
+		for i, p := range parents {
+			if p == sha {
+				tree = parentTrees[i]
+				break
+			}
+		}
+		if tree == "" {
+			// Also handles the POST /git/commits creation — return an
+			// arbitrary new commit SHA.
+			_ = json.NewEncoder(w).Encode(map[string]string{"sha": "new-commit-sha"})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"tree": map[string]string{"sha": tree},
+		})
+	})
+	mux.HandleFunc("/repos/o/r/git/commits", func(w http.ResponseWriter, r *http.Request) {
+		// POST /git/commits creates the new commit object.
+		_ = json.NewEncoder(w).Encode(map[string]string{"sha": "new-commit-sha"})
+	})
+	mux.HandleFunc("/repos/o/r/git/blobs", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]string{"sha": "blob-sha"})
+	})
+	mux.HandleFunc("/repos/o/r/git/trees", func(w http.ResponseWriter, r *http.Request) {
+		// Sanity-check that base_tree matches the parent tree the
+		// build callback observed — i.e., the retry attempt rebased
+		// against parents[1] rather than reusing parents[0].
+		body, _ := io.ReadAll(r.Body)
+		var payload struct {
+			BaseTree string `json:"base_tree"`
+		}
+		_ = json.Unmarshal(body, &payload)
+		mu.Lock()
+		expected := parentTrees[patchAttempts]
+		mu.Unlock()
+		if payload.BaseTree != expected {
+			t.Errorf("createTree base_tree = %q, want %q (attempt-aware rebase failed)", payload.BaseTree, expected)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]string{"sha": "new-tree-sha"})
+	})
+
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+	client := newTestRESTClient(t, server)
+
+	build := func(parentSHA string) (map[string]string, error) {
+		mu.Lock()
+		buildCallCount++
+		seenParentSHAs = append(seenParentSHAs, parentSHA)
+		mu.Unlock()
+		return map[string]string{"foo/bar.txt": "hello"}, nil
+	}
+
+	gotSHA, err := commitTree(client, "o", "r", "main", "test commit", build)
+	if err != nil {
+		t.Fatalf("commitTree returned error: %v", err)
+	}
+	if gotSHA != "new-commit-sha" {
+		t.Errorf("commitTree returned SHA %q, want %q", gotSHA, "new-commit-sha")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if buildCallCount != 2 {
+		t.Errorf("build called %d times, want 2 (one per attempt)", buildCallCount)
+	}
+	if patchAttempts != 2 {
+		t.Errorf("patchRef called %d times, want 2 (one fail, one succeed)", patchAttempts)
+	}
+	if len(seenParentSHAs) != 2 || seenParentSHAs[0] != "parent-sha-1" || seenParentSHAs[1] != "parent-sha-2" {
+		t.Errorf("build saw parent SHAs %v, want [parent-sha-1 parent-sha-2] (second attempt must rebase)", seenParentSHAs)
+	}
+}
+
+// TestCommitTree_PropagatesBuildErrorWithoutRetry pins the contract
+// that an error from build short-circuits the rebase loop. addClassroom
+// relies on this: its "classroom already exists" check returns an
+// error from inside build, and the user must see exactly one
+// short-circuit (not five retried "already exists" reports).
+func TestCommitTree_PropagatesBuildErrorWithoutRetry(t *testing.T) {
+	var (
+		mu          sync.Mutex
+		refReads    int
+		blobUploads int
+	)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/o/r/git/refs/heads/main", func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		refReads++
+		mu.Unlock()
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"object": map[string]string{"sha": "parent-sha"},
+		})
+	})
+	mux.HandleFunc("/repos/o/r/git/commits/parent-sha", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"tree": map[string]string{"sha": "parent-tree"},
+		})
+	})
+	// Any blob upload counts as "build's error wasn't honored" — we
+	// must never reach the upload phase when build returns an error.
+	mux.HandleFunc("/repos/o/r/git/blobs", func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		blobUploads++
+		mu.Unlock()
+		_ = json.NewEncoder(w).Encode(map[string]string{"sha": "blob-sha"})
+	})
+
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+	client := newTestRESTClient(t, server)
+
+	wantErr := "classroom \"x\" already exists"
+	build := func(parentSHA string) (map[string]string, error) {
+		return nil, &builtError{msg: wantErr}
+	}
+
+	_, err := commitTree(client, "o", "r", "main", "test commit", build)
+	if err == nil {
+		t.Fatalf("commitTree returned nil, want error")
+	}
+	if !strings.Contains(err.Error(), wantErr) {
+		t.Errorf("err = %q, want substring %q", err.Error(), wantErr)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if refReads != 1 {
+		t.Errorf("ref was read %d times, want 1 (build error must skip retry)", refReads)
+	}
+	if blobUploads != 0 {
+		t.Errorf("blobs uploaded %d times, want 0 (build error must skip upload)", blobUploads)
+	}
+}
+
+// TestCommitTree_NoOpOnEmptyMap pins the "build returns empty map →
+// no commit" contract. runRosterRemove and runAssignmentRemove
+// depend on this: when the row/entry is already absent, build returns
+// (nil, nil) and the command must NOT produce a same-tree commit.
+func TestCommitTree_NoOpOnEmptyMap(t *testing.T) {
+	var (
+		mu          sync.Mutex
+		blobUploads int
+		treeCreates int
+		commitPosts int
+		patchCalls  int
+	)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/o/r/git/refs/heads/main", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPatch {
+			mu.Lock()
+			patchCalls++
+			mu.Unlock()
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"object": map[string]string{"sha": "parent-sha"},
+		})
+	})
+	mux.HandleFunc("/repos/o/r/git/commits/parent-sha", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"tree": map[string]string{"sha": "parent-tree"},
+		})
+	})
+	mux.HandleFunc("/repos/o/r/git/blobs", func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		blobUploads++
+		mu.Unlock()
+	})
+	mux.HandleFunc("/repos/o/r/git/trees", func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		treeCreates++
+		mu.Unlock()
+	})
+	mux.HandleFunc("/repos/o/r/git/commits", func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		commitPosts++
+		mu.Unlock()
+	})
+
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+	client := newTestRESTClient(t, server)
+
+	gotSHA, err := commitTree(client, "o", "r", "main", "noop", func(string) (map[string]string, error) {
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("commitTree returned error: %v", err)
+	}
+	if gotSHA != "" {
+		t.Errorf(`commitTree returned %q, want "" (no commit on empty-map build)`, gotSHA)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if blobUploads+treeCreates+commitPosts+patchCalls != 0 {
+		t.Errorf("expected zero write API calls on no-op, got blobs=%d trees=%d commits=%d patches=%d",
+			blobUploads, treeCreates, commitPosts, patchCalls)
+	}
+}
+
+// builtError is a test-only error type so the build-callback error
+// has a distinct identity rather than a free-floating errors.New
+// string; helps assertions stay specific.
+type builtError struct{ msg string }
+
+func (e *builtError) Error() string { return e.msg }
+
+// Compile-time guard that the test transport satisfies the
+// http.RoundTripper interface go-gh demands.
+var _ http.RoundTripper = (*hostRewriteTransport)(nil)
