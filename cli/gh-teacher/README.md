@@ -58,7 +58,9 @@ VSCode users: install the [Go extension](https://marketplace.visualstudio.com/it
 
 ## Layout
 
-`main.go` defines the cobra root command and registers subcommands. Each subcommand lives in its own file (`whoami.go`, `invite.go`, …) exposing a `<name>Cmd()` factory function. To add a new command, copy an existing file and follow the same pattern: factory returns `*cobra.Command`, write to `cmd.OutOrStdout()`, wrap errors with `fmt.Errorf("ctx: %w", err)`.
+`main.go` defines the cobra root command and registers subcommands. Each subcommand lives in its own file (`whoami.go`, `invite.go`, `init.go`, …) exposing a `<name>Cmd()` factory function. To add a new command, copy an existing file and follow the same pattern: factory returns `*cobra.Command`, write to `cmd.OutOrStdout()`, wrap errors with `fmt.Errorf("ctx: %w", err)`.
+
+Bootstrap commands (`init`, `rotate-collect-token`) live alongside `init_repo.go`, `init_skeleton.go`, and `collect_token.go`; the embedded skeleton is under `skeleton/` (committed into `<org>/classroom50` at init time).
 
 ## Distribution
 

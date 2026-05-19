@@ -25,6 +25,8 @@ func main() {
 	root.AddCommand(whoamiCmd())
 	root.AddCommand(loginCmd())
 	root.AddCommand(logoutCmd())
+	root.AddCommand(initCmd())
+	root.AddCommand(rotateCollectTokenCmd())
 	root.AddCommand(inviteCmd())
 	root.AddCommand(removeCmd())
 	root.AddCommand(downloadCmd())

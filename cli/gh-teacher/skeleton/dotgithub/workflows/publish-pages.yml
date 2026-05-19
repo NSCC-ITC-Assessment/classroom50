@@ -1,0 +1,66 @@
+name: Publish Pages
+
+# Allow-list publisher: only the paths enumerated under "Assemble Pages
+# artifact" appear in the deployed site, so a new file dropped into the
+# repo is private by default. Triggers are intentionally limited to
+# push to the org default branch and workflow_dispatch — never
+# pull_request — so a fork PR cannot modify this workflow to leak
+# private paths. {{DEFAULT_BRANCH}} is substituted at skeleton commit
+# time by `gh teacher init`.
+
+on:
+  push:
+    branches: ["{{DEFAULT_BRANCH}}"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Assemble Pages artifact (allow-list)
+        run: |
+          set -euo pipefail
+          mkdir -p _site
+          shopt -s nullglob
+          for f in */classroom.json */assignments.json; do
+            mkdir -p "_site/$(dirname "$f")"
+            cp "$f" "_site/$f"
+          done
+
+      - name: Build classrooms index
+        run: |
+          python3 - <<'PY'
+          import glob, json, os
+          rooms = []
+          for path in sorted(glob.glob("*/classroom.json")):
+              with open(path) as fh:
+                  rooms.append(json.load(fh))
+          os.makedirs("_site", exist_ok=True)
+          with open("_site/classrooms-index.json", "w") as fh:
+              json.dump({"classrooms": rooms}, fh)
+          PY
+
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v5
