@@ -1,7 +1,10 @@
 package main
 
 import (
+	"context"
 	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/spf13/cobra"
 )
@@ -29,7 +32,14 @@ func main() {
 	root.AddCommand(inviteCmd())
 	root.AddCommand(submitCmd())
 
-	if err := root.Execute(); err != nil {
+	// signal-aware root context: subcommands see cmd.Context()
+	// cancel on Ctrl-C / SIGTERM, so in-flight HTTP fetches
+	// (notably the Pages fetch in submit's refresh path) unwind
+	// promptly instead of waiting for the HTTP timeout.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	if err := root.ExecuteContext(ctx); err != nil {
 		os.Exit(1)
 	}
 }

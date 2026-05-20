@@ -1,7 +1,10 @@
 package main
 
 import (
+	"context"
 	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/spf13/cobra"
 )
@@ -34,7 +37,13 @@ func main() {
 	root.AddCommand(removeCmd())
 	root.AddCommand(downloadCmd())
 
-	if err := root.Execute(); err != nil {
+	// signal-aware root context: subcommands see cmd.Context()
+	// cancel on Ctrl-C / SIGTERM, so in-flight HTTP work unwinds
+	// promptly instead of waiting for the per-call timeout.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	if err := root.ExecuteContext(ctx); err != nil {
 		os.Exit(1)
 	}
 }

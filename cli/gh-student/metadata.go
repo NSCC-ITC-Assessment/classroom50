@@ -56,13 +56,21 @@ type ClassroomConfigRef struct {
 	Path   string `yaml:"path"`
 }
 
-// AutogradeMetadata is the autograde.* block. `Version` mirrors the
-// `# classroom50-autograde-version: <semver>` sentinel comment at
-// the top of `.github/workflows/autograde.yml` so the workflow's
-// load job can compare against the canonical version without
-// re-parsing the YAML header.
+// AutogradeMetadata is the autograde.* block. `Source` records the
+// classroom-relative path of the autograder this repo carries
+// (e.g. `autograders/default.yml`) so a student rummaging through
+// the file knows where it came from. `FetchedAt` is the UTC
+// timestamp of the last Pages refresh; `Version` mirrors the
+// `# classroom50-autograde-version: <semver>` sentinel from the
+// fetched workflow.
+//
+// All three fields are diagnostic — the autograde workflow itself
+// does not consume them. They survive across submits via the
+// metadata refresh in `gh student submit`.
 type AutogradeMetadata struct {
-	Version string `yaml:"version"`
+	Source    string `yaml:"source,omitempty"`
+	FetchedAt string `yaml:"fetched_at,omitempty"`
+	Version   string `yaml:"version,omitempty"`
 }
 
 // renderClassroomMetadata serializes cfg to the canonical
@@ -77,24 +85,20 @@ func renderClassroomMetadata(cfg ClassroomConfig) ([]byte, error) {
 }
 
 // dropClassroomFiles commits `.classroom50.yml` (rendered from cfg)
-// AND `.github/workflows/autograde.yml` (the version-substituted
-// embedded skeleton) on `branch` in a single Tree commit, so the
-// student repo's initial shape lands atomically instead of as two
-// separate single-file PUTs.
+// AND `.github/workflows/autograde.yml` (the workflow content
+// fetched from Pages by the caller) on `branch` in a single Tree
+// commit, so the student repo's initial shape lands atomically
+// instead of as two separate single-file PUTs.
 //
 // `waitForStableBranch` polls first because GitHub doesn't propagate
 // the post-templated-repo commit ref synchronously — the contents
 // API briefly returns 409 "Git Repository is empty" otherwise.
-func dropClassroomFiles(client *api.RESTClient, owner, repo, branch string, cfg ClassroomConfig) error {
+func dropClassroomFiles(client *api.RESTClient, owner, repo, branch string, cfg ClassroomConfig, workflowContent string) error {
 	if err := waitForStableBranch(client, owner, repo, branch); err != nil {
 		return err
 	}
 
 	metadataBytes, err := renderClassroomMetadata(cfg)
-	if err != nil {
-		return err
-	}
-	workflowContent, err := autogradeWorkflowContent()
 	if err != nil {
 		return err
 	}

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -30,10 +31,15 @@ func submitCmd() *cobra.Command {
 			"with `autograde.json` attached and a scored body shortly after.\n\n" +
 			"Before snapshotting, the latest instructor `.gitignore` and\n" +
 			"`.github/` (both optional) are fetched from the template recorded\n" +
-			"in `.classroom50.yml`, then the embedded autograde workflow\n" +
-			"(version `" + autogradeVersion + "`) is dropped on top — that way the\n" +
-			"workflow YAML stays in lockstep with the CLI version regardless\n" +
-			"of what the template ships.",
+			"in `.classroom50.yml`. Then the autograder workflow is\n" +
+			"re-fetched from the teacher's Pages site\n" +
+			"(`<org>.github.io/classroom50/<classroom>/autograders/<name>.yml`)\n" +
+			"and overwrites `.github/workflows/autograde.yml`, so teacher\n" +
+			"edits to the source workflow (or autograder reference changes in\n" +
+			"`assignments.json`) propagate without per-student-repo\n" +
+			"maintenance. The recorded `# classroom50-autograde-version:`\n" +
+			"sentinel is captured in `.classroom50.yml`'s `autograde.version`\n" +
+			"for diagnostics.",
 		Example: "  gh student submit",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cmd.SilenceUsage = true
@@ -47,7 +53,7 @@ func submitCmd() *cobra.Command {
 			errOut := cmd.ErrOrStderr()
 
 			var opts SubmitOptions
-			return submitAssignment(client, out, errOut, opts)
+			return submitAssignment(cmd.Context(), client, out, errOut, opts)
 		},
 	}
 
@@ -60,7 +66,7 @@ type SubmitOptions struct {
 	Branch  string
 }
 
-func submitAssignment(client *api.RESTClient, out io.Writer, errOut io.Writer, opts SubmitOptions) error {
+func submitAssignment(ctx context.Context, client *api.RESTClient, out io.Writer, errOut io.Writer, opts SubmitOptions) error {
 	if opts.Remote == "" {
 		opts.Remote = "origin"
 	}
@@ -147,19 +153,35 @@ func submitAssignment(client *api.RESTClient, out io.Writer, errOut io.Writer, o
 		}
 	}
 
-	// Refresh the autograde workflow with the CLI's embedded copy.
-	// The template's .github/ fetch above may have just dropped a
-	// stale autograde.yml shipped by an old template; we overwrite
-	// it so the workflow YAML is always lockstep with the CLI's
-	// version sentinel.
-	if err := refreshAutogradeWorkflow(workTree); err != nil {
+	// Re-fetch the autograder ref from assignments.json on every
+	// submit. A teacher's autograder-reference change in
+	// assignments.json propagates immediately (not just on next
+	// accept), and the workflow body itself is always overwritten
+	// from the Pages source so source-of-truth lives in the config
+	// repo. `repoOwner` from the remote URL is a forward-compat
+	// fallback for `.classroom50.yml` files written by v0.1 which
+	// don't carry the `config:` block.
+	autograderName, workflow, err := refetchAutograderWorkflow(ctx, config, repoOwner)
+	if err != nil {
 		return err
 	}
 
-	// Re-render .classroom50.yml so the recorded autograde.version
-	// tracks the CLI version on every submit. The previously-tracked
+	// Drop the fetched workflow into the work tree, overwriting any
+	// stale autograde.yml the template's .github/ fetch may have
+	// brought along.
+	if err := writeAutogradeWorkflow(workTree, workflow.Content); err != nil {
+		return err
+	}
+
+	// Re-render .classroom50.yml so source, fetched_at, and the
+	// version sentinel track the freshly-fetched workflow. The
+	// previously-tracked classroom / assignment / source / config
 	// fields round-trip through ClassroomConfig untouched.
-	config.Autograde.Version = autogradeVersion
+	config.Autograde = AutogradeMetadata{
+		Source:    "autograders/" + autograderName + ".yml",
+		FetchedAt: time.Now().UTC().Format(time.RFC3339),
+		Version:   workflow.Version,
+	}
 	if err := refreshClassroomMetadata(workTree, *config); err != nil {
 		return err
 	}
@@ -306,15 +328,72 @@ func fetchRepoPath(
 	}
 }
 
-// refreshAutogradeWorkflow writes the version-substituted embedded
-// autograde workflow into `workTree/.github/workflows/autograde.yml`,
-// overwriting any stale copy a template fetch may have dropped.
-// Keeps the workflow YAML in lockstep with the CLI version sentinel.
-func refreshAutogradeWorkflow(workTree string) error {
-	content, err := autogradeWorkflowContent()
+// refetchAutograderWorkflow re-reads the assignment entry from
+// Pages (so a teacher-side change to entry.autograder propagates
+// without re-accept) and fetches the referenced workflow YAML.
+// The two-step shape is intentional: the assignments.json fetch
+// pins the ref the teacher means *right now*, and the autograder
+// fetch pins the workflow body at the same moment.
+//
+// `config.Config.Owner` is preferred — v0.2 accept always writes
+// the `config:` block. `fallbackOwner` (the org parsed from the
+// repo's git remote) is the forward-compat path for v0.1
+// `.classroom50.yml` files that pre-date the config block.
+func refetchAutograderWorkflow(ctx context.Context, config *ClassroomConfig, fallbackOwner string) (string, AutogradeWorkflow, error) {
+	owner, err := resolveSubmitOwner(config, fallbackOwner)
 	if err != nil {
-		return err
+		return "", AutogradeWorkflow{}, err
 	}
+	// Each fetch carries its own pagesFetchTimeout via the
+	// per-call http.Client, so a wrapping context.WithTimeout
+	// would be redundant. ctx flows from cobra's cmd.Context()
+	// so Ctrl-C cancels the in-flight Pages fetches instead of
+	// waiting for the HTTP timeout.
+
+	entry, err := fetchAssignmentEntry(ctx, owner, config.Classroom, config.Assignment)
+	if err != nil {
+		return "", AutogradeWorkflow{}, fmt.Errorf("look up assignment for submit: %w", err)
+	}
+	name := entry.ResolveAutograder()
+	workflow, err := fetchAutograderWorkflow(ctx, owner, config.Classroom, name)
+	if err != nil {
+		return "", AutogradeWorkflow{}, fmt.Errorf("refresh autograde workflow for submit: %w", err)
+	}
+	return name, workflow, nil
+}
+
+// resolveSubmitOwner picks the org name to fetch the assignment
+// manifest from. Preference order:
+//
+//  1. `config.Config.Owner` — the canonical value v0.2 accept writes
+//     into `.classroom50.yml` (the `config:` block didn't exist in
+//     v0.1, so this is empty for repos accepted under the older CLI).
+//  2. `fallbackOwner` — the owner parsed from the repo's git remote.
+//     Carries the v0.1 → v0.2 forward-compat path: a student who
+//     accepted under v0.1 and upgraded can still submit, because the
+//     remote URL points at the same org the missing config block
+//     would.
+//
+// Returns an error when both are empty — that combination implies
+// either a hand-mangled `.classroom50.yml` or a clone with the
+// remote stripped, neither of which submit can repair on its own.
+func resolveSubmitOwner(config *ClassroomConfig, fallbackOwner string) (string, error) {
+	if config.Config.Owner != "" {
+		return config.Config.Owner, nil
+	}
+	if fallbackOwner != "" {
+		return fallbackOwner, nil
+	}
+	return "", fmt.Errorf("%s is missing config.owner and the remote URL didn't resolve to a GitHub org — re-run `gh student accept <org> %s %s` to refresh metadata before submitting",
+		ClassroomMetadataPath, config.Classroom, config.Assignment)
+}
+
+// writeAutogradeWorkflow drops `content` at the canonical in-repo
+// path, overwriting any stale copy a template fetch may have left
+// behind. Symmetric to dropClassroomFiles' Tree commit — accept
+// pushes the file via the API while submit lays it on disk for the
+// commit-then-push path to pick up.
+func writeAutogradeWorkflow(workTree, content string) error {
 	dst := filepath.Join(workTree, filepath.FromSlash(autogradeWorkflowPath))
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 		return fmt.Errorf("create parent dir for %s: %w", dst, err)
@@ -326,9 +405,9 @@ func refreshAutogradeWorkflow(workTree string) error {
 }
 
 // refreshClassroomMetadata re-renders .classroom50.yml in the work
-// tree from the parsed config. Called after bumping
-// `cfg.Autograde.Version` so the recorded sentinel always matches
-// the CLI's `autogradeVersion` constant on every submit. The file
+// tree from the parsed config. Called after refreshing
+// `cfg.Autograde.{Source,FetchedAt,Version}` so the recorded
+// diagnostics always reflect the most recent Pages fetch. The file
 // is CLI-managed (the wiki tells students not to hand-edit), so a
 // blind re-render is safe.
 func refreshClassroomMetadata(workTree string, cfg ClassroomConfig) error {

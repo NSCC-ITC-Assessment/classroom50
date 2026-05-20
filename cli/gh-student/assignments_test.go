@@ -23,6 +23,176 @@ func TestPagesAssignmentsURL(t *testing.T) {
 	}
 }
 
+func TestPagesAutograderURL(t *testing.T) {
+	// Mirrors the publish-pages allow-list (`*/autograders/*.yml`).
+	// Pin the shape — a change in either place must trip this test.
+	got := pagesAutograderURL("cs50-fall-2026", "cs-principles", "default")
+	want := "https://cs50-fall-2026.github.io/classroom50/cs-principles/autograders/default.yml"
+	if got != want {
+		t.Errorf("pagesAutograderURL = %q, want %q", got, want)
+	}
+}
+
+func TestAssignmentEntryResolveAutograder(t *testing.T) {
+	// The v0.1 → v0.2 forward-compat hatch: an entry without the
+	// autograder field still resolves to a usable name. The
+	// explicit case must round-trip the teacher's choice verbatim.
+	cases := []struct {
+		in   assignmentEntry
+		want string
+	}{
+		{assignmentEntry{}, "default"},
+		{assignmentEntry{Autograder: ""}, "default"},
+		{assignmentEntry{Autograder: "io-suite"}, "io-suite"},
+		{assignmentEntry{Autograder: "python-pytest"}, "python-pytest"},
+	}
+	for _, tc := range cases {
+		if got := tc.in.ResolveAutograder(); got != tc.want {
+			t.Errorf("ResolveAutograder(%+v) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestParseAutogradeVersionSentinel(t *testing.T) {
+	// Mirrors the gh-teacher stripAutogradeVersion test — same
+	// header-scan semantics, separate copy (two CLIs, no shared
+	// package). A drift between the two would only surface during
+	// student-side diagnostics, so the canonical header shape is
+	// pinned here too.
+	cases := []struct {
+		name    string
+		content string
+		want    string
+	}{
+		{"happy path", "# classroom50-autograde-version: 0.2.0\nname: Autograde\n", "0.2.0"},
+		{"leading whitespace", "   # classroom50-autograde-version:   1.0.0\n", "1.0.0"},
+		{"missing sentinel returns empty", "name: Autograde\non:\n  push:\n    tags: [\"submit/*\"]\n", ""},
+		{"empty input safe", "", ""},
+		{
+			"sentinel on the last in-bound line is found",
+			strings.Repeat("noise\n", autogradeVersionScanLines-1) +
+				"# classroom50-autograde-version: 0.4.0\n",
+			"0.4.0",
+		},
+		{
+			"sentinel one line past the bound is skipped",
+			strings.Repeat("noise\n", autogradeVersionScanLines) +
+				"# classroom50-autograde-version: 9.9.9\n",
+			"",
+		},
+		{"CRLF line endings still match", "line1\r\n# classroom50-autograde-version: 0.5.0\r\n", "0.5.0"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := parseAutogradeVersionSentinel(tc.content)
+			if got != tc.want {
+				t.Errorf("parseAutogradeVersionSentinel(...) = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestFetchAutograderWorkflow_HappyPath(t *testing.T) {
+	// The fetched bytes round-trip to the caller verbatim — that's
+	// the public contract dropClassroomFiles writes to the student
+	// repo. The version sentinel parser also runs on the bytes;
+	// confirm both halves work together.
+	body := "# classroom50-autograde-version: 0.2.0\n" +
+		"name: Autograde\n" +
+		"on:\n" +
+		"  push:\n" +
+		"    tags: [\"submit/*\"]\n" +
+		"permissions:\n" +
+		"  contents: write\n" +
+		"  statuses: write\n" +
+		"jobs:\n" +
+		"  grade:\n" +
+		"    uses: foundation50/classroom50/.github/workflows/autograde-library.yml@main\n"
+
+	server, cleanup := newAutograderServer(t, body, http.StatusOK)
+	defer cleanup()
+
+	wf, err := fetchAutograderWorkflowFromURL(context.Background(), server.URL+"/cs-principles/autograders/default.yml", "default")
+	if err != nil {
+		t.Fatalf("fetchAutograderWorkflowFromURL: %v", err)
+	}
+	if wf.Content != body {
+		t.Errorf("Content mismatch:\ngot:\n%s\nwant:\n%s", wf.Content, body)
+	}
+	if wf.Version != "0.2.0" {
+		t.Errorf("Version = %q, want %q", wf.Version, "0.2.0")
+	}
+}
+
+func TestFetchAutograderWorkflow_404SurfacesActionableGuidance(t *testing.T) {
+	// A 404 is the most likely failure shape (teacher hasn't run
+	// publish-pages yet, or the file was deleted). The error must
+	// name the autograder, the URL, and the fix.
+	server, cleanup := newAutograderServer(t, "not found", http.StatusNotFound)
+	defer cleanup()
+
+	_, err := fetchAutograderWorkflowFromURL(context.Background(), server.URL+"/cs-principles/autograders/default.yml", "default")
+	if err == nil {
+		t.Fatalf("expected 404 error, got nil")
+	}
+	for _, want := range []string{"\"default\"", "publish-pages", "404"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error should mention %q, got %q", want, err)
+		}
+	}
+}
+
+func TestFetchAutograderWorkflow_RejectsMalformedYAML(t *testing.T) {
+	// A teacher who typo'd the YAML structure (e.g. unbalanced
+	// braces) must hear about it at fetch time, before the broken
+	// workflow lands in the student repo. The error wording is
+	// the actionable signal a student passes back to the
+	// instructor.
+	server, cleanup := newAutograderServer(t, "name: Autograde\non: { invalid: [\n", http.StatusOK)
+	defer cleanup()
+
+	_, err := fetchAutograderWorkflowFromURL(context.Background(), server.URL+"/cs-principles/autograders/default.yml", "default")
+	if err == nil {
+		t.Fatalf("expected malformed-YAML error, got nil")
+	}
+	if !strings.Contains(err.Error(), "malformed YAML") {
+		t.Errorf("err should mention 'malformed YAML', got %q", err)
+	}
+	if !strings.Contains(err.Error(), "\"default\"") {
+		t.Errorf("err should name the autograder, got %q", err)
+	}
+}
+
+func TestFetchAutograderWorkflow_RejectsEmptyBody(t *testing.T) {
+	// Pages occasionally serves a stub response while a new
+	// deployment is in flight. Treat empty as "retry" rather than
+	// silently dropping an empty workflow into the student repo.
+	server, cleanup := newAutograderServer(t, "   \n   \n", http.StatusOK)
+	defer cleanup()
+
+	_, err := fetchAutograderWorkflowFromURL(context.Background(), server.URL+"/cs-principles/autograders/default.yml", "default")
+	if err == nil {
+		t.Fatalf("expected empty-body error, got nil")
+	}
+	if !strings.Contains(err.Error(), "empty body") {
+		t.Errorf("err should mention 'empty body', got %q", err)
+	}
+}
+
+// newAutograderServer is the autograder-fetch sibling of
+// newPagesServer below — same pattern, different mounted path.
+func newAutograderServer(t *testing.T, body string, status int) (*httptest.Server, func()) {
+	t.Helper()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/cs-principles/autograders/default.yml", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/yaml")
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte(body))
+	})
+	server := httptest.NewServer(mux)
+	return server, server.Close
+}
+
 func TestFetchAssignmentEntry_HappyPath(t *testing.T) {
 	body := `{
 		"schema": "classroom50/assignments/v1",

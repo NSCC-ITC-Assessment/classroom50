@@ -37,6 +37,13 @@ jobs:
             mkdir -p "_site/$(dirname "$f")"
             cp "$f" "_site/$f"
           done
+          # Autograder workflows are semi-public: gh student accept
+          # fetches and gh student submit refreshes from this
+          # directory on every submission.
+          for f in */autograders/*.yml; do
+            mkdir -p "_site/$(dirname "$f")"
+            cp "$f" "_site/$f"
+          done
 
       - name: Build classrooms index
         run: |

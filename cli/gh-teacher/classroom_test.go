@@ -90,6 +90,7 @@ func TestClassroomScaffold(t *testing.T) {
 		"cs-principles/assignments.json",
 		"cs-principles/students.csv",
 		"cs-principles/scores.json",
+		"cs-principles/autograders/default.yml",
 	}
 	if got, want := len(files), len(wantPaths); got != want {
 		t.Fatalf("len(files) = %d, want %d (files=%v)", got, want, files)
@@ -98,6 +99,23 @@ func TestClassroomScaffold(t *testing.T) {
 		if _, ok := files[p]; !ok {
 			t.Fatalf("missing scaffolded path %q (got %v)", p, files)
 		}
+	}
+
+	// The default autograder file is the per-classroom contract
+	// `gh teacher assignment add --autograder default` resolves to
+	// and `gh student accept` fetches from Pages. Pin the public
+	// pieces so a future refactor can't silently break the
+	// scaffold → Pages → student fetch chain.
+	autograder := files["cs-principles/autograders/default.yml"]
+	wantSentinel := "# classroom50-autograde-version: " + autogradeLibraryVersion
+	if !strings.Contains(autograder, wantSentinel) {
+		t.Errorf("default autograder missing sentinel %q, got:\n%s", wantSentinel, autograder)
+	}
+	if !strings.Contains(autograder, `tags: ["submit/*"]`) {
+		t.Errorf("default autograder missing submit-tag trigger, got:\n%s", autograder)
+	}
+	if !strings.Contains(autograder, autogradeLibraryRef) {
+		t.Errorf("default autograder missing library `uses:` %q, got:\n%s", autogradeLibraryRef, autograder)
 	}
 
 	var classroom classroomJSON

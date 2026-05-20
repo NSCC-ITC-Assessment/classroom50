@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os/exec"
 	"strings"
+	"time"
 
 	"github.com/cli/go-gh/v2/pkg/api"
 	"github.com/spf13/cobra"
@@ -24,9 +25,14 @@ func acceptCmd() *cobra.Command {
 			"The template repo (which may live outside <org>), due date, and\n" +
 			"autograding tests are looked up in the published assignments.json\n" +
 			"on the classroom's GitHub Pages site (no token required).\n\n" +
+			"The assignment's autograder workflow is fetched from the same\n" +
+			"Pages site (`<org>.github.io/classroom50/<classroom>/autograders/<name>.yml`)\n" +
+			"and dropped at `.github/workflows/autograde.yml` in the new\n" +
+			"repo. Teacher edits to the source workflow propagate on the\n" +
+			"student's next `gh student submit`.\n\n" +
 			"If the student has a pending org invite it is auto-accepted first.\n" +
 			"After creating the repo, the student is added as a `maintain`\n" +
-			"collaborator, and `.classroom50.yml` and the generic autograde\n" +
+			"collaborator, and `.classroom50.yml` and the fetched autograde\n" +
 			"workflow are written in a single Tree commit. Re-running on an\n" +
 			"already-accepted assignment short-circuits without touching the\n" +
 			"existing repo.",
@@ -166,8 +172,9 @@ func acceptAssignment(cmd *cobra.Command, client *api.RESTClient, out io.Writer,
 	// 1) look up the assignment entry on the published Pages site.
 	//    No token required (the publish-pages allow-list keeps the
 	//    site public); the template ref tells us which repo to
-	//    generate from, and the mode tells us whether to short-
-	//    circuit on group mode.
+	//    generate from, the mode tells us whether to short-circuit
+	//    on group mode, and the autograder ref tells us which YAML
+	//    to fetch in step 2.
 	entry, err := fetchAssignmentEntry(cmd.Context(), org, classroom, assignment)
 	if err != nil {
 		return err
@@ -181,9 +188,20 @@ func acceptAssignment(cmd *cobra.Command, client *api.RESTClient, out io.Writer,
 			assignment, entry.Template.Owner, entry.Template.Repo, entry.Template.Branch)
 	}
 
-	// 2) create the assignment repo from the entry's template. If it
-	//    already exists, short-circuit: the student accepted before;
-	//    don't touch their work.
+	// 2) fetch the autograder workflow from Pages *before* creating
+	//    the assignment repo. A 404 (unpublished autograder) or
+	//    malformed-YAML failure here surfaces a clean error with no
+	//    half-baked repo on the teacher's org — the student can
+	//    re-run accept after the instructor publishes the file.
+	autograderName := entry.ResolveAutograder()
+	workflow, err := fetchAutograderWorkflow(cmd.Context(), org, classroom, autograderName)
+	if err != nil {
+		return err
+	}
+
+	// 3) create the assignment repo from the entry's template. If
+	//    it already exists, short-circuit: the student accepted
+	//    before; don't touch their work.
 	htmlURL, fullName, alreadyExisted, err := createTemplatedPrivateAssignmentRepoInOrg(client, out, username, classroom, assignment, org, entry.Template)
 	if err != nil {
 		return err
@@ -192,15 +210,16 @@ func acceptAssignment(cmd *cobra.Command, client *api.RESTClient, out io.Writer,
 		return reportAlreadyAccepted(out, fullName, htmlURL)
 	}
 
-	// 3) invite as `maintain`. PUT collaborators is upsert; covers
+	// 4) invite as `maintain`. PUT collaborators is upsert; covers
 	//    the spec's admin->maintain downgrade in a single call.
 	if err := inviteUserToMaintain(client, out, username, classroom, assignment, org); err != nil {
 		return err
 	}
 
-	// 4) write .classroom50.yml + the autograde workflow in a single
-	//    Tree commit. waitForStableBranch (inside dropClassroomFiles)
-	//    handles GitHub's post-templated-repo replication lag.
+	// 5) write .classroom50.yml + the fetched autograde workflow
+	//    in a single Tree commit. waitForStableBranch (inside
+	//    dropClassroomFiles) handles GitHub's post-templated-repo
+	//    replication lag.
 	repoName := assignmentRepoName(classroom, assignment, username)
 	cfg := ClassroomConfig{
 		Classroom:  classroom,
@@ -217,17 +236,20 @@ func acceptAssignment(cmd *cobra.Command, client *api.RESTClient, out io.Writer,
 			Path:   classroom,
 		},
 		Autograde: AutogradeMetadata{
-			Version: autogradeVersion,
+			Source:    "autograders/" + autograderName + ".yml",
+			FetchedAt: time.Now().UTC().Format(time.RFC3339),
+			Version:   workflow.Version,
 		},
 	}
-	if err := dropClassroomFiles(client, org, repoName, entry.Template.Branch, cfg); err != nil {
+	if err := dropClassroomFiles(client, org, repoName, entry.Template.Branch, cfg, workflow.Content); err != nil {
 		return err
 	}
 	if verbose {
-		_, _ = fmt.Fprintf(out, "wrote %s and %s in %s/%s\n", ClassroomMetadataPath, autogradeWorkflowPath, org, repoName)
+		_, _ = fmt.Fprintf(out, "wrote %s and %s in %s/%s (autograder %q)\n",
+			ClassroomMetadataPath, autogradeWorkflowPath, org, repoName, autograderName)
 	}
 
-	// 5) report success.
+	// 6) report success.
 	return reportAccepted(out, fullName, htmlURL)
 }
 

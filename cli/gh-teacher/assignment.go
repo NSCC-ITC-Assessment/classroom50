@@ -52,6 +52,7 @@ func assignmentAddCmd() *cobra.Command {
 		due         string
 		mode        string
 		testsPath   string
+		autograder  string
 	)
 
 	cmd := &cobra.Command{
@@ -70,6 +71,12 @@ func assignmentAddCmd() *cobra.Command {
 			"used. The template repo must be marked `is_template: true` (set\n" +
 			"in Settings → \"Template repository\"); if your account can't see\n" +
 			"the repo, the CLI returns the cross-org visibility message.\n\n" +
+			"--autograder selects which workflow students fetch on accept and\n" +
+			"refresh on every submit; the name resolves to\n" +
+			"<classroom>/autograders/<name>.yml in the config repo. The default\n" +
+			"is `default` (scaffolded by `gh teacher classroom add`). The\n" +
+			"referenced file must exist at write time — a typo'd name is\n" +
+			"rejected before the assignment lands.\n\n" +
 			"--tests, if set, reads a local JSON file whose top-level value is\n" +
 			"a JSON array of test entries (test-name, test-type ∈\n" +
 			"{input_output, run_command}, command, timeout, max-score, plus\n" +
@@ -113,6 +120,13 @@ func assignmentAddCmd() *cobra.Command {
 			if modeVal != assignmentModeIndividual {
 				return fmt.Errorf("invalid --mode %q: only `individual` is supported (group assignments are planned for a future release)", modeVal)
 			}
+			autograderVal := strings.TrimSpace(autograder)
+			if autograderVal == "" {
+				autograderVal = defaultAutograderName
+			}
+			if err := validateAutograderName(autograderVal); err != nil {
+				return err
+			}
 			dueVal, err := normalizeDueDate(strings.TrimSpace(due))
 			if err != nil {
 				return err
@@ -132,7 +146,7 @@ func assignmentAddCmd() *cobra.Command {
 			}
 			return runAssignmentAdd(client, cmd.OutOrStdout(), cmd.ErrOrStderr(),
 				org, classroom, slug, nameVal, strings.TrimSpace(description),
-				tmplArg, dueVal, modeVal, tests)
+				tmplArg, dueVal, modeVal, autograderVal, tests)
 		},
 	}
 
@@ -142,6 +156,7 @@ func assignmentAddCmd() *cobra.Command {
 	cmd.Flags().StringVar(&due, "due", "", "Optional ISO-8601 due date (e.g. 2026-09-15T23:59:00-04:00)")
 	cmd.Flags().StringVar(&mode, "mode", assignmentModeIndividual, "Assignment mode: only `individual` is supported (group assignments are planned for a future release)")
 	cmd.Flags().StringVar(&testsPath, "tests", "", "Path to a local JSON file containing a tests array (validated against the autograding-tests schema before write)")
+	cmd.Flags().StringVar(&autograder, "autograder", defaultAutograderName, "Autograder workflow this assignment opts into; resolves to <classroom>/autograders/<name>.yml in the config repo")
 	return cmd
 }
 
@@ -277,8 +292,9 @@ func runAssignmentList(client *api.RESTClient, out, errOut io.Writer, org, class
 // formatAssignmentListJSON marshals the bare entries array (no
 // `{schema, assignments}` envelope) with the on-disk pretty-print
 // + trailing newline so terminal output and `jq` pipes behave
-// identically. Nil entries / nil Tests normalize to `[]` so
-// consumers can index without nil guards.
+// identically. Nil entries / nil Tests normalize to `[]` and empty
+// Autograder normalizes to "default" so consumers can index without
+// nil guards or the v0.1 → v0.2 forward-compat shim.
 func formatAssignmentListJSON(entries []assignmentEntry) ([]byte, error) {
 	if entries == nil {
 		entries = []assignmentEntry{}
@@ -286,6 +302,9 @@ func formatAssignmentListJSON(entries []assignmentEntry) ([]byte, error) {
 	for i := range entries {
 		if entries[i].Tests == nil {
 			entries[i].Tests = []assignmentTest{}
+		}
+		if entries[i].Autograder == "" {
+			entries[i].Autograder = defaultAutograderName
 		}
 	}
 	return encodeJSONPretty(entries)
@@ -319,15 +338,20 @@ func assignmentsFilePath(classroom string) string {
 //  2. Validate the template repo (visible, is_template:true, resolve
 //     @branch fallback to default_branch).
 //  3. Validate the entry shape against the on-disk schema.
-//  4. commitTree loop: read assignments.json, upsert by slug, encode,
+//  4. commitTree loop: read assignments.json, verify the referenced
+//     autograder file exists at parentSHA, upsert by slug, encode,
 //     PATCH the ref with fast-forward.
 //
 // Steps 1-3 run before the commit loop so a template-visibility
 // failure or a malformed tests file never produces a partial-state
-// commit. The rebase loop handles concurrent edits to *different*
-// slugs cleanly; same-slug races are last-writer-wins, with both
-// commits visible in git history for `git revert` recovery.
-func runAssignmentAdd(client *api.RESTClient, out, errOut io.Writer, org, classroom, slug, name, description string, tmpl templateArg, due, mode string, tests []assignmentTest) error {
+// commit. The autograder existence probe runs inside the build
+// callback against each attempt's parent SHA so a teacher who
+// concurrently deletes the referenced autograder loses cleanly on
+// retry rather than landing a dangling reference. The rebase loop
+// handles concurrent edits to *different* slugs cleanly; same-slug
+// races are last-writer-wins, with both commits visible in git
+// history for `git revert` recovery.
+func runAssignmentAdd(client *api.RESTClient, out, errOut io.Writer, org, classroom, slug, name, description string, tmpl templateArg, due, mode, autograder string, tests []assignmentTest) error {
 	branch, err := resolveConfigRepoBranch(client, org)
 	if err != nil {
 		return err
@@ -345,6 +369,7 @@ func runAssignmentAdd(client *api.RESTClient, out, errOut io.Writer, org, classr
 		Template:    resolved,
 		Due:         due,
 		Mode:        mode,
+		Autograder:  autograder,
 		Tests:       tests,
 	}
 	if entry.Tests == nil {
@@ -356,6 +381,22 @@ func runAssignmentAdd(client *api.RESTClient, out, errOut io.Writer, org, classr
 
 	var action string
 	build := func(parentSHA string) (map[string]string, error) {
+		// Verify the autograder file exists at the parent SHA
+		// before encoding the new entry. A `--autograder default`
+		// against a classroom where someone deleted default.yml
+		// loses here with an actionable message; without this
+		// guard the assignment writes successfully and every
+		// student's accept 404s on the Pages fetch later.
+		exists, err := autograderExists(client, org, configRepoName, classroom, entry.Autograder, parentSHA)
+		if err != nil {
+			return nil, fmt.Errorf("check autograder %s/%s/%s: %w",
+				org, configRepoName, autograderFilePath(classroom, entry.Autograder), err)
+		}
+		if !exists {
+			return nil, fmt.Errorf("autograder %q does not exist at %s/%s/%s — create it (or pass --autograder <existing-name>) before registering this assignment",
+				entry.Autograder, org, configRepoName, autograderFilePath(classroom, entry.Autograder))
+		}
+
 		file, err := loadAssignments(client, org, classroom, parentSHA)
 		if err != nil {
 			return nil, err
@@ -379,9 +420,9 @@ func runAssignmentAdd(client *api.RESTClient, out, errOut io.Writer, org, classr
 		return err
 	}
 
-	_, _ = fmt.Fprintf(out, "%s/%s/%s: %s %s (template %s/%s@%s, %d test(s))\n",
+	_, _ = fmt.Fprintf(out, "%s/%s/%s: %s %s (template %s/%s@%s, autograder %s, %d test(s))\n",
 		org, configRepoName, assignmentsFilePath(classroom), action, slug,
-		resolved.Owner, resolved.Repo, resolved.Branch, len(entry.Tests))
+		resolved.Owner, resolved.Repo, resolved.Branch, entry.Autograder, len(entry.Tests))
 	_, _ = fmt.Fprintf(errOut, "Students can now run: gh student accept %s %s %s\n", org, classroom, slug)
 	return nil
 }

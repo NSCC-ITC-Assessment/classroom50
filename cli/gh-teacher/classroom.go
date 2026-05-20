@@ -27,11 +27,11 @@ var shortNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{1,38}$`)
 
 // Schema sentinels for the four scaffolded files. Every schema-aware
 // reader (the CLI writers themselves, the collect-scores workflow,
-// the future autograde workflow §4.3, and any later consumer) MUST
-// branch on the schema field before reading so today's readers can
-// handle files produced by future schema versions without a flag
-// day. Content-agnostic copiers like publish-pages.yml don't need
-// the check.
+// the autograde library, and any later consumer) MUST branch on
+// the schema field before reading so today's readers can handle
+// files produced by future schema versions without a flag day.
+// Content-agnostic copiers like publish-pages.yml don't need the
+// check.
 const (
 	classroomSchemaV1   = "classroom50/classroom/v1"
 	assignmentsSchemaV1 = "classroom50/assignments/v1"
@@ -216,6 +216,13 @@ func classroomScaffold(org, shortName, name, term string) (map[string]string, er
 		shortName + "/assignments.json": string(assignmentsBytes),
 		shortName + "/students.csv":     studentsCSVHeader,
 		shortName + "/scores.json":      string(scoresBytes),
+		// Fifth file is the default autograder workflow students
+		// fetch from Pages on accept/submit. Lands here so a
+		// teacher can hand-edit it (or drop siblings) without
+		// re-running classroom add; the file is hand-editable and
+		// the CLI never rewrites it on subsequent classroom
+		// commands.
+		autograderFilePath(shortName, defaultAutograderName): defaultAutograderYAML(),
 	}, nil
 }
 

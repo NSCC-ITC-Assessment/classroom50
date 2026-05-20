@@ -39,12 +39,80 @@ func TestParseAssignments_Canonical(t *testing.T) {
 		Template: templateRef{Owner: "cs50", Repo: "hello-template", Branch: "main"},
 		Due:      "2026-09-15T23:59:00-04:00",
 		Mode:     "individual",
+		// parseAssignments normalizes empty Autograder → "default"
+		// so an entry written by v0.1 (no autograder field) lands
+		// here with a uniform value downstream readers can rely on.
+		Autograder: "default",
 		Tests: []assignmentTest{
 			{TestName: "compiles", TestType: "run_command", Command: "make", Timeout: 1, MaxScore: 10},
 		},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("entry mismatch:\n got: %#v\nwant: %#v", got, want)
+	}
+}
+
+func TestParseAssignments_AutograderField(t *testing.T) {
+	// A v0.2 file carries an explicit `autograder` field. The
+	// parser preserves the value verbatim — only the empty-string
+	// case normalizes to the default.
+	in := []byte(`{
+  "schema": "classroom50/assignments/v1",
+  "assignments": [
+    {
+      "slug": "hello",
+      "name": "Hello",
+      "template": { "owner": "cs50", "repo": "hello-template", "branch": "main" },
+      "mode": "individual",
+      "autograder": "io-suite",
+      "tests": []
+    },
+    {
+      "slug": "intro",
+      "name": "Intro",
+      "template": { "owner": "cs50", "repo": "intro-template", "branch": "main" },
+      "mode": "individual",
+      "tests": []
+    }
+  ]
+}`)
+	file, err := parseAssignments(in)
+	if err != nil {
+		t.Fatalf("parseAssignments: %v", err)
+	}
+	if got := file.Assignments[0].Autograder; got != "io-suite" {
+		t.Errorf("explicit autograder dropped: got %q, want %q", got, "io-suite")
+	}
+	if got := file.Assignments[1].Autograder; got != "default" {
+		t.Errorf("missing autograder field should normalize to %q, got %q", "default", got)
+	}
+}
+
+func TestParseAssignments_RejectsInvalidAutograder(t *testing.T) {
+	// A hand-edit or malicious payload that snuck a path-traversal
+	// value into the autograder field MUST be rejected — the value
+	// flows into both a path segment in the contents API (for the
+	// teacher-side existence probe) and into a Pages URL the
+	// student CLI fetches.
+	in := []byte(`{
+  "schema": "classroom50/assignments/v1",
+  "assignments": [
+    {
+      "slug": "hello",
+      "name": "Hello",
+      "template": { "owner": "cs50", "repo": "hello-template", "branch": "main" },
+      "mode": "individual",
+      "autograder": "../students.csv",
+      "tests": []
+    }
+  ]
+}`)
+	_, err := parseAssignments(in)
+	if err == nil {
+		t.Fatalf("expected error for path-traversal autograder, got nil")
+	}
+	if !strings.Contains(err.Error(), "invalid autograder") {
+		t.Errorf("err = %q, want substring 'invalid autograder'", err)
 	}
 }
 
@@ -189,6 +257,12 @@ func TestEncodeAssignments_NilTestsBecomesEmptyArray(t *testing.T) {
 }
 
 func TestEncodeAssignments_RoundTrip(t *testing.T) {
+	// Two explicit Autograder values exercise (a) the default
+	// scaffold and (b) a teacher-chosen non-default. A previous
+	// version of this test omitted Autograder entirely, which
+	// only passed because encodeAssignments silently mutated the
+	// caller's slice through a shared backing array — the round-
+	// trip assertion was passing for the wrong reason.
 	original := assignmentsJSON{
 		Schema: assignmentsSchemaV1,
 		Assignments: []assignmentEntry{
@@ -199,15 +273,57 @@ func TestEncodeAssignments_RoundTrip(t *testing.T) {
 				Template:    templateRef{Owner: "cs50", Repo: "hello-template", Branch: "main"},
 				Due:         "2026-09-15T23:59:00-04:00",
 				Mode:        "individual",
+				Autograder:  "default",
 				Tests: []assignmentTest{
 					{TestName: "compiles", TestType: "run_command", Command: "make", Timeout: 1, MaxScore: 10},
 					{TestName: "greets-world", TestType: "input_output", Command: "./hello", Input: "World\n", ExpectedOutput: "Hello, World!", ComparisonMethod: "exact", Timeout: 1, MaxScore: 20},
 				},
 			},
 			{
-				Slug:     "intro",
-				Name:     "Intro",
-				Template: templateRef{Owner: "cs50", Repo: "intro-template", Branch: "main"},
+				Slug:       "intro",
+				Name:       "Intro",
+				Template:   templateRef{Owner: "cs50", Repo: "intro-template", Branch: "main"},
+				Mode:       "individual",
+				Autograder: "io-suite",
+				Tests:      []assignmentTest{},
+			},
+		},
+	}
+	// Snapshot for the no-mutation assertion below.
+	snapshot := assignmentsJSON{
+		Schema:      original.Schema,
+		Assignments: append([]assignmentEntry(nil), original.Assignments...),
+	}
+	encoded, err := encodeAssignments(original)
+	if err != nil {
+		t.Fatalf("encodeAssignments: %v", err)
+	}
+	if !reflect.DeepEqual(original, snapshot) {
+		t.Fatalf("encodeAssignments mutated its caller:\nbefore: %#v\nafter:  %#v", snapshot, original)
+	}
+	round, err := parseAssignments(encoded)
+	if err != nil {
+		t.Fatalf("round-trip parse failed: %v\nencoded:\n%s", err, encoded)
+	}
+	if !reflect.DeepEqual(round, original) {
+		t.Fatalf("round-trip mismatch:\noriginal: %#v\nround:    %#v\nencoded:\n%s", original, round, encoded)
+	}
+}
+
+func TestEncodeAssignments_NormalizesEmptyAutograder(t *testing.T) {
+	// A v0.1 file written before the field existed parses with
+	// Autograder="" (no JSON key present). encodeAssignments
+	// normalizes the empty value to "default" on the way out, so
+	// the next on-disk shape is always explicit. The normalization
+	// runs against a local copy — verify the caller's slice is
+	// not silently mutated.
+	original := assignmentsJSON{
+		Schema: assignmentsSchemaV1,
+		Assignments: []assignmentEntry{
+			{
+				Slug:     "hello",
+				Name:     "Hello",
+				Template: templateRef{Owner: "cs50", Repo: "hello-template", Branch: "main"},
 				Mode:     "individual",
 				Tests:    []assignmentTest{},
 			},
@@ -217,12 +333,12 @@ func TestEncodeAssignments_RoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("encodeAssignments: %v", err)
 	}
-	round, err := parseAssignments(encoded)
-	if err != nil {
-		t.Fatalf("round-trip parse failed: %v\nencoded:\n%s", err, encoded)
+	if original.Assignments[0].Autograder != "" {
+		t.Errorf("encodeAssignments mutated caller's Autograder = %q, want %q (no-mutation contract)",
+			original.Assignments[0].Autograder, "")
 	}
-	if !reflect.DeepEqual(round, original) {
-		t.Fatalf("round-trip mismatch:\noriginal: %#v\nround:    %#v\nencoded:\n%s", original, round, encoded)
+	if !strings.Contains(string(encoded), `"autograder": "default"`) {
+		t.Errorf("encoded output should normalize empty autograder to %q, got:\n%s", "default", encoded)
 	}
 }
 
@@ -323,11 +439,12 @@ func TestRemoveAssignment(t *testing.T) {
 
 func TestValidateAssignmentEntry_HappyPath(t *testing.T) {
 	entry := assignmentEntry{
-		Slug:     "hello",
-		Name:     "Hello",
-		Template: templateRef{Owner: "cs50", Repo: "hello-template", Branch: "main"},
-		Mode:     "individual",
-		Tests:    []assignmentTest{},
+		Slug:       "hello",
+		Name:       "Hello",
+		Template:   templateRef{Owner: "cs50", Repo: "hello-template", Branch: "main"},
+		Mode:       "individual",
+		Autograder: "default",
+		Tests:      []assignmentTest{},
 	}
 	if err := validateAssignmentEntry(entry); err != nil {
 		t.Fatalf("expected valid entry to pass, got %v", err)
@@ -336,10 +453,11 @@ func TestValidateAssignmentEntry_HappyPath(t *testing.T) {
 
 func TestValidateAssignmentEntry_Rejects(t *testing.T) {
 	base := assignmentEntry{
-		Slug:     "hello",
-		Name:     "Hello",
-		Template: templateRef{Owner: "cs50", Repo: "hello-template", Branch: "main"},
-		Mode:     "individual",
+		Slug:       "hello",
+		Name:       "Hello",
+		Template:   templateRef{Owner: "cs50", Repo: "hello-template", Branch: "main"},
+		Mode:       "individual",
+		Autograder: "default",
 	}
 	cases := []struct {
 		name        string
@@ -357,6 +475,12 @@ func TestValidateAssignmentEntry_Rejects(t *testing.T) {
 		{"empty template owner", func(e *assignmentEntry) { e.Template.Owner = "" }, "template"},
 		{"empty template repo", func(e *assignmentEntry) { e.Template.Repo = "" }, "template"},
 		{"empty template branch", func(e *assignmentEntry) { e.Template.Branch = "" }, "branch"},
+		{"empty autograder", func(e *assignmentEntry) { e.Autograder = "" }, "autograder"},
+		// Same path-traversal guard the parse-time validator
+		// enforces — validateAssignmentEntry must catch the value
+		// at write time *before* it reaches the contents API.
+		{"autograder with path traversal", func(e *assignmentEntry) { e.Autograder = "../students.csv" }, "invalid autograder"},
+		{"autograder with uppercase", func(e *assignmentEntry) { e.Autograder = "Default" }, "invalid autograder"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

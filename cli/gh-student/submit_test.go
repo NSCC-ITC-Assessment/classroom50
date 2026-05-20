@@ -92,3 +92,48 @@ func TestParseGitHubRemote_ErrorMentionsShape(t *testing.T) {
 		t.Errorf("error should hint at expected shape, got %q", err)
 	}
 }
+
+func TestResolveSubmitOwner(t *testing.T) {
+	// Pins the v0.1 → v0.2 forward-compat ordering:
+	//   - explicit config.owner is preferred,
+	//   - the remote URL owner is the fallback,
+	//   - both empty is a clear error pointing the student at
+	//     `gh student accept` to refresh metadata.
+	cases := []struct {
+		name          string
+		configOwner   string
+		fallbackOwner string
+		wantOwner     string
+		wantErrPart   string // empty → expect success
+	}{
+		{"v0.2 accept (config.owner set)", "cs50-fall-2026", "", "cs50-fall-2026", ""},
+		{"v0.2 with both populated prefers config.owner", "cs50-fall-2026", "elsewhere", "cs50-fall-2026", ""},
+		{"v0.1 accept (no config block) falls back to remote", "", "cs50-fall-2026", "cs50-fall-2026", ""},
+		{"both empty surfaces the re-accept guidance", "", "", "", "gh student accept"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &ClassroomConfig{
+				Classroom:  "cs-principles",
+				Assignment: "hello",
+			}
+			cfg.Config.Owner = tc.configOwner
+			got, err := resolveSubmitOwner(cfg, tc.fallbackOwner)
+			if tc.wantErrPart != "" {
+				if err == nil {
+					t.Fatalf("expected error containing %q, got nil", tc.wantErrPart)
+				}
+				if !strings.Contains(err.Error(), tc.wantErrPart) {
+					t.Fatalf("err = %q, want substring %q", err.Error(), tc.wantErrPart)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("resolveSubmitOwner: %v", err)
+			}
+			if got != tc.wantOwner {
+				t.Errorf("resolveSubmitOwner = %q, want %q", got, tc.wantOwner)
+			}
+		})
+	}
+}

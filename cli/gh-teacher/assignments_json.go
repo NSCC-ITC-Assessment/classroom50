@@ -50,13 +50,14 @@ type assignmentsJSON struct {
 
 // assignmentEntry is one row in assignments.json. Field order matches
 // the natural reading order for a teacher inspecting the file:
-// identity → template → schedule/mode → tests.
+// identity → template → schedule/mode → autograder → tests.
 //
 // Description and Due use `omitempty` so optional flags produce a
-// clean file. Mode is always emitted (it's required) so a future
-// second mode value doesn't have to disambiguate "absent → individual"
-// from "explicit individual". Tests omits omitempty so the workflow's
-// `fromJSON` matrix step can index without nil guards.
+// clean file. Mode and Autograder are always emitted (both are
+// required) so a future second mode value or by-URL autograder ref
+// doesn't have to disambiguate "absent → default" from "explicit
+// default" on the wire. Tests omits omitempty so the autograde
+// library's matrix step can index without nil guards.
 type assignmentEntry struct {
 	Slug        string           `json:"slug"`
 	Name        string           `json:"name"`
@@ -64,6 +65,7 @@ type assignmentEntry struct {
 	Template    templateRef      `json:"template"`
 	Due         string           `json:"due,omitempty"`
 	Mode        string           `json:"mode"`
+	Autograder  string           `json:"autograder"`
 	Tests       []assignmentTest `json:"tests"`
 }
 
@@ -145,6 +147,15 @@ func parseAssignments(data []byte) (assignmentsJSON, error) {
 		if file.Assignments[i].Tests == nil {
 			file.Assignments[i].Tests = []assignmentTest{}
 		}
+		// A v0.1 entry written before the `autograder` field
+		// existed lands here with an empty value; normalize to
+		// "default" so downstream callers (assignment list --json,
+		// the autograde library on the student side) see a
+		// uniform shape. validateExistingEntry already accepted
+		// the empty value as a forward-compat allowance.
+		if file.Assignments[i].Autograder == "" {
+			file.Assignments[i].Autograder = defaultAutograderName
+		}
 	}
 	return file, nil
 }
@@ -152,22 +163,40 @@ func parseAssignments(data []byte) (assignmentsJSON, error) {
 // encodeAssignments serializes file via encodeJSONPretty (2-space
 // indent, trailing newline) so on-disk diffs stay stable across CLI
 // versions. Normalizes nil → [] for Assignments and per-entry Tests
-// so the wire shape is always `[]` not `null`. Per-entry validation
-// is the caller's responsibility — only the whole-file size cap
-// fires here (see maxAssignmentsBytes).
+// so the wire shape is always `[]` not `null`; normalizes empty
+// Autograder → defaultAutograderName so a hand-edited file missing
+// the field round-trips cleanly. Per-entry validation is the
+// caller's responsibility — only the whole-file size cap fires
+// here (see maxAssignmentsBytes).
+//
+// Normalization runs on a local copy so callers never observe
+// silent slice mutation. Pre-refactor this routine mutated the
+// caller's slice via the shared backing array, which made the
+// round-trip test pass for the wrong reason.
 func encodeAssignments(file assignmentsJSON) ([]byte, error) {
-	if file.Schema == "" {
-		file.Schema = assignmentsSchemaV1
+	out := file
+	if out.Schema == "" {
+		out.Schema = assignmentsSchemaV1
 	}
-	if file.Assignments == nil {
-		file.Assignments = []assignmentEntry{}
-	}
-	for i := range file.Assignments {
-		if file.Assignments[i].Tests == nil {
-			file.Assignments[i].Tests = []assignmentTest{}
+	if len(out.Assignments) == 0 {
+		out.Assignments = []assignmentEntry{}
+	} else {
+		// Copy the backing array so the normalization below
+		// (Tests []assignmentTest, Autograder default) doesn't
+		// leak back into the caller's slice.
+		copied := make([]assignmentEntry, len(out.Assignments))
+		copy(copied, out.Assignments)
+		out.Assignments = copied
+		for i := range out.Assignments {
+			if out.Assignments[i].Tests == nil {
+				out.Assignments[i].Tests = []assignmentTest{}
+			}
+			if out.Assignments[i].Autograder == "" {
+				out.Assignments[i].Autograder = defaultAutograderName
+			}
 		}
 	}
-	data, err := encodeJSONPretty(file)
+	data, err := encodeJSONPretty(out)
 	if err != nil {
 		return nil, err
 	}
@@ -236,6 +265,12 @@ func validateAssignmentEntry(entry assignmentEntry) error {
 	if entry.Template.Branch == "" {
 		return errors.New("template branch must not be empty")
 	}
+	if entry.Autograder == "" {
+		return fmt.Errorf("autograder must not be empty (default is %q)", defaultAutograderName)
+	}
+	if err := validateAutograderName(entry.Autograder); err != nil {
+		return err
+	}
 	if err := validateAssignmentTests(entry.Tests); err != nil {
 		return err
 	}
@@ -268,6 +303,17 @@ func validateExistingEntry(entry assignmentEntry) error {
 	}
 	if entry.Template.Branch == "" {
 		return fmt.Errorf("entry %q has empty template branch", entry.Slug)
+	}
+	// Autograder normalizes to "default" on read so a v0.2 entry
+	// authored before the field existed still parses; downstream
+	// readers can rely on a non-empty value. The strict pattern
+	// check still runs because a hand-edit could insert a malicious
+	// name that the on-encode normalization would otherwise round-trip.
+	if entry.Autograder == "" {
+		entry.Autograder = defaultAutograderName
+	}
+	if !shortNamePattern.MatchString(entry.Autograder) {
+		return fmt.Errorf("entry %q has invalid autograder %q (must match %s)", entry.Slug, entry.Autograder, shortNamePatternDescription)
 	}
 	if err := validateAssignmentTests(entry.Tests); err != nil {
 		return fmt.Errorf("entry %q: %w", entry.Slug, err)
