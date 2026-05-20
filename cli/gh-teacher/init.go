@@ -76,7 +76,7 @@ func initCmd() *cobra.Command {
 			if err := commitSkeleton(client, out, org, configRepoName, branch, created); err != nil {
 				return err
 			}
-			if err := enablePages(client, out, org, configRepoName); err != nil {
+			if err := enablePages(client, out, errOut, org, configRepoName); err != nil {
 				return err
 			}
 			if err := applyBranchProtection(client, out, org, configRepoName, branch); err != nil {

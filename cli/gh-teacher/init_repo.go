@@ -83,9 +83,14 @@ func ensureConfigRepo(client *api.RESTClient, org string) (repo configRepo, crea
 	return repo, true, nil
 }
 
-// enablePages turns on Actions-built Pages. 409 → already
-// configured (treated as success for idempotency).
-func enablePages(client *api.RESTClient, out io.Writer, owner, repo string) error {
+// enablePages turns on Actions-built Pages and sets the site
+// visibility to public — students and the autograde library fetch
+// `assignments.json` and per-classroom autograder YAMLs from the
+// Pages URL unauthenticated. 409 on create → "already enabled";
+// visibility PUT fires either way so re-runs reconcile a
+// previously-private site. Success lines land on `out`; the
+// visibility step warns to `errOut` if the API rejects it.
+func enablePages(client *api.RESTClient, out, errOut io.Writer, owner, repo string) error {
 	body, err := json.Marshal(struct {
 		BuildType string `json:"build_type"`
 	}{BuildType: "workflow"})
@@ -93,14 +98,45 @@ func enablePages(client *api.RESTClient, out io.Writer, owner, repo string) erro
 		return fmt.Errorf("encode body: %w", err)
 	}
 	path := fmt.Sprintf("repos/%s/%s/pages", url.PathEscape(owner), url.PathEscape(repo))
-	if err := client.Post(path, bytes.NewReader(body), nil); err != nil {
-		if isHTTPStatus(err, http.StatusConflict) {
-			_, _ = fmt.Fprintf(out, "%s/%s: Pages already enabled\n", owner, repo)
-			return nil
-		}
+	switch err := client.Post(path, bytes.NewReader(body), nil); {
+	case err == nil:
+		_, _ = fmt.Fprintf(out, "%s/%s: Pages enabled (build_type=workflow)\n", owner, repo)
+	case isHTTPStatus(err, http.StatusConflict):
+		_, _ = fmt.Fprintf(out, "%s/%s: Pages already enabled\n", owner, repo)
+	default:
 		return fmt.Errorf("POST %s: %w", path, err)
 	}
-	_, _ = fmt.Fprintf(out, "%s/%s: Pages enabled (build_type=workflow)\n", owner, repo)
+	return setPagesPublic(client, out, errOut, owner, repo)
+}
+
+// setPagesPublic PUTs `{"public": true}` to /pages. The field
+// isn't in the public OpenAPI body schema but the endpoint
+// accepts it — same field the UI's Visibility radio drives. 204
+// → success on `out`; any other status emits a `Warning:` to
+// `errOut` and returns nil so a quirky org policy doesn't fail
+// the whole init.
+func setPagesPublic(client *api.RESTClient, out, errOut io.Writer, owner, repo string) error {
+	body, err := json.Marshal(struct {
+		Public bool `json:"public"`
+	}{Public: true})
+	if err != nil {
+		return fmt.Errorf("encode body: %w", err)
+	}
+	path := fmt.Sprintf("repos/%s/%s/pages", url.PathEscape(owner), url.PathEscape(repo))
+	resp, err := client.Request(http.MethodPut, path, bytes.NewReader(body))
+	if err != nil {
+		_, _ = fmt.Fprintf(errOut, "Warning: %s/%s: couldn't set Pages visibility to public (%v); toggle it manually at https://github.com/%s/%s/settings/pages → Visibility if students see 404s on the Pages URL\n",
+			owner, repo, err, owner, repo)
+		return nil
+	}
+	defer func() { _ = resp.Body.Close() }()
+	_, _ = io.Copy(io.Discard, resp.Body)
+	if resp.StatusCode != http.StatusNoContent {
+		_, _ = fmt.Fprintf(errOut, "Warning: %s/%s: PUT /pages returned HTTP %d while setting visibility; toggle it manually at https://github.com/%s/%s/settings/pages → Visibility if students see 404s on the Pages URL\n",
+			owner, repo, resp.StatusCode, owner, repo)
+		return nil
+	}
+	_, _ = fmt.Fprintf(out, "%s/%s: Pages visibility set to public\n", owner, repo)
 	return nil
 }
 
