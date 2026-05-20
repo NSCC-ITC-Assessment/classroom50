@@ -17,9 +17,11 @@ name: Classroom50 Autograde Library
 #      `statuses: write` (commit status), or `permissions: inherit`.
 #
 # On completion this library publishes a Release at the submit tag
-# carrying an `autograde.json` asset and posts a
-# `classroom50/autograde` commit status. Both are the contract
-# `collect-scores.yml` reads to populate `<classroom>/scores.json`.
+# carrying a `result.json` asset and posts a `classroom50/autograde`
+# commit status. Both are the contract `collect-scores.yml` reads
+# to populate `<classroom>/scores.json`. The asset name is fixed
+# (`result.json`) so the collector can address the latest result
+# deterministically via `/repos/.../releases/latest`.
 
 on:
   workflow_call:
@@ -206,8 +208,8 @@ jobs:
           # `failure` — `continue-on-error: true` keeps the job
           # alive either way) into a uniform result file consumed
           # by the report job. Unknown test-types record passed=false
-          # so the failure flows through autograde.json + the
-          # release body + the commit status uniformly.
+          # so the failure flows through result.json + the release
+          # body + the commit status uniformly.
           import json
           import os
           import pathlib
@@ -261,8 +263,8 @@ jobs:
           path: results
 
       - id: build
-        name: Build autograde.json
-        # Skipped on load failure — autograde.json can't be built
+        name: Build result.json
+        # Skipped on load failure — result.json can't be built
         # without the classroom / assignment / max_score outputs.
         # The Post commit status step below uses the
         # `steps.build.outputs.* || 'error'` fallbacks to surface
@@ -280,7 +282,7 @@ jobs:
           RUN_RESULT: ${{ needs.run.result }}
         shell: python3 {0}
         run: |
-          # Aggregate per-test artifacts into the autograde.json
+          # Aggregate per-test artifacts into the result.json
           # contract: collect-scores.yml reads this asset from each
           # submit-tag release verbatim, so the keys and shape are
           # the public contract.
@@ -326,7 +328,7 @@ jobs:
           commit_path = f"commit/{commit}"
           repo_url = f"{server_url}/{repository}"
           payload = {
-              "schema": "classroom50/autograde/v1",
+              "schema": "classroom50/result/v1",
               "classroom": classroom,
               "assignment": assignment,
               "usernames": usernames,
@@ -339,7 +341,7 @@ jobs:
               "max-score": max_score,
               "tests": tests,
           }
-          pathlib.Path("autograde.json").write_text(json.dumps(payload, indent=2) + "\n")
+          pathlib.Path("result.json").write_text(json.dumps(payload, indent=2) + "\n")
           print(json.dumps(payload, indent=2))
 
           # Emit summary outputs for the commit status / release body.
@@ -430,10 +432,10 @@ jobs:
             gh release edit "${SUBMISSION_TAG}" --repo "${OWNER_REPO}" \
               --title "Submission ${SUBMISSION_TAG}" \
               --notes-file release-body.md
-            gh release upload "${SUBMISSION_TAG}" autograde.json \
+            gh release upload "${SUBMISSION_TAG}" result.json \
               --repo "${OWNER_REPO}" --clobber
           else
-            gh release create "${SUBMISSION_TAG}" autograde.json \
+            gh release create "${SUBMISSION_TAG}" result.json \
               --repo "${OWNER_REPO}" \
               --title "Submission ${SUBMISSION_TAG}" \
               --notes-file release-body.md

@@ -12,8 +12,8 @@ This repo holds:
   - `autograders/` — per-classroom autograder workflow YAMLs (semi-public; published via GitHub Pages so `gh student accept` / `gh student submit` can fetch them unauthenticated). `default.yml` is scaffolded automatically — a thin wrapper around the reusable `foundation50/classroom50/.github/workflows/autograde-library.yml`. Hand-editable; drop sibling `<name>.yml` files for bespoke graders and reference them by name from `assignments.json`'s `autograder` field.
 - `.github/workflows/`:
   - `publish-pages.yml` — builds the Pages site from public / semi-public paths
-  - `collect-scores.yml` — teacher-triggered (manual or nightly); polls student repos and writes into `scores.json`
-- `.github/scripts/collect_scores.py` — Python helper used by `collect-scores.yml`
+  - `collect-scores.yml` — teacher-triggered (manual via `workflow_dispatch`, nightly via cron). Calls `collect_scores.py`, then commits any updated `*/scores.json` files back to the repo.
+- `.github/scripts/collect_scores.py` — the score collector. Roster-driven: walks every `(student, assignment)` pair from `<classroom>/students.csv` × `<classroom>/assignments.json` and asks GitHub for that pair's `<classroom>-<assignment>-<username>` repo's latest release. Each release carries a `result.json` asset (produced by the autograde library); the collector schema-validates it, checks the embedded `(classroom, assignment, username)` triple against the source repo's expected identity, and upserts entries into `<classroom>/scores.json`. Honors `"override": true` so teacher manual corrections never get overwritten. Per-classroom writes are atomic (`scores.json.tmp` → `os.replace`). A 404 from any expected repo's latest-release endpoint is not an error — it just means the student hasn't accepted or submitted yet; the collector logs a per-assignment "X of Y submitted" summary so teachers see roster coverage at a glance.
 
 Bootstrapped by `gh teacher init <org>`. From there:
 

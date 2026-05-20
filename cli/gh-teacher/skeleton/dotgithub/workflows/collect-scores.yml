@@ -1,10 +1,12 @@
 name: Collect Scores
 
-# Teacher-triggered workflow that polls every <classroom>-<assignment>-*
-# repo in the org, downloads autograde.json from each latest submit
-# release, and writes a batched update into <classroom>/scores.json.
-# Single-writer by design — no concurrent ingest, no per-student
-# dispatch event, no broad cross-repo write secret.
+# Teacher-triggered workflow. Iterates the (student, assignment)
+# Cartesian product from <classroom>/students.csv ×
+# <classroom>/assignments.json, asks GitHub for each expected
+# `<classroom>-<assignment>-<username>` repo's latest release, and
+# downloads `result.json` from it. Single-writer by design — no
+# concurrent ingest, no per-student dispatch event, no broad
+# cross-repo write secret.
 
 on:
   workflow_dispatch:
@@ -21,7 +23,7 @@ permissions:
   contents: write       # write scores.json + commit
 
 concurrency:
-  group: collect-${{ inputs.classroom || 'all' }}
+  group: collect-${{ github.event.inputs.classroom || 'all' }}
   cancel-in-progress: false
 
 jobs:
@@ -29,13 +31,24 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - name: Collect scores (placeholder)
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Collect scores
         env:
+          # Read-only PAT scoped to `Contents: read` on
+          # <classroom>-* student repos. Required for the
+          # per-repo `releases/latest` + `result.json` asset
+          # downloads. Rotated via
+          # `gh teacher rotate-collect-token <org>`.
           CLASSROOM50_COLLECT_TOKEN: ${{ secrets.CLASSROOM50_COLLECT_TOKEN }}
-          CLASSROOM_FILTER: ${{ inputs.classroom }}
-        run: |
-          echo "::warning::collect-scores is not yet wired up."
-          python .github/scripts/collect_scores.py
+          # Optional restriction to a single classroom; empty
+          # means "collect all classrooms in this config repo".
+          CLASSROOM_FILTER: ${{ github.event.inputs.classroom || '' }}
+        run: python3 .github/scripts/collect_scores.py
+
       - name: Commit and push
         run: |
           set -euo pipefail

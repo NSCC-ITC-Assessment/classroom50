@@ -286,7 +286,7 @@ func fetchAutograderWorkflowFromURL(ctx context.Context, rawURL, name string) (A
 	// bytes are well-formed YAML without imposing schema on the
 	// workflow body (teachers can write arbitrarily shaped
 	// autograders, so long as they satisfy the autograder
-	// contract — submit-tag trigger, `autograde.json` on the
+	// contract — submit-tag trigger, `result.json` on the
 	// release, and a `classroom50/autograde` commit status).
 	var sink any
 	if err := yaml.Unmarshal(body, &sink); err != nil {

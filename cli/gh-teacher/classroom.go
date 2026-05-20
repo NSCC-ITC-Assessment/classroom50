@@ -175,8 +175,14 @@ type classroomJSON struct {
 	Org       string `json:"org"`
 }
 
+// scoresJSON is the typed on-disk shape of scores.json. The
+// `Submissions` slice is the per-submission record bag — one entry
+// per (assignment, student) pair, written by `collect-scores.yml`'s
+// `collect_scores.py`. Scaffold-time the slice is empty so the
+// collect script sees a well-formed file from the very first run.
 type scoresJSON struct {
-	Schema string `json:"schema"`
+	Schema      string           `json:"schema"`
+	Submissions []map[string]any `json:"submissions"`
 }
 
 // classroomScaffold returns destination-path → content for the four
@@ -205,7 +211,10 @@ func classroomScaffold(org, shortName, name, term string) (map[string]string, er
 		return nil, fmt.Errorf("encode assignments.json: %w", err)
 	}
 
-	scores := scoresJSON{Schema: scoresSchemaV1}
+	scores := scoresJSON{
+		Schema:      scoresSchemaV1,
+		Submissions: []map[string]any{},
+	}
 	scoresBytes, err := encodeJSONPretty(scores)
 	if err != nil {
 		return nil, fmt.Errorf("encode scores.json: %w", err)

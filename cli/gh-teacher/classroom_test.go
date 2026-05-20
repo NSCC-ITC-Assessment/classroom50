@@ -163,6 +163,18 @@ func TestClassroomScaffold(t *testing.T) {
 	if scores.Schema != scoresSchemaV1 {
 		t.Errorf("scores.json schema = %q, want %q", scores.Schema, scoresSchemaV1)
 	}
+	if scores.Submissions == nil {
+		t.Errorf("scores.json Submissions should be a non-nil empty slice (so it marshals to [], not null) — collect-scores.yml depends on the field being present from scaffold time")
+	}
+	if len(scores.Submissions) != 0 {
+		t.Errorf("scores.json should start empty, got %d submissions", len(scores.Submissions))
+	}
+	// `[]` not `null` on the wire — collect_scores.py expects to be
+	// able to .append() to the array without first having to
+	// normalize a null.
+	if !strings.Contains(files["cs-principles/scores.json"], "\"submissions\": []") {
+		t.Errorf("scores.json should serialize the empty list as [], got:\n%s", files["cs-principles/scores.json"])
+	}
 
 	csv := files["cs-principles/students.csv"]
 	if csv != studentsCSVHeader {

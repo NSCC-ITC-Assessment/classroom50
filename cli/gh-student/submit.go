@@ -28,7 +28,7 @@ func submitCmd() *cobra.Command {
 			"the assignment repo's `main` branch, then push a lightweight\n" +
 			"`submit/<UTC-timestamp>` tag at the same SHA. The autograde\n" +
 			"workflow listens for that tag and publishes a GitHub Release\n" +
-			"with `autograde.json` attached and a scored body shortly after.\n\n" +
+			"with `result.json` attached and a scored body shortly after.\n\n" +
 			"Before snapshotting, the latest instructor `.gitignore` and\n" +
 			"`.github/` (both optional) are fetched from the template recorded\n" +
 			"in `.classroom50.yml`. Then the autograder workflow is\n" +

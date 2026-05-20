@@ -1,0 +1,39 @@
+name: skeleton-scripts CI
+
+# Runs pytest against the Python scripts embedded under
+# cli/gh-teacher/skeleton/dotgithub/scripts/. Tests live alongside
+# the script (cli/gh-teacher/skeleton_tests/) but are NOT embedded
+# into the teacher's classroom50 repo — they only exist to gate
+# changes to the collect-scores logic.
+
+on:
+  push:
+    branches: [main, v1]
+    paths:
+      - 'cli/gh-teacher/skeleton/dotgithub/scripts/**'
+      - 'cli/gh-teacher/skeleton/dotgithub/workflows/collect-scores.yml'
+      - 'cli/gh-teacher/skeleton_tests/**'
+      - '.github/workflows/skeleton-scripts-ci.yaml'
+  pull_request:
+    paths:
+      - 'cli/gh-teacher/skeleton/dotgithub/scripts/**'
+      - 'cli/gh-teacher/skeleton/dotgithub/workflows/collect-scores.yml'
+      - 'cli/gh-teacher/skeleton_tests/**'
+      - '.github/workflows/skeleton-scripts-ci.yaml'
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.x'
+
+      - name: Install test deps
+        run: python -m pip install --quiet pytest
+
+      - name: Run pytest
+        run: python -m pytest cli/gh-teacher/skeleton_tests/ -v

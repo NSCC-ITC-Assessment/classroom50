@@ -45,7 +45,7 @@ func autograderFilePath(classroom, name string) string {
 // `<classroom>/autograders/default.yml` by `gh teacher classroom
 // add`. Thin wrapper around the reusable library: load tests from
 // Pages, run the matrix through the GitHub Classroom autograding
-// actions, publish a submit-tag release with `autograde.json`
+// actions, publish a submit-tag release with `result.json`
 // attached.
 //
 // Hand-editable — teachers who need bespoke autograding either
@@ -60,7 +60,7 @@ func defaultAutograderYAML() string {
 		"# Delegates to the public reusable library: load tests from\n" +
 		"# Pages, run the matrix through the GitHub Classroom\n" +
 		"# autograding actions, publish a submit-tag release carrying\n" +
-		"# autograde.json.\n" +
+		"# result.json.\n" +
 		"\n" +
 		"name: Autograde\n" +
 		"\n" +
