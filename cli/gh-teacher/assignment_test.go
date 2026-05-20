@@ -9,8 +9,8 @@ import (
 )
 
 func TestParseTemplateRef_HappyPaths(t *testing.T) {
-	// Branch == "" is the documented sentinel for "use the template
-	// repo's default_branch" (resolved later in validateTemplateRepo).
+	// Empty branch is the sentinel for "use template's default_branch"
+	// (resolveTemplateBranch fills it in).
 	cases := []struct {
 		in         string
 		wantOwner  string
@@ -21,7 +21,6 @@ func TestParseTemplateRef_HappyPaths(t *testing.T) {
 		{"cs50/hello-template@main", "cs50", "hello-template", "main"},
 		// Branch with `/` is legal — refs/heads/feature/foo is valid.
 		{"cs50/hello-template@feature/foo", "cs50", "hello-template", "feature/foo"},
-		// Branch with `-` and `.`.
 		{"cs50/hello-template@v0.1-beta", "cs50", "hello-template", "v0.1-beta"},
 	}
 	for _, tc := range cases {
@@ -73,22 +72,17 @@ func TestNormalizeDueDate(t *testing.T) {
 		wantOut string
 		wantErr bool
 	}{
-		// Empty in / empty out: --due is optional.
+		// --due is optional.
 		{"empty is optional", "", "", false},
-		// RFC 3339 with timezone offset — the canonical example used
-		// in the `gh teacher assignment add` help text.
+		// RFC 3339 with offset — canonical example.
 		{"with offset", "2026-09-15T23:59:00-04:00", "2026-09-15T23:59:00-04:00", false},
-		// UTC `Z`.
 		{"with Z (UTC)", "2026-09-15T23:59:00Z", "2026-09-15T23:59:00Z", false},
-		// Sub-second precision (RFC 3339).
 		{"sub-second precision", "2026-09-15T23:59:00.123Z", "2026-09-15T23:59:00.123Z", false},
-		// Plain date (no time) — rejected: RFC 3339 requires the time
-		// component, and an assignment due "Tuesday" with no time is
-		// ambiguous in a way we deliberately don't paper over.
+		// Date-only rejected — "due Tuesday with no time" is
+		// ambiguous; require the full RFC 3339 timestamp.
 		{"date only", "2026-09-15", "", true},
-		// Garbage.
 		{"garbage", "next Tuesday", "", true},
-		// Missing timezone offset (RFC 3339 requires Z or ±HH:MM).
+		// RFC 3339 requires Z or ±HH:MM.
 		{"no timezone", "2026-09-15T23:59:00", "", true},
 	}
 	for _, tc := range cases {
@@ -111,10 +105,8 @@ func TestNormalizeDueDate(t *testing.T) {
 }
 
 func TestLoadTestsFile_Empty(t *testing.T) {
-	// Empty --tests path → nil slice. The caller treats nil and
-	// empty-array interchangeably on disk (both render as `[]`), but
-	// the nil return lets the caller distinguish "no flag" from
-	// "explicit empty array" if it ever matters.
+	// Empty --tests path → nil slice (lets the caller distinguish
+	// "no flag" from "explicit empty array").
 	tests, err := loadTestsFile("")
 	if err != nil {
 		t.Fatalf("loadTestsFile(\"\"): %v", err)
@@ -125,14 +117,11 @@ func TestLoadTestsFile_Empty(t *testing.T) {
 }
 
 func TestLoadTestsFile_HappyPath(t *testing.T) {
-	// The fixture exercises every JSON tag on assignmentTest so a typo
-	// on any kebab-case key (e.g. `comparison_method` instead of
-	// `comparison-method`, or `setup-cmd` instead of `setup-command`)
-	// surfaces as a decode mismatch. A `reflect.DeepEqual` against the
-	// full expected slice is the only way to catch tag drift — partial
-	// per-field asserts would leave `setup-command` / `test-description`
-	// silently unverified, since their `omitempty` tags make them
-	// invisible to any test that doesn't populate them.
+	// Fixture exercises every JSON tag on assignmentTest so a typo
+	// on a kebab-case key (e.g. `comparison_method` vs
+	// `comparison-method`) surfaces as a decode mismatch. Use
+	// reflect.DeepEqual against the full slice — partial asserts
+	// would leave `omitempty` fields silently unverified.
 	dir := t.TempDir()
 	path := filepath.Join(dir, "tests.json")
 	contents := `[
@@ -185,9 +174,9 @@ func TestLoadTestsFile_RejectsInvalid(t *testing.T) {
 			wantErrPart: "JSON array",
 		},
 		{
-			// Bare `null` decodes into a nil slice that would silently
-			// become `[]` on the next re-encode — a typo'd tests file
-			// turning into a no-tests assignment without any signal.
+			// Bare `null` would decode to a nil slice and round-trip
+			// back as `[]` on re-encode — a typo'd tests file
+			// silently becoming a no-tests assignment.
 			name:        "null top-level value",
 			contents:    `null`,
 			wantErrPart: "null",
@@ -198,10 +187,8 @@ func TestLoadTestsFile_RejectsInvalid(t *testing.T) {
 			wantErrPart: "parse",
 		},
 		{
-			// Trailing content after a valid array must not be
-			// silently truncated. A concatenated duplicate (e.g. a
-			// botched merge-conflict resolution) is the realistic
-			// source.
+			// Trailing content (e.g. a botched merge-conflict
+			// resolution) must not be silently truncated.
 			name:        "trailing array after valid body",
 			contents:    `[{"test-name":"x","test-type":"run_command","command":"make","timeout":1,"max-score":1}][{"test-name":"y","test-type":"run_command","command":"ls","timeout":1,"max-score":1}]`,
 			wantErrPart: "trailing",
@@ -257,11 +244,9 @@ func TestLoadTestsFile_MissingFile(t *testing.T) {
 
 func TestResolveTemplateBranch(t *testing.T) {
 	// Each row covers one branch of the post-HTTP decision tree so a
-	// future change to validateTemplateRepo's response handling can't
-	// silently drop a guard. The cases mirror the four control paths
-	// the previous code rolled into a single function: not-a-template,
-	// explicit-@branch retention, default_branch fallback, and the
-	// empty-default_branch defensive error.
+	// change to validateTemplateRepo's response handling can't
+	// silently drop a guard: not-a-template, explicit-@branch
+	// retention, default_branch fallback, empty-default_branch error.
 	cases := []struct {
 		name        string
 		arg         templateArg
@@ -330,9 +315,8 @@ func TestResolveTemplateBranch(t *testing.T) {
 
 func TestFormatAssignmentListJSON(t *testing.T) {
 	t.Run("empty entries serialize as `[]\\n`", func(t *testing.T) {
-		// nil and empty-slice inputs MUST both produce the `[]` shape
-		// so a downstream consumer (typically `jq` or an agent) sees
-		// a stable empty-array on every empty classroom, not `null`.
+		// nil and empty-slice MUST both produce `[]` so downstream
+		// consumers (jq, agents) see a stable empty array, not `null`.
 		for _, in := range [][]assignmentEntry{nil, {}} {
 			got, err := formatAssignmentListJSON(in)
 			if err != nil {
@@ -362,27 +346,25 @@ func TestFormatAssignmentListJSON(t *testing.T) {
 		if err != nil {
 			t.Fatalf("formatAssignmentListJSON: %v", err)
 		}
-		// Field-presence smoke checks. The full schema round-trip is
-		// already covered by TestEncodeAssignments_RoundTrip; here we
-		// just confirm the bare-array shape (not the envelope shape)
-		// and that the indent matches the on-disk file.
+		// Smoke check field presence; full round-trip is in
+		// TestEncodeAssignments_RoundTrip. Here we just confirm the
+		// bare-array shape and on-disk indent.
 		str := string(got)
 		for _, want := range []string{`"slug": "hello"`, `"name": "Hello"`, `"description": "First assignment"`, `"branch": "main"`, `"test-name": "compiles"`} {
 			if !strings.Contains(str, want) {
 				t.Errorf("output missing %q\nfull output:\n%s", want, str)
 			}
 		}
-		// Must NOT be wrapped in {"schema":..., "assignments":[...]}.
-		// `list --json` emits the bare array — that's the contract
-		// callers depend on for clean `jq '.[].slug'` piping.
+		// `list --json` emits the bare array (not the file envelope)
+		// so callers can pipe through `jq '.[].slug'` cleanly.
 		if strings.Contains(str, `"schema"`) || strings.Contains(str, `"assignments"`) {
 			t.Errorf("output should be the bare entries array, not the file envelope:\n%s", str)
 		}
 	})
 
 	t.Run("entry with nil tests slice serializes as `\"tests\": []`", func(t *testing.T) {
-		// Matches the on-disk shape from encodeAssignments and lets a
-		// consumer index into tests[] without a nil guard.
+		// Matches encodeAssignments's on-disk shape so consumers can
+		// index into tests[] without a nil guard.
 		entries := []assignmentEntry{
 			{
 				Slug:     "intro",
@@ -403,10 +385,9 @@ func TestFormatAssignmentListJSON(t *testing.T) {
 }
 
 func TestSummarizeAssignmentList(t *testing.T) {
-	// Pin the pluralization + the "next action" hint on the empty
-	// case. The hint is the only part of the summary that names a
-	// follow-on command, so a teacher running `list` on a fresh
-	// classroom knows where to go next without re-reading docs.
+	// Pin the pluralization plus the empty-case "next action" hint
+	// — the hint is the only part naming a follow-on command, so a
+	// teacher on a fresh classroom can act without consulting docs.
 	cases := []struct {
 		count    int
 		wantPart string
@@ -422,18 +403,17 @@ func TestSummarizeAssignmentList(t *testing.T) {
 		if !strings.Contains(got, tc.wantPart) {
 			t.Errorf("summarizeAssignmentList(count=%d) = %q, want substring %q", tc.count, got, tc.wantPart)
 		}
-		// Every summary must include the canonical file path prefix
-		// so a teacher scanning their terminal can find the file at
-		// a glance.
+		// Every summary must surface the file path so a teacher can
+		// find it without leaving the terminal.
 		if !strings.Contains(got, "cs50-fall-2026/classroom50/cs-principles/assignments.json") {
 			t.Errorf("summarizeAssignmentList(count=%d) should include the full file path, got %q", tc.count, got)
 		}
 	}
 
-	// Pluralization boundary: 1 must be singular, 2 must be plural.
-	// A naive `Contains(s, "assignments")` would always pass because
-	// the file path includes `assignments.json` — match against the
-	// count-prefixed phrase to isolate the count's grammar.
+	// Pluralization boundary: 1 → singular, 2 → plural. A naive
+	// Contains("assignments") would always pass because of
+	// `assignments.json` in the file path; match the count-prefixed
+	// phrase to isolate grammar.
 	one := summarizeAssignmentList("o", "c", 1)
 	two := summarizeAssignmentList("o", "c", 2)
 	if strings.Contains(one, "1 assignments") {

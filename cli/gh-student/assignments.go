@@ -15,30 +15,25 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// configRepoName is the fixed name of the per-org classroom config
-// repo. Hardcoded because `gh teacher init` creates a repo at exactly
-// this name in <org>; the student CLI consumes the same constant when
-// building the Pages URL.
+// configRepoName: the fixed per-org classroom config repo created
+// by `gh teacher init`. Hardcoded so the Pages URL builder stays
+// aligned with the teacher CLI.
 const configRepoName = "classroom50"
 
-// configRepoBranch is the default branch the student CLI records in
-// the `config:` block. The teacher's `classroom50` repo's actual
-// default branch could be `main` or org-policy-renamed; for the
-// `.classroom50.yml` record we always say `main` because the Pages
-// URL doesn't include a branch component anyway (Pages publishes
-// from a fixed branch defined by the publish workflow). A future
-// release could resolve the actual branch if it ever matters.
+// configRepoBranch is recorded in `.classroom50.yml`'s `config:`
+// block. The Pages URL doesn't include a branch component, so this
+// value is informational; "main" is fine even if the teacher's
+// classroom50 repo uses a different default branch.
 const configRepoBranch = "main"
 
-// pagesFetchTimeout caps the HTTP GET against the published Pages
-// URL. The default 0-timeout `http.Client` would hang indefinitely
-// on a slow CDN.
+// pagesFetchTimeout bounds Pages GETs. Without it, http.Client would
+// hang indefinitely on a slow CDN.
 const pagesFetchTimeout = 15 * time.Second
 
-// assignmentEntry mirrors the on-disk shape `gh teacher assignment
-// add` writes. The student CLI consumes only the fields it needs
-// (slug, mode, template, autograder); unrecognized fields decode
-// silently so a future shape with additional fields still works.
+// assignmentEntry mirrors `gh teacher assignment add`'s on-disk
+// shape. Only the fields the student CLI needs are typed;
+// unrecognized fields decode silently so future shape additions
+// work without a flag day.
 type assignmentEntry struct {
 	Slug       string      `json:"slug"`
 	Name       string      `json:"name"`
@@ -47,15 +42,12 @@ type assignmentEntry struct {
 	Autograder string      `json:"autograder"`
 }
 
-// defaultAutograderName is the fallback when `entry.autograder` is
-// empty (a v0.1 file written before the field existed, or a
-// hand-edited file that dropped it). Mirrors the gh-teacher
-// constant of the same name.
+// defaultAutograderName is the fallback when entry.Autograder is
+// empty. Mirrors the gh-teacher constant.
 const defaultAutograderName = "default"
 
-// ResolveAutograder returns the autograder identifier for an entry,
-// applying the v0.1 → v0.2 forward-compat default. Centralized so
-// the accept and submit paths can't drift.
+// ResolveAutograder returns the entry's autograder identifier with
+// the default applied. Centralized so accept and submit can't drift.
 func (e assignmentEntry) ResolveAutograder() string {
 	if e.Autograder == "" {
 		return defaultAutograderName
@@ -63,66 +55,54 @@ func (e assignmentEntry) ResolveAutograder() string {
 	return e.Autograder
 }
 
-// autogradeWorkflowPath is the in-repo destination the student-side
-// CLI drops the fetched autograder into. Hardcoded because both
-// accept (initial fetch-and-drop) and submit (refresh-on-every-push)
-// need it, and the path is the public contract — the autograde
-// workflow's `on: push.tags` trigger only fires when GitHub finds a
-// workflow at this path.
+// autogradeWorkflowPath: in-repo destination for the fetched
+// autograder. Public contract — the workflow's `on: push.tags`
+// trigger only fires when GitHub finds a workflow at this path.
 const autogradeWorkflowPath = ".github/workflows/autograde.yml"
 
-// templateRef is the assignment's starter-code source. All three
-// fields are always populated by `gh teacher assignment add` (the
-// teacher CLI fills in `default_branch` when the teacher omits the
-// `@branch` suffix).
+// templateRef: assignment starter-code source. All three fields
+// are always populated by `gh teacher assignment add` (which fills
+// `default_branch` when `@branch` is omitted).
 type templateRef struct {
 	Owner  string `json:"owner"`
 	Repo   string `json:"repo"`
 	Branch string `json:"branch"`
 }
 
-// assignmentsFile is the top-level shape of `assignments.json`. The
-// schema sentinel is checked before reading entries so a future v2
-// file surfaces "this CLI handles only v1" rather than silently
-// dropping new entries.
+// assignmentsFile: top-level shape of assignments.json. Schema is
+// checked first so a future v2 file surfaces "this CLI handles only
+// v1" rather than silently dropping unknown entries.
 type assignmentsFile struct {
 	Schema      string            `json:"schema"`
 	Assignments []assignmentEntry `json:"assignments"`
 }
 
-// assignmentsSchemaV1 is the only schema sentinel this CLI accepts.
-// Bump in lockstep with the gh-teacher constant of the same name.
+// assignmentsSchemaV1: the only sentinel this CLI accepts. Bump in
+// lockstep with the gh-teacher constant.
 const assignmentsSchemaV1 = "classroom50/assignments/v1"
 
-// pagesAssignmentsURL builds the published Pages URL for a
-// classroom's `assignments.json`. Pages on a private repo at
-// `<org>/classroom50` serves under `<org>.github.io/classroom50/`
-// per the publish-pages.yml allow-list.
+// pagesAssignmentsURL: Pages URL for a classroom's assignments.json.
+// Pages on `<org>/classroom50` serves under
+// `<org>.github.io/classroom50/` per publish-pages.yml.
 func pagesAssignmentsURL(org, classroom string) string {
 	return fmt.Sprintf("https://%s.github.io/%s/%s/assignments.json", org, configRepoName, classroom)
 }
 
-// pagesAutograderURL builds the published Pages URL for a
-// classroom's autograder workflow YAML. Mirrors the allow-list
-// pattern in publish-pages.yml so a change in either place fails
-// the unit test before reaching production.
+// pagesAutograderURL: Pages URL for a classroom's autograder
+// workflow. Mirrors publish-pages.yml's allow-list pattern.
 func pagesAutograderURL(org, classroom, name string) string {
 	return fmt.Sprintf("https://%s.github.io/%s/%s/autograders/%s.yml", org, configRepoName, classroom, name)
 }
 
-// fetchAssignmentEntry returns the assignment entry whose slug
-// matches `assignment` from the published Pages URL. No auth — the
-// Pages site is public by design, and students don't have direct
-// access to the (private) config repo anyway.
-//
-// Thin wrapper around fetchAssignmentEntryFromURL — the latter takes
-// an explicit URL so tests can point at an httptest.Server. The
-// production path always calls through here.
+// fetchAssignmentEntry: find the entry by slug from the Pages
+// `assignments.json`. No auth — the Pages site is public by design.
+// Thin wrapper around fetchAssignmentEntryFromURL so tests can
+// inject an httptest URL.
 func fetchAssignmentEntry(ctx context.Context, org, classroom, assignment string) (assignmentEntry, error) {
 	entry, err := fetchAssignmentEntryFromURL(ctx, pagesAssignmentsURL(org, classroom), assignment)
 	if nf := new(assignmentNotFoundError); errors.As(err, &nf) {
-		// Fill the org/classroom hints — fetchAssignmentEntryFromURL
-		// doesn't see them, so it can't include them in its
+		// Fill the org/classroom hints — the inner function can't
+		// include them in its
 		// "ask your instructor to run `gh teacher assignment add ...`"
 		// message.
 		nf.Org = org
@@ -132,15 +112,10 @@ func fetchAssignmentEntry(ctx context.Context, org, classroom, assignment string
 	return entry, err
 }
 
-// fetchAssignmentEntryFromURL is the HTTP-bearing core of the Pages
-// fetch — split out so tests can inject a test-server URL without
-// patching the Pages-URL builder.
-//
-// Three shape errors are surfaced with actionable messages (network,
-// 404, schema mismatch); a missing slug returns a typed
-// `assignmentNotFoundError`. Mode rejection happens in the caller
-// (acceptAssignment) so the error wording can reference the
-// assignment by name.
+// fetchAssignmentEntryFromURL is the HTTP-bearing core. Returns
+// actionable messages for network failures, 404, and schema
+// mismatches; a missing slug returns a typed
+// assignmentNotFoundError. Mode rejection happens at the call site.
 func fetchAssignmentEntryFromURL(ctx context.Context, rawURL, assignment string) (assignmentEntry, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
@@ -187,10 +162,9 @@ func fetchAssignmentEntryFromURL(ctx context.Context, rawURL, assignment string)
 	}
 }
 
-// assignmentNotFoundError is returned when the Pages fetch succeeded
-// but the requested assignment slug isn't in the manifest. Typed so
-// the caller can produce the "ask your instructor to run `gh teacher
-// assignment add`" message without re-parsing the error text.
+// assignmentNotFoundError: Pages fetch succeeded but the requested
+// slug isn't in the manifest. Typed so callers can branch without
+// matching error text.
 type assignmentNotFoundError struct {
 	Org        string
 	Classroom  string
@@ -207,52 +181,36 @@ func (e *assignmentNotFoundError) Error() string {
 		e.Assignment, e.URL)
 }
 
-// IsAssignmentNotFound reports whether `err` is an
-// `assignmentNotFoundError` (possibly wrapped). Provided for tests
-// and future callers that need to branch on this case without
-// matching against the error message.
+// IsAssignmentNotFound reports whether err wraps
+// assignmentNotFoundError.
 func IsAssignmentNotFound(err error) bool {
 	var nf *assignmentNotFoundError
 	return errors.As(err, &nf)
 }
 
-// AutogradeWorkflow is the result of fetching a classroom's
-// autograder YAML from Pages. Content is the raw workflow body
-// `gh student accept` drops at `.github/workflows/autograde.yml`;
-// Version is the parsed `# classroom50-autograde-version: <semver>`
-// sentinel (empty when absent — the student CLI does not enforce
-// the sentinel, only records it in `.classroom50.yml` for
-// diagnostics).
+// AutogradeWorkflow is the result of a Pages autograder fetch.
+// Content is the raw workflow body dropped at
+// `.github/workflows/autograde.yml`; Version is the parsed
+// `# classroom50-autograde-version:` sentinel (empty when absent),
+// recorded in `.classroom50.yml` for diagnostics only.
 type AutogradeWorkflow struct {
 	Content string
 	Version string
 }
 
-// fetchAutograderWorkflow fetches `<classroom>/autograders/<name>.yml`
-// from the teacher's Pages site. Unauth — the publish-pages
-// allow-list publishes the directory so students can fetch the YAML
-// without org repo access.
-//
-// Thin wrapper around fetchAutograderWorkflowFromURL so tests can
-// inject a `httptest.Server` URL.
+// fetchAutograderWorkflow fetches
+// `<classroom>/autograders/<name>.yml` from Pages. Unauth — the
+// publish-pages allow-list keeps the directory public. Thin wrapper
+// around fetchAutograderWorkflowFromURL for testability.
 func fetchAutograderWorkflow(ctx context.Context, org, classroom, name string) (AutogradeWorkflow, error) {
 	return fetchAutograderWorkflowFromURL(ctx, pagesAutograderURL(org, classroom, name), name)
 }
 
-// fetchAutograderWorkflowFromURL is the HTTP-bearing core. Surfaces
-// three actionable error shapes:
-//
-//   - 404 (Pages site exists but the specific autograder is
-//     unpublished) — surfaces "ask your instructor to confirm the
-//     file exists and publish-pages has run".
-//   - Network / unexpected status — wrapped with the URL.
-//   - Empty body — the Pages cache occasionally serves a stub on a
-//     brand-new deployment; treated as missing.
-//
-// Validates that the fetched bytes parse as YAML before returning,
-// so a malformed file surfaces at fetch time (when the student can
-// still ask for help) rather than at workflow-run time (where the
-// error lives inside GitHub Actions logs).
+// fetchAutograderWorkflowFromURL is the HTTP-bearing core.
+// Actionable shapes: 404 → "not published yet", network/unexpected
+// status → wrapped, empty body → "deployment still in flight,
+// retry". YAML is validated before returning so malformed bodies
+// fail at fetch time instead of inside Actions logs.
 func fetchAutograderWorkflowFromURL(ctx context.Context, rawURL, name string) (AutogradeWorkflow, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
@@ -282,12 +240,11 @@ func fetchAutograderWorkflowFromURL(ctx context.Context, rawURL, name string) (A
 		return AutogradeWorkflow{}, fmt.Errorf("GET %s: empty body — the Pages deployment may still be in flight; retry in a minute", rawURL)
 	}
 
-	// `yaml.Unmarshal` into an empty interface validates that the
-	// bytes are well-formed YAML without imposing schema on the
-	// workflow body (teachers can write arbitrarily shaped
-	// autograders, so long as they satisfy the autograder
-	// contract — submit-tag trigger, `result.json` on the
-	// release, and a `classroom50/autograde` commit status).
+	// Decode into `any` to validate YAML well-formedness without
+	// imposing schema on the workflow body. Teachers can write any
+	// shape that satisfies the autograder contract (submit-tag
+	// trigger, `result.json` release asset, `classroom50/autograde`
+	// commit status).
 	var sink any
 	if err := yaml.Unmarshal(body, &sink); err != nil {
 		return AutogradeWorkflow{}, fmt.Errorf("autograder %q is malformed YAML (parsed from %s) — ask your instructor to check the file in the config repo: %w", name, rawURL, err)
@@ -299,14 +256,13 @@ func fetchAutograderWorkflowFromURL(ctx context.Context, rawURL, name string) (A
 	}, nil
 }
 
-// parseAutogradeVersionSentinel reads the `# classroom50-autograde-version: <semver>`
-// header from a fetched autograder YAML. Scans only the first
-// `autogradeVersionScanLines` lines so the diagnostic stays a
-// header convention, not a workflow-wide search.
-//
-// Kept in lockstep with `gh-teacher`'s `stripAutogradeVersion`
-// (separate Go modules, no shared package — changes here MUST be
-// mirrored to `cli/gh-teacher/autograder.go`).
+// parseAutogradeVersionSentinel reads the
+// `# classroom50-autograde-version:` header. In lockstep with
+// gh-teacher's `stripAutogradeVersion` — changes here MUST be
+// mirrored to cli/gh-teacher/autograder.go (separate Go modules,
+// no shared package). Scans only the first
+// `autogradeVersionScanLines` to avoid matching unrelated `version:`
+// keys deeper in the file.
 func parseAutogradeVersionSentinel(content string) string {
 	const marker = "# classroom50-autograde-version:"
 	scanner := bufio.NewScanner(strings.NewReader(content))
@@ -319,6 +275,6 @@ func parseAutogradeVersionSentinel(content string) string {
 	return ""
 }
 
-// autogradeVersionScanLines caps the header search. Mirrors the
-// gh-teacher constant of the same name.
+// autogradeVersionScanLines caps the header scan. Mirrors the
+// gh-teacher constant.
 const autogradeVersionScanLines = 16

@@ -94,8 +94,8 @@ func TestParseImportCSV_BothHeaderShapes(t *testing.T) {
 		if len(rows) != 1 {
 			t.Fatalf("got %d rows, want 1", len(rows))
 		}
-		// Even when the input has github_id, parseImportCSV ignores it
-		// (the CLI re-resolves from GitHub at import time).
+		// parseImportCSV ignores any incoming github_id; the CLI
+		// re-resolves from GitHub at import time.
 		if rows[0].GitHubID != 0 {
 			t.Errorf("import should ignore github_id column, got %d", rows[0].GitHubID)
 		}
@@ -140,13 +140,13 @@ func TestEncodeRoster_RoundTrip(t *testing.T) {
 		t.Fatalf("encodeRoster: %v", err)
 	}
 
-	// Header must be the canonical column order, written without quoting.
+	// Canonical column order, no quoting on the header row.
 	wantHeader := "username,first_name,last_name,email,section,github_id\n"
 	if !strings.HasPrefix(string(encoded), wantHeader) {
 		t.Fatalf("encoded output should start with canonical header.\ngot:\n%s\nwant prefix:\n%s", encoded, wantHeader)
 	}
 
-	// Re-parse must yield the same rows back — RFC 4180 round-trip.
+	// Re-parse must yield the same rows — RFC 4180 round-trip.
 	round, err := parseRoster(encoded)
 	if err != nil {
 		t.Fatalf("re-parse of encoded output failed: %v\nencoded:\n%s", err, encoded)
@@ -162,9 +162,9 @@ func TestEncodeRoster_EmptyGitHubID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("encodeRoster: %v", err)
 	}
-	// GitHubID == 0 should serialize as an empty github_id column, not
-	// "0". parseRoster reads "" as GitHubID==0 and treats "0" as a
-	// valid (if nonsensical) numeric ID, so the encoded shape matters.
+	// GitHubID == 0 must serialize as an empty github_id column,
+	// not "0". parseRoster reads "" as 0 but treats "0" as a valid
+	// numeric ID, so the encoded shape matters.
 	if !strings.Contains(string(encoded), "alice,A,A,a@x,s,\n") {
 		t.Errorf("GitHubID == 0 should encode as empty column, got:\n%s", encoded)
 	}
@@ -232,34 +232,34 @@ func TestValidateRosterEmail(t *testing.T) {
 		in      string
 		wantErr bool
 	}{
-		// Empty is always accepted — email is optional per row.
+		// Email is optional per row.
 		{"", false},
 
-		// Bare local@domain in various shapes teachers actually use.
+		// Bare local@domain shapes teachers actually use.
 		{"alice@example.edu", false},
 		{"alice.smith@example.com", false},
-		{"alice+section1@example.com", false},  // plus addressing
-		{"12345@example.com", false},           // numeric local
-		{"a@b.c", false},                       // minimal valid shape
-		{"alice@school.local", false},          // internal-only domain (no public TLD)
-		{"Alice@Example.EDU", false},           // casing preserved as supplied
-		{"<alice@example.edu>", false},         // angle-bracketed bare form
-		{"alice@xn--bcher-kva.example", false}, // punycode (internationalized domain)
-		{"alice@[192.0.2.1]", false},           // IP-literal domain (RFC 5321)
+		{"alice+section1@example.com", false},
+		{"12345@example.com", false},
+		{"a@b.c", false},
+		{"alice@school.local", false},
+		{"Alice@Example.EDU", false},
+		{"<alice@example.edu>", false},
+		{"alice@xn--bcher-kva.example", false},
+		{"alice@[192.0.2.1]", false},
 
-		// Reject display-name forms: name metadata belongs in
-		// first_name/last_name, not in the email column.
+		// Display-name forms reject — name metadata belongs in
+		// first_name/last_name, not the email column.
 		{"Alice <alice@example.edu>", true},
 		{"alice <alice@example.edu>", true},
 		{"Alice Andersson <alice@example.edu>", true},
 
-		// Reject malformed addresses.
-		{"alice", true},                              // no @
-		{"alice@", true},                             // no domain
-		{"@example.com", true},                       // no local
-		{"alice example.com", true},                  // missing @, with space
-		{"alice@@example.com", true},                 // double @
-		{"alice@example.com, bob@example.com", true}, // two addresses
+		// Malformed.
+		{"alice", true},
+		{"alice@", true},
+		{"@example.com", true},
+		{"alice example.com", true},
+		{"alice@@example.com", true},
+		{"alice@example.com, bob@example.com", true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.in, func(t *testing.T) {
@@ -275,11 +275,10 @@ func TestValidateRosterEmail(t *testing.T) {
 }
 
 func TestParseRoster_StripsUTF8BOM(t *testing.T) {
-	// Excel "CSV UTF-8" export prepends 0xEF 0xBB 0xBF. encoding/csv
-	// does not strip it, so without the BOM trim the first header
-	// field would be `\ufeffusername` and equalSlices would reject
-	// the file with an "unexpected header" error that prints two
-	// identical-looking slices.
+	// Excel's "CSV UTF-8" prepends 0xEF 0xBB 0xBF. encoding/csv
+	// does not strip it, so without the trim the first header
+	// field would be `\ufeffusername` — equalSlices would reject
+	// the file with a misleading "unexpected header" error.
 	in := append([]byte{0xEF, 0xBB, 0xBF}, []byte("username,first_name,last_name,email,section,github_id\nalice,Alice,A,,s,1\n")...)
 	rows, err := parseRoster(in)
 	if err != nil {
@@ -302,10 +301,10 @@ func TestParseImportCSV_StripsUTF8BOM(t *testing.T) {
 }
 
 func TestParseImportCSV_RejectsOversizedField(t *testing.T) {
-	// A single 400-byte first_name exceeds maxFieldBytes (320) and
-	// must be rejected at parse time. Without this, a 1MB+ CSV
-	// could land on disk and wedge subsequent reads via the contents
-	// API's encoding:"none" response.
+	// A 400-byte first_name exceeds maxFieldBytes (320) and must
+	// be rejected at parse time — otherwise a 1MB+ CSV could land
+	// on disk and wedge later reads through the contents API's
+	// encoding:"none" response.
 	bigName := strings.Repeat("x", maxFieldBytes+1)
 	in := []byte("username,first_name,last_name,email,section\nalice," + bigName + ",A,,s\n")
 	_, err := parseImportCSV(in)
@@ -318,11 +317,10 @@ func TestParseImportCSV_RejectsOversizedField(t *testing.T) {
 }
 
 func TestParseImportCSV_TrimsEmailWhitespace(t *testing.T) {
-	// CSV cells preserve whitespace by default. validateRosterEmail
-	// (and net/mail.ParseAddress) doesn't tolerate surrounding
-	// spaces in many shapes, so the parser trims the email field
-	// before validation. parseImportCSV also trims username (long-
-	// standing behavior); other columns stay verbatim.
+	// CSV preserves whitespace; net/mail.ParseAddress rejects many
+	// spaced shapes, so the parser trims `email` before
+	// validation. `username` is also trimmed; other columns stay
+	// verbatim.
 	in := []byte("username,first_name,last_name,email,section\nalice,A,A,  alice@example.edu  ,s\n")
 	rows, err := parseImportCSV(in)
 	if err != nil {
@@ -335,10 +333,9 @@ func TestParseImportCSV_TrimsEmailWhitespace(t *testing.T) {
 
 func TestEncodeRoster_DefangsFormulaCells(t *testing.T) {
 	// Cells starting with =/+/-/@/\t/\r get a leading apostrophe so
-	// spreadsheet apps (Excel, LibreOffice) render them as literal
-	// text rather than evaluating them as formulas. The round-trip
-	// through parseRoster must strip the apostrophe so the in-memory
-	// rosterRow always sees the original value.
+	// Excel/LibreOffice render them as literal text instead of
+	// evaluating them. parseRoster strips the apostrophe so the
+	// in-memory rosterRow always sees the original value.
 	original := []rosterRow{
 		{Username: "alice", FirstName: "=HYPERLINK(\"http://attacker\",\"click\")", LastName: "A", Email: "alice@example.edu", Section: "+cmd", GitHubID: 1},
 		{Username: "bob", FirstName: "-Director", LastName: "@admin", Email: "bob@example.edu", Section: "\tindent", GitHubID: 2},
@@ -362,8 +359,8 @@ func TestEncodeRoster_DefangsFormulaCells(t *testing.T) {
 		t.Errorf("at-prefix cell should be defanged, got:\n%s", str)
 	}
 
-	// Round-trip: parseRoster strips the defang back so the
-	// in-memory representation matches the original input.
+	// parseRoster strips the defang on read; in-memory rows match
+	// the original input.
 	roundTripped, err := parseRoster(encoded)
 	if err != nil {
 		t.Fatalf("re-parse defanged output: %v", err)

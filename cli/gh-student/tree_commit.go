@@ -13,15 +13,11 @@ import (
 	"github.com/cli/go-gh/v2/pkg/api"
 )
 
-// commitFiles lands `files` on `branch` as a single Tree commit.
-// `files` maps the in-repo destination path to its UTF-8 content.
-// Used by `gh student accept` to drop `.classroom50.yml` and
-// `.github/workflows/autograde.yml` in one round-trip instead of
-// two separate single-file PUTs.
-//
-// No rebase loop: accept writes to a freshly-templated repo with no
-// concurrent writers. The teacher-side `commitTree` in gh-teacher
-// retries on non-fast-forward; this lighter version doesn't.
+// commitFiles lands `files` (path → UTF-8 content) on `branch` as
+// one Tree commit. No rebase loop: accept writes to a freshly
+// templated repo with no concurrent writers. The teacher-side
+// commitTree retries on non-fast-forward; this lighter version
+// doesn't.
 func commitFiles(client *api.RESTClient, owner, repo, branch, message string, files map[string]string) error {
 	if len(files) == 0 {
 		return nil
@@ -50,10 +46,9 @@ func commitFiles(client *api.RESTClient, owner, repo, branch, message string, fi
 	return updateRef(client, owner, repo, branch, commitSHA)
 }
 
-// refAndTree returns the parent commit SHA and its tree SHA for
-// `branch`. Parent SHA becomes the new commit's parent; tree SHA
-// becomes the new tree's `base_tree` so unchanged paths inherit
-// without re-uploading.
+// refAndTree returns (parentCommitSHA, parentTreeSHA) for branch.
+// parentTreeSHA becomes the new tree's `base_tree` so unchanged
+// paths inherit without re-uploading.
 func refAndTree(client *api.RESTClient, owner, repo, branch string) (commitSHA, treeSHA string, err error) {
 	refPath := fmt.Sprintf("repos/%s/%s/git/refs/heads/%s",
 		url.PathEscape(owner), url.PathEscape(repo), url.PathEscape(branch))
@@ -86,10 +81,9 @@ type treeEntry struct {
 	SHA  string `json:"sha"`
 }
 
-// uploadBlobs creates one blob per file and returns tree entries
-// pointing at them. Always base64-encoded — the overhead is
-// negligible and the correctness story is simpler than per-file
-// encoding detection.
+// uploadBlobs creates one blob per file and returns the tree
+// entries. Always base64-encoded; simpler than per-file encoding
+// detection with negligible overhead.
 func uploadBlobs(client *api.RESTClient, owner, repo string, files map[string]string) ([]treeEntry, error) {
 	paths := make([]string, 0, len(files))
 	for p := range files {

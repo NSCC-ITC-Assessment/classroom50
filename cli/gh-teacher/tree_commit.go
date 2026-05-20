@@ -15,34 +15,28 @@ import (
 	"github.com/cli/go-gh/v2/pkg/api"
 )
 
-// rebaseAttempts caps commitTree's loop. Five attempts at
-// 200ms × 2^n backoff covers ~6.2s of contention — long enough to
-// absorb a concurrent CLI invocation, short enough that a wedged
-// repo surfaces a clean error instead of hanging.
+// rebaseAttempts: 5 attempts at 200ms × 2^n backoff (~6.2s total) —
+// absorbs concurrent CLI invocations, fails fast on a wedged repo.
 const rebaseAttempts = 5
 
-// errNonFastForward signals PATCH on a ref was rejected because the
-// new commit isn't a descendant of the current branch tip. commitTree
-// catches this and re-runs build against fresh state.
+// errNonFastForward: PATCH was rejected because the new commit
+// isn't a descendant of the current branch tip. commitTree retries.
 var errNonFastForward = errors.New("non-fast-forward ref update")
 
 // commitTree is the shared optimistic-update-with-rebase helper for
-// every teacher-side write to <org>/classroom50. The build callback
-// is invoked on each attempt with the parent commit SHA so it can
-// read the current state of any file it intends to modify.
+// teacher-side writes to <org>/classroom50. build is invoked per
+// attempt with the parent commit SHA so it sees the current state
+// of every file it intends to modify.
 //
 // Return shape:
-//   - ("<sha>", nil) — commit landed on branch.
-//   - ("", nil)      — build returned an empty map (no work needed);
-//     reserve this case for genuine no-ops.
-//   - ("", err)      — a step failed; no commit landed. To propagate
-//     an error from build, return (nil, err) — (nil, nil) is treated
-//     as success.
+//   - ("<sha>", nil) — commit landed.
+//   - ("", nil)      — build returned an empty map; no-op.
+//   - ("", err)      — failure (build can signal one via (nil, err);
+//     (nil, nil) is success/no-op).
 //
-// Callers commonly use a closed-over variable to capture per-attempt
-// observations (e.g. `var action string` set to "added"/"updated").
-// Reset any accumulator counters at the top of every build call so
-// a retry doesn't see stale state from the previous attempt.
+// Callers commonly close over a per-attempt accumulator (e.g.
+// `var action string`). Reset such accumulators at the top of each
+// build call so a retry doesn't see stale state.
 func commitTree(
 	client *api.RESTClient,
 	owner, repo, branch, message string,
@@ -83,9 +77,9 @@ func commitTree(
 			return "", err
 		}
 
-		// Concurrent writer won this round. Sleep before the next
-		// attempt — but only when there IS a next attempt; sleeping
-		// after the final failed attempt just delays the error.
+		// Concurrent writer won; back off before retrying. Skip the
+		// sleep after the final attempt — it would just delay the
+		// error.
 		if attempt < rebaseAttempts-1 {
 			time.Sleep(time.Duration(200*(1<<attempt)) * time.Millisecond)
 		}
@@ -93,18 +87,11 @@ func commitTree(
 	return "", fmt.Errorf("%s/%s on %s lost the rebase race %d times; retry the command or investigate concurrent writers", owner, repo, branch, rebaseAttempts)
 }
 
-// patchRef is commitTree's strict ref updater: returns
-// errNonFastForward when GitHub rejects on race so commitTree can
-// distinguish "retry" from "real failure". init_skeleton.go's
-// updateRef keeps the simpler always-wrap shape because init never
-// races.
-//
-// go-gh's `client.Request` short-circuits non-2xx responses into
-// `(nil, *api.HTTPError)` after extracting the API's `message` field
-// into HTTPError.Message — so classification happens against the
-// typed error, not the raw body. 422 alone isn't enough (GitHub also
-// uses it for permission failures and malformed refs); we match on
-// the message text so retries don't paper over real failures.
+// patchRef returns errNonFastForward on race so commitTree can
+// distinguish "retry" from "real failure". 422 alone isn't enough
+// (GitHub also uses it for permission failures and malformed refs);
+// matching on the message text keeps retries from papering over
+// real failures.
 func patchRef(client *api.RESTClient, owner, repo, branch, commitSHA string) error {
 	body, err := json.Marshal(struct {
 		SHA string `json:"sha"`
@@ -135,15 +122,14 @@ func patchRef(client *api.RESTClient, owner, repo, branch, commitSHA string) err
 // isNonFastForwardMessage matches GitHub's "Update is not a fast
 // forward" rejection (with hyphen / casing tolerance).
 func isNonFastForwardMessage(message string) bool {
-	return strings.Contains(strings.ToLower(message), "fast forward") ||
-		strings.Contains(strings.ToLower(message), "fast-forward")
+	lower := strings.ToLower(message)
+	return strings.Contains(lower, "fast forward") || strings.Contains(lower, "fast-forward")
 }
 
-// readFileContents returns the bytes of `path` at `ref`, decoded
-// from the contents API's base64 envelope. Returns (nil, false, nil)
-// when the path doesn't exist. Suitable for files comfortably under
-// the contents API's 1MB ceiling — for larger payloads, switch to
-// the git-blobs API.
+// readFileContents reads `path` at `ref` and decodes the contents
+// API's base64 envelope. (nil, false, nil) on missing path. For
+// payloads near or over the contents API's 1MB ceiling, use the
+// git-blobs API instead.
 func readFileContents(client *api.RESTClient, owner, repo, path, ref string) ([]byte, bool, error) {
 	segs := strings.Split(path, "/")
 	for i := range segs {
@@ -165,8 +151,8 @@ func readFileContents(client *api.RESTClient, owner, repo, path, ref string) ([]
 	if resp.Encoding != "base64" {
 		return nil, false, fmt.Errorf("GET %s: unexpected encoding %q (expected base64)", apiPath, resp.Encoding)
 	}
-	// The contents API may wrap the base64 payload at column 60;
-	// std decoder rejects embedded newlines, so strip them.
+	// The contents API wraps base64 at column 60; the std decoder
+	// rejects embedded newlines.
 	data, err := base64.StdEncoding.DecodeString(strings.ReplaceAll(resp.Content, "\n", ""))
 	if err != nil {
 		return nil, false, fmt.Errorf("GET %s: decode base64: %w", apiPath, err)

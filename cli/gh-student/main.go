@@ -32,10 +32,9 @@ func main() {
 	root.AddCommand(inviteCmd())
 	root.AddCommand(submitCmd())
 
-	// signal-aware root context: subcommands see cmd.Context()
-	// cancel on Ctrl-C / SIGTERM, so in-flight HTTP fetches
-	// (notably the Pages fetch in submit's refresh path) unwind
-	// promptly instead of waiting for the HTTP timeout.
+	// Signal-aware root context: subcommands see cmd.Context()
+	// cancel on Ctrl-C / SIGTERM so in-flight HTTP (notably the
+	// Pages fetch in submit) unwinds promptly.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 

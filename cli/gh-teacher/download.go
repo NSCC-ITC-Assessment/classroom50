@@ -14,8 +14,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// dirTimestampFormat is the timestamp suffix on the default submissions dir.
-// Filesystem-safe across platforms and lexicographically sortable.
+// dirTimestampFormat: filesystem-safe and lexicographically sortable.
 const dirTimestampFormat = "2006_01_02_T_15_04_05"
 
 func downloadCmd() *cobra.Command {
@@ -53,8 +52,7 @@ func downloadCmd() *cobra.Command {
 				return fmt.Errorf("invalid arguments: org, classroom, and assignment must all be non-empty")
 			}
 
-			// `-d` unset or empty falls back to the timestamped default; an
-			// explicit `-d <name>` is taken literally (no timestamp).
+			// Empty -d → timestamped default; explicit -d is literal.
 			dir = strings.TrimSpace(dir)
 			if dir == "" {
 				dir = fmt.Sprintf("%s-%s_submissions_%s",
@@ -78,8 +76,8 @@ func downloadCmd() *cobra.Command {
 }
 
 func downloadAssignment(client *api.RESTClient, out, errOut io.Writer, org, classroom, assignment, dir string, quiet bool) error {
-	// Deterministic head of assignmentRepoName in cli/gh-student/accept.go;
-	// see the cross-binary contract note there before changing the shape.
+	// Deterministic head of assignmentRepoName in
+	// cli/gh-student/accept.go — cross-binary contract.
 	prefix := strings.ToLower(classroom) + "-" + strings.ToLower(assignment) + "-"
 
 	repos, err := listOrgRepoNames(client, org)
@@ -111,7 +109,7 @@ func downloadAssignment(client *api.RESTClient, out, errOut io.Writer, org, clas
 	for _, name := range matched {
 		target := filepath.Join(dir, name)
 
-		// "Skipped" line, not "Cloning ... Skipped" (we don't actually start a clone).
+		// "Skipped" only — no preceding "Cloning..." since we didn't start one.
 		if _, err := os.Stat(target); err == nil {
 			if !quiet {
 				_, _ = fmt.Fprintf(out, "Skipped %s (already exists)\n", name)
@@ -124,7 +122,8 @@ func downloadAssignment(client *api.RESTClient, out, errOut io.Writer, org, clas
 		}
 
 		if !quiet {
-			// verbose: full line so git output starts on a new line.
+			// In verbose mode, terminate the line so git output
+			// starts on its own line.
 			if verbose {
 				_, _ = fmt.Fprintf(out, "Cloning %s\n", name)
 			} else {
@@ -186,12 +185,14 @@ func listOrgRepoNames(client *api.RESTClient, org string) ([]string, error) {
 	return names, nil
 }
 
-// stderrTailCap bounds non-verbose stderr capture; the actual error lives at the tail.
+// stderrTailCap bounds non-verbose stderr capture; the error lives
+// at the tail.
 const stderrTailCap = 8 * 1024
 
-// cloneOrgRepo shells out to `gh repo clone`. Verbose streams git's output;
-// otherwise stdout is discarded and the tail of stderr is captured so failure
-// messages carry git's diagnostic rather than just "exit status 1".
+// cloneOrgRepo shells out to `gh repo clone`. Verbose streams git's
+// output; otherwise stdout is discarded and the tail of stderr is
+// captured so failures carry git's diagnostic, not just
+// "exit status 1".
 func cloneOrgRepo(out, errOut io.Writer, org, repo, target string, quiet bool) error {
 	args := []string{"repo", "clone", fmt.Sprintf("%s/%s", org, repo), target}
 	if quiet {
@@ -211,7 +212,7 @@ func cloneOrgRepo(out, errOut io.Writer, org, repo, target string, quiet bool) e
 
 	if err := cmd.Run(); err != nil {
 		if stderrTail != nil {
-			// trailing line is git's actionable error (e.g., `fatal: ...`).
+			// Last line is git's actionable error (e.g. `fatal: ...`).
 			if msg := lastNonEmptyLine(stderrTail.String()); msg != "" {
 				return fmt.Errorf("%w: %s", err, msg)
 			}
@@ -221,8 +222,8 @@ func cloneOrgRepo(out, errOut io.Writer, org, repo, target string, quiet bool) e
 	return nil
 }
 
-// tailWriter is an io.Writer that retains only the last cap bytes written.
-// Bounds memory when capturing chatty stderr.
+// tailWriter retains only the last `cap` bytes written, to bound
+// memory when capturing chatty stderr.
 type tailWriter struct {
 	buf []byte
 	cap int
@@ -251,7 +252,7 @@ func (w *tailWriter) String() string {
 	return string(w.buf)
 }
 
-// lastNonEmptyLine returns the last non-empty trimmed line of s.
+// lastNonEmptyLine returns the last non-empty trimmed line.
 func lastNonEmptyLine(s string) string {
 	for i := len(s); i > 0; {
 		j := strings.LastIndexByte(s[:i], '\n')

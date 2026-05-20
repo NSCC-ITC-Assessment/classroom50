@@ -36,7 +36,6 @@ func rosterCmd() *cobra.Command {
 	return cmd
 }
 
-// rosterAddCmd implements `gh teacher roster add <org> <classroom> <username>`.
 func rosterAddCmd() *cobra.Command {
 	var (
 		firstName string
@@ -172,15 +171,13 @@ func rosterImportCmd() *cobra.Command {
 	return cmd
 }
 
-// rosterFilePath is the on-repo path to a classroom's students.csv —
-// centralized so the path shape lives in one place.
+// rosterFilePath: on-repo path to a classroom's students.csv.
 func rosterFilePath(classroom string) string {
 	return classroom + "/students.csv"
 }
 
-// resolveConfigRepoBranch fetches <org>/classroom50's default branch.
-// A 404 surfaces the "run `gh teacher init` first" message so any
-// command failing this check fails loudly.
+// resolveConfigRepoBranch fetches <org>/classroom50's default
+// branch. 404 → "run `gh teacher init` first".
 func resolveConfigRepoBranch(client *api.RESTClient, org string) (string, error) {
 	repoPath := fmt.Sprintf("repos/%s/%s", url.PathEscape(org), configRepoName)
 	var repo configRepo
@@ -197,10 +194,9 @@ func resolveConfigRepoBranch(client *api.RESTClient, org string) (string, error)
 	return branch, nil
 }
 
-// loadRoster fetches and parses students.csv at a specific commit
-// SHA — using the SHA (not the branch ref) keeps the build callback's
-// read consistent across rebase attempts. A missing file points the
-// teacher at `gh teacher classroom add` instead of a raw 404 trace.
+// loadRoster reads students.csv at a specific commit SHA so the
+// build callback's read stays consistent across rebase attempts.
+// Missing file → points the teacher at `gh teacher classroom add`.
 func loadRoster(client *api.RESTClient, org, classroom, parentSHA string) ([]rosterRow, error) {
 	path := rosterFilePath(classroom)
 	data, ok, err := readFileContents(client, org, configRepoName, path, parentSHA)
@@ -218,19 +214,12 @@ func loadRoster(client *api.RESTClient, org, classroom, parentSHA string) ([]ros
 	return rows, nil
 }
 
-// inviteIfNotMember sends an org invitation when <username> isn't
-// already an active or pending member, returning the membership
-// state (active/pending/invited) at decision time. The pre-resolved
-// userID is threaded through so a `roster import` with N rows
-// doesn't double its GET /users/{username} call count.
-//
-// Two-step flow:
-//  1. getMembershipState pre-checks; active/pending skips the invite.
-//  2. Otherwise call inviteOrgByID. A 422 "already member/pending"
-//     (typed as orgMembershipKnownError by classifyOrgInviteError) is
-//     recovered as success — without this, a flaky pre-check +
-//     TOCTOU race would surface "org invite failed" after a clean
-//     roster commit.
+// inviteIfNotMember invites <username> when not already active or
+// pending; returns the membership state at decision time. The
+// pre-resolved userID avoids redundant GET /users/{username} calls
+// during a bulk import. A 422 "already member/pending" from
+// inviteOrgByID is recovered as success so a TOCTOU race between
+// pre-check and invite can't surface a spurious failure.
 func inviteIfNotMember(client *api.RESTClient, org, username string, userID int64) (state string, err error) {
 	if s, ok := getMembershipState(client, org, username); ok {
 		switch s {
@@ -250,11 +239,10 @@ func inviteIfNotMember(client *api.RESTClient, org, username string, userID int6
 	return "invited", nil
 }
 
-// runRosterAdd orchestrates `gh teacher roster add`. Commit-then-invite
-// ordering matters: a successful invite paired with a failed commit
-// would leave the org in a state the roster doesn't reflect. The
-// reverse leaves the roster ahead of org membership, which a re-run
-// reconciles.
+// runRosterAdd commits the roster row first, then invites. If the
+// commit fails after an invite landed, the org would be ahead of the
+// roster with no clean recovery. This order leaves the roster ahead
+// of org membership, which a re-run reconciles.
 func runRosterAdd(client *api.RESTClient, out, errOut io.Writer, org, classroom, username, firstName, lastName, email, section string) error {
 	branch, err := resolveConfigRepoBranch(client, org)
 	if err != nil {
@@ -275,8 +263,6 @@ func runRosterAdd(client *api.RESTClient, out, errOut io.Writer, org, classroom,
 		GitHubID:  userID,
 	}
 
-	// commitTree calls build once per rebase attempt with a fresh
-	// parentSHA so the upsert always runs against the latest CSV.
 	var action string
 	build := func(parentSHA string) (map[string]string, error) {
 		rows, err := loadRoster(client, org, classroom, parentSHA)
@@ -335,8 +321,8 @@ func runRosterRemove(client *api.RESTClient, out io.Writer, org, classroom, user
 		next, ok := removeRosterRow(rows, username)
 		removed = ok
 		if !ok {
-			// Signal "no-op" to commitTree so it doesn't produce an
-			// empty commit when the row was already absent.
+			// nil → commitTree skips the commit (no-op when the row
+			// was already absent).
 			return nil, nil
 		}
 		data, err := encodeRoster(next)
@@ -384,9 +370,8 @@ func runRosterImport(client *api.RESTClient, out, errOut io.Writer, org, classro
 	}
 
 	// Resolve every username up front so rebase retries don't repeat
-	// the (deterministic) GitHub-API lookups — only the file write is
-	// retried. Error labels use 1-based CSV line numbers (header is
-	// line 1) so they match parseImportCSV's own error format.
+	// GitHub-API lookups — only the file write is retried. CSV line
+	// numbers are 1-based (header = line 1) to match parseImportCSV.
 	resolved := make([]rosterRow, 0, len(imported))
 	for i, row := range imported {
 		line := i + 2
@@ -403,8 +388,8 @@ func runRosterImport(client *api.RESTClient, out, errOut io.Writer, org, classro
 			GitHubID:  userID,
 		})
 	}
-	// De-duplicate by username (case-insensitive) within the import.
-	// Last occurrence wins, matching the upsert semantics.
+	// Case-insensitive dedup within the batch; last occurrence wins
+	// (matching upsertRosterRow's semantics).
 	resolved = dedupeByUsername(resolved)
 
 	var (
@@ -416,8 +401,8 @@ func runRosterImport(client *api.RESTClient, out, errOut io.Writer, org, classro
 		if err != nil {
 			return nil, err
 		}
-		// Reset counters every attempt — the rebase may see different
-		// "already there" / "new" splits each time.
+		// Reset counters per attempt — rebase may see different
+		// new/replaced splits each time.
 		added, updated = 0, 0
 		for _, row := range resolved {
 			var replaced bool
@@ -466,10 +451,8 @@ func runRosterImport(client *api.RESTClient, out, errOut io.Writer, org, classro
 	return nil
 }
 
-// dedupeByUsername collapses repeated usernames within an import
-// batch using last-wins semantics (matching every other roster
-// upsert). Preserves first-seen order via a parallel slice; no
-// input-slice mutation.
+// dedupeByUsername collapses repeated usernames (last-wins, matching
+// upsertRosterRow). Preserves first-seen order; no input mutation.
 func dedupeByUsername(rows []rosterRow) []rosterRow {
 	latest := make(map[string]rosterRow, len(rows))
 	order := make([]string, 0, len(rows))

@@ -39,9 +39,7 @@ func TestParseAssignments_Canonical(t *testing.T) {
 		Template: templateRef{Owner: "cs50", Repo: "hello-template", Branch: "main"},
 		Due:      "2026-09-15T23:59:00-04:00",
 		Mode:     "individual",
-		// parseAssignments normalizes empty Autograder → "default"
-		// so an entry written by v0.1 (no autograder field) lands
-		// here with a uniform value downstream readers can rely on.
+		// Empty Autograder normalizes to "default" on parse.
 		Autograder: "default",
 		Tests: []assignmentTest{
 			{TestName: "compiles", TestType: "run_command", Command: "make", Timeout: 1, MaxScore: 10},
@@ -53,9 +51,8 @@ func TestParseAssignments_Canonical(t *testing.T) {
 }
 
 func TestParseAssignments_AutograderField(t *testing.T) {
-	// A v0.2 file carries an explicit `autograder` field. The
-	// parser preserves the value verbatim — only the empty-string
-	// case normalizes to the default.
+	// Explicit values round-trip verbatim; empty normalizes to
+	// "default".
 	in := []byte(`{
   "schema": "classroom50/assignments/v1",
   "assignments": [
@@ -89,11 +86,8 @@ func TestParseAssignments_AutograderField(t *testing.T) {
 }
 
 func TestParseAssignments_RejectsInvalidAutograder(t *testing.T) {
-	// A hand-edit or malicious payload that snuck a path-traversal
-	// value into the autograder field MUST be rejected — the value
-	// flows into both a path segment in the contents API (for the
-	// teacher-side existence probe) and into a Pages URL the
-	// student CLI fetches.
+	// Path-traversal values must be rejected — the autograder name
+	// flows into a contents-API path and a Pages URL.
 	in := []byte(`{
   "schema": "classroom50/assignments/v1",
   "assignments": [
@@ -138,8 +132,7 @@ func TestParseAssignments_NullAssignmentsField(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parseAssignments: %v", err)
 	}
-	// A `null` value should normalize to an empty slice, matching the
-	// empty-array case so callers can treat them identically.
+	// `null` normalizes to []; callers treat null and [] identically.
 	if file.Assignments == nil {
 		t.Errorf("expected non-nil empty slice from null input, got nil")
 	}
@@ -158,26 +151,20 @@ func TestParseAssignments_Rejects(t *testing.T) {
 		{"whitespace only", "   \n\t  ", "empty"},
 		{"malformed json", `{`, "parse"},
 		{"wrong schema sentinel", `{"schema":"classroom50/assignments/v2","assignments":[]}`, "schema"},
-		// A future v2 file is expected to carry additional top-level
-		// fields. The probe pass MUST notice the schema sentinel
-		// before DisallowUnknownFields trips on the new field — so
-		// the teacher sees the actionable "this CLI handles only v1"
-		// message rather than an opaque "unknown field" decode error.
+		// A v2 file with extra top-level fields must surface as
+		// schema mismatch — the probe pass checks the sentinel
+		// before DisallowUnknownFields trips on a new field, so
+		// the teacher sees the actionable message rather than an
+		// opaque decode error.
 		{"v2 file with extra top-level field surfaces schema mismatch (not unknown-field)", `{"schema":"classroom50/assignments/v2","assignments":[],"config":{"unrelated":1}}`, "schema"},
 		{"missing schema", `{"assignments":[]}`, "schema"},
 		{"unknown top-level field", `{"schema":"classroom50/assignments/v1","assignments":[],"extra":1}`, "parse"},
-		// Trailing content after the first top-level value must not
-		// be silently truncated on the next re-encode. A
-		// concatenated duplicate or a fragment of an earlier merge
-		// conflict is the realistic source of a malformed file.
-		// The probe pass uses json.Unmarshal which rejects trailing
-		// content with its own "after top-level value" message;
-		// expectEOF is kept as defense-in-depth on the second decode
-		// in case the probe path ever changes.
+		// Trailing content after the top-level value (concatenated
+		// duplicate object, merge-conflict fragment, stray bytes)
+		// must not be silently truncated on re-encode.
 		{"trailing object after valid body", `{"schema":"classroom50/assignments/v1","assignments":[]}{"schema":"v2"}`, "after top-level value"},
 		{"trailing garbage after valid body", `{"schema":"classroom50/assignments/v1","assignments":[]}garbage`, "after top-level value"},
-		// Each rejection below pins a structural invariant that the
-		// CLI's write path already enforces, so a hand-edited or
+		// Parse-path matches the write-path bar so a hand-edited or
 		// web-UI-inserted entry can't survive parse and re-bless
 		// itself on the next CLI write.
 		{"existing entry with empty slug", `{"schema":"classroom50/assignments/v1","assignments":[{"slug":"","name":"x","template":{"owner":"a","repo":"b","branch":"main"},"mode":"individual","tests":[]}]}`, "empty slug"},
@@ -210,8 +197,7 @@ func TestEncodeAssignments_EmptyArrayWireShape(t *testing.T) {
 	if err != nil {
 		t.Fatalf("encodeAssignments: %v", err)
 	}
-	// `[]` not `null` on the wire — readers depend on the array shape
-	// even when no assignments are registered yet.
+	// `[]` not `null` — readers index without nil guards.
 	if !strings.Contains(string(data), `"assignments": []`) {
 		t.Errorf("expected empty list to serialize as `[]`, got:\n%s", data)
 	}
@@ -221,9 +207,8 @@ func TestEncodeAssignments_EmptyArrayWireShape(t *testing.T) {
 }
 
 func TestEncodeAssignments_NilFieldsRoundTrip(t *testing.T) {
-	// nil Assignments and nil Tests on disk → both rendered as `[]`
-	// (not `null`) so the downstream autograde workflow's matrix
-	// step can index into the array without nil guards.
+	// nil → `[]` for both Assignments and Tests so the autograde
+	// matrix step can index without nil guards.
 	file := assignmentsJSON{Schema: assignmentsSchemaV1}
 	data, err := encodeAssignments(file)
 	if err != nil {
@@ -257,12 +242,8 @@ func TestEncodeAssignments_NilTestsBecomesEmptyArray(t *testing.T) {
 }
 
 func TestEncodeAssignments_RoundTrip(t *testing.T) {
-	// Two explicit Autograder values exercise (a) the default
-	// scaffold and (b) a teacher-chosen non-default. A previous
-	// version of this test omitted Autograder entirely, which
-	// only passed because encodeAssignments silently mutated the
-	// caller's slice through a shared backing array — the round-
-	// trip assertion was passing for the wrong reason.
+	// Cover both default and teacher-chosen autograder values, and
+	// assert encodeAssignments doesn't mutate its caller.
 	original := assignmentsJSON{
 		Schema: assignmentsSchemaV1,
 		Assignments: []assignmentEntry{
@@ -311,12 +292,9 @@ func TestEncodeAssignments_RoundTrip(t *testing.T) {
 }
 
 func TestEncodeAssignments_NormalizesEmptyAutograder(t *testing.T) {
-	// A v0.1 file written before the field existed parses with
-	// Autograder="" (no JSON key present). encodeAssignments
-	// normalizes the empty value to "default" on the way out, so
-	// the next on-disk shape is always explicit. The normalization
-	// runs against a local copy — verify the caller's slice is
-	// not silently mutated.
+	// Empty Autograder → "default" on encode so the on-disk shape
+	// is always explicit. Normalization is on a local copy; verify
+	// the caller's slice is not mutated.
 	original := assignmentsJSON{
 		Schema: assignmentsSchemaV1,
 		Assignments: []assignmentEntry{
@@ -343,9 +321,7 @@ func TestEncodeAssignments_NormalizesEmptyAutograder(t *testing.T) {
 }
 
 func TestEncodeAssignments_OmitsOptionalEmptyFields(t *testing.T) {
-	// Description and Due are `omitempty` — a teacher who didn't pass
-	// --description / --due shouldn't see empty-string keys cluttering
-	// assignments.json. Mode is required and stays present.
+	// Description and Due are omitempty; Mode is always emitted.
 	file := assignmentsJSON{
 		Schema: assignmentsSchemaV1,
 		Assignments: []assignmentEntry{
@@ -400,12 +376,9 @@ func TestUpsertAssignment_AppendAndReplace(t *testing.T) {
 }
 
 func TestUpsertAssignment_CaseSensitive(t *testing.T) {
-	// Slugs match shortNamePattern's lowercase-only alphabet, so
-	// upsertAssignment compares case-sensitively. A "Hello" upsert
-	// against an existing "hello" should append, not replace —
-	// validating "Hello" would have failed earlier at the slug-regex
-	// check, but the upsert helper itself should not blur the
-	// distinction.
+	// Slugs are lowercase-only at validation, but the upsert helper
+	// shouldn't blur the distinction — "Hello" against "hello"
+	// appends, not replaces.
 	entries := []assignmentEntry{{Slug: "hello", Name: "Hello", Mode: "individual"}}
 	entries, replaced := upsertAssignment(entries, assignmentEntry{Slug: "Hello", Name: "Capital", Mode: "individual"})
 	if replaced {
@@ -476,9 +449,7 @@ func TestValidateAssignmentEntry_Rejects(t *testing.T) {
 		{"empty template repo", func(e *assignmentEntry) { e.Template.Repo = "" }, "template"},
 		{"empty template branch", func(e *assignmentEntry) { e.Template.Branch = "" }, "branch"},
 		{"empty autograder", func(e *assignmentEntry) { e.Autograder = "" }, "autograder"},
-		// Same path-traversal guard the parse-time validator
-		// enforces — validateAssignmentEntry must catch the value
-		// at write time *before* it reaches the contents API.
+		// Same path-traversal guard as the parse-time validator.
 		{"autograder with path traversal", func(e *assignmentEntry) { e.Autograder = "../students.csv" }, "invalid autograder"},
 		{"autograder with uppercase", func(e *assignmentEntry) { e.Autograder = "Default" }, "invalid autograder"},
 	}
@@ -613,8 +584,7 @@ func TestValidateAssignmentTests_DuplicateTestNames(t *testing.T) {
 	if !strings.Contains(err.Error(), "duplicate test-name") {
 		t.Fatalf("err = %q, want substring 'duplicate test-name'", err.Error())
 	}
-	// The error should reference both offending indices so the
-	// teacher knows where to look in the file.
+	// Error should cite both offending indices.
 	if !strings.Contains(err.Error(), "tests[2]") {
 		t.Errorf("err should cite tests[2], got %q", err.Error())
 	}
@@ -624,9 +594,8 @@ func TestValidateAssignmentTests_DuplicateTestNames(t *testing.T) {
 }
 
 func TestValidateAssignmentTests_AdjacentDuplicate(t *testing.T) {
-	// Guard against fence-post errors in the seen-map walk: an
-	// adjacent [0,1] duplicate is the smallest pair that proves the
-	// detector doesn't require a non-duplicate gap to fire.
+	// Smallest [0,1] pair — guards against a fence-post in the
+	// seen-map walk.
 	tests := []assignmentTest{
 		{TestName: "compiles", TestType: "run_command", Command: "make", Timeout: 1, MaxScore: 10},
 		{TestName: "compiles", TestType: "run_command", Command: "make all", Timeout: 1, MaxScore: 5},
@@ -644,11 +613,9 @@ func TestValidateAssignmentTests_AdjacentDuplicate(t *testing.T) {
 }
 
 func TestValidateAssignmentTests_DuplicateCheckIsCaseSensitive(t *testing.T) {
-	// `hello` vs `Hello` are distinct test-names — the duplicate-name
-	// check uses case-sensitive equality on a `seen` map keyed by the
-	// raw TestName string. A case-insensitive collapse would surprise
-	// a teacher who deliberately uses `Hello` and `hello` as related
-	// but distinct cases, so the contract is pinned here.
+	// `hello` vs `Hello` are distinct test-names — the dedup is
+	// case-sensitive so a teacher's intentional related-but-distinct
+	// pair isn't collapsed.
 	tests := []assignmentTest{
 		{TestName: "hello", TestType: "run_command", Command: "make", Timeout: 1, MaxScore: 10},
 		{TestName: "Hello", TestType: "run_command", Command: "make all", Timeout: 1, MaxScore: 5},
@@ -659,10 +626,8 @@ func TestValidateAssignmentTests_DuplicateCheckIsCaseSensitive(t *testing.T) {
 }
 
 func TestValidateAssignmentTests_EmptyArrayIsValid(t *testing.T) {
-	// An assignment can ship without tests — e.g. before the teacher
-	// has authored any (or for an in-class exercise without
-	// autograding). Reject only on entry-level violations, not on
-	// "this assignment has no tests".
+	// Tests-less assignments are valid (in-class exercises, or just
+	// not yet authored).
 	if err := validateAssignmentTests([]assignmentTest{}); err != nil {
 		t.Fatalf("expected empty tests to pass, got %v", err)
 	}

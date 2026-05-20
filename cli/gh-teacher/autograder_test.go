@@ -44,9 +44,8 @@ func TestDefaultAutograderYAML(t *testing.T) {
 		t.Errorf("default autograder missing submit-tag trigger\nfull:\n%s", got)
 	}
 
-	// Library `uses:` matches the const exactly so a future bump
-	// (e.g. `@v0.2.0` once the library is tagged) lands in one
-	// place.
+	// Library `uses:` is sourced from the const so bumps land in
+	// one place.
 	if !strings.Contains(got, "uses: "+autogradeLibraryRef) {
 		t.Errorf("default autograder missing `uses: %s`\nfull:\n%s", autogradeLibraryRef, got)
 	}

@@ -13,34 +13,23 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// shortNamePattern enforces the classroom slug rules: 2-39 characters,
-// starting with a lowercase letter or digit, then lowercase letters,
-// digits, or hyphens. The short-name flows into student-side repo
-// names like `<short-name>-<assignment>-<username>`, so it must stay
-// within GitHub's repo-naming constraints. Assignment slugs share
-// the same rule for the same reason. Write-time callers use
-// `validateShortName` in helpers.go for a consistent "invalid <X>"
-// error; `validateExistingEntry` checks this pattern directly because
-// its parse-time error frames the file context instead ("entry %q has
-// invalid slug ...").
+// shortNamePattern: classroom short-names and assignment slugs both
+// flow into student repo names (`<short-name>-<assignment>-<username>`)
+// and must stay within GitHub's repo-naming constraints. Callers
+// should use validateShortName (helpers.go) for the standard error
+// shape.
 var shortNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{1,38}$`)
 
-// Schema sentinels for the four scaffolded files. Every schema-aware
-// reader (the CLI writers themselves, the collect-scores workflow,
-// the autograde library, and any later consumer) MUST branch on
-// the schema field before reading so today's readers can handle
-// files produced by future schema versions without a flag day.
-// Content-agnostic copiers like publish-pages.yml don't need the
-// check.
+// Schema sentinels for the four scaffolded files. Schema-aware
+// readers MUST branch on this field first so newer files don't
+// crash older readers.
 const (
 	classroomSchemaV1   = "classroom50/classroom/v1"
 	assignmentsSchemaV1 = "classroom50/assignments/v1"
 	scoresSchemaV1      = "classroom50/scores/v1"
 )
 
-// studentsCSVHeader is derived from rosterColumns so the two
-// definitions can't drift. See students_csv.go for the trailing
-// github_id column's purpose.
+// studentsCSVHeader derives from rosterColumns so they can't drift.
 var studentsCSVHeader = strings.Join(rosterColumns, ",") + "\n"
 
 func classroomCmd() *cobra.Command {
@@ -114,12 +103,11 @@ func classroomAddCmd() *cobra.Command {
 	return cmd
 }
 
-// addClassroom creates the four-file scaffold in a single Tree commit
-// against <org>/classroom50, going through commitTree so a concurrent
-// writer racing on a different file can't lose this classroom's
-// commit. The existence probe runs inside the build callback (against
-// each attempt's parent SHA) so a same-classroom race surfaces as
-// "already exists" rather than silently clobbering the winner.
+// addClassroom writes the four-file scaffold in one Tree commit
+// through commitTree so concurrent writers don't lose each other's
+// work. The existence probe runs inside the build callback so a
+// same-classroom race surfaces as "already exists" rather than
+// silently clobbering the winner.
 func addClassroom(client *api.RESTClient, out, errOut io.Writer, org, shortName, name, term string) error {
 	branch, err := resolveConfigRepoBranch(client, org)
 	if err != nil {
@@ -132,11 +120,9 @@ func addClassroom(client *api.RESTClient, out, errOut io.Writer, org, shortName,
 	}
 
 	build := func(parentSHA string) (map[string]string, error) {
-		// contentsExists returns 200 for a directory (with a JSON
-		// array body it discards) and 404 only when nothing exists
-		// at that path, so a single probe defends against partial
-		// state (e.g. a teacher who hand-renamed classroom.json but
-		// left the other three files in place).
+		// contentsExists also catches partial-state classrooms (e.g.
+		// a teacher renamed classroom.json but left other files);
+		// the directory probe is 404 only when nothing exists there.
 		exists, err := contentsExists(client, org, configRepoName, shortName, parentSHA)
 		if err != nil {
 			return nil, err
@@ -154,19 +140,16 @@ func addClassroom(client *api.RESTClient, out, errOut io.Writer, org, shortName,
 		return err
 	}
 
-	// Primary confirmation on stdout (parseable by scripts). Advisory
-	// "View at" and "Next:" lines go to stderr so a CI script
-	// capturing stdout gets exactly one line.
+	// stdout: one parseable confirmation line. stderr: advisory
+	// "View at" + "Next:" hints.
 	_, _ = fmt.Fprintf(out, "%s/%s: added classroom %s (%d files)\n", org, configRepoName, shortName, len(files))
 	_, _ = fmt.Fprintf(errOut, "View at https://github.com/%s/%s/tree/%s/%s\n", org, configRepoName, branch, shortName)
 	_, _ = fmt.Fprintf(errOut, "Next: gh teacher roster add %s %s <username>\n", org, shortName)
 	return nil
 }
 
-// classroomJSON / scoresJSON pin the on-disk shape of the scaffolded
-// files. Schema sentinel comes first so readers can branch before
-// parsing the rest. assignments.json's typed shape lives in
-// assignments_json.go next to its parse/encode helpers.
+// classroomJSON / scoresJSON pin the on-disk scaffold shapes;
+// assignments.json's typed shape lives in assignments_json.go.
 type classroomJSON struct {
 	Schema    string `json:"schema"`
 	Name      string `json:"name"`
@@ -175,20 +158,18 @@ type classroomJSON struct {
 	Org       string `json:"org"`
 }
 
-// scoresJSON is the typed on-disk shape of scores.json. The
-// `Submissions` slice is the per-submission record bag — one entry
-// per (assignment, student) pair, written by `collect-scores.yml`'s
-// `collect_scores.py`. Scaffold-time the slice is empty so the
-// collect script sees a well-formed file from the very first run.
+// scoresJSON: one entry per (assignment, student) pair, written by
+// `collect-scores.yml`'s collect_scores.py. The slice is `[]` (not
+// null) at scaffold time so the collect script sees a well-formed
+// file on first run.
 type scoresJSON struct {
 	Schema      string           `json:"schema"`
 	Submissions []map[string]any `json:"submissions"`
 }
 
-// classroomScaffold returns destination-path → content for the four
-// scaffolded files. An empty Assignments slice marshals to `[]`
-// (not `null`) so the on-disk shape stays stable as assignments get
-// appended.
+// classroomScaffold returns destination-path → content for the
+// scaffolded files. Empty slices marshal to `[]` (not null) so the
+// on-disk shape stays stable across edits.
 func classroomScaffold(org, shortName, name, term string) (map[string]string, error) {
 	classroom := classroomJSON{
 		Schema:    classroomSchemaV1,
@@ -225,20 +206,16 @@ func classroomScaffold(org, shortName, name, term string) (map[string]string, er
 		shortName + "/assignments.json": string(assignmentsBytes),
 		shortName + "/students.csv":     studentsCSVHeader,
 		shortName + "/scores.json":      string(scoresBytes),
-		// Fifth file is the default autograder workflow students
-		// fetch from Pages on accept/submit. Lands here so a
-		// teacher can hand-edit it (or drop siblings) without
-		// re-running classroom add; the file is hand-editable and
-		// the CLI never rewrites it on subsequent classroom
-		// commands.
+		// Default autograder workflow students fetch from Pages on
+		// accept/submit. Hand-editable; the CLI never rewrites it
+		// on subsequent classroom commands.
 		autograderFilePath(shortName, defaultAutograderName): defaultAutograderYAML(),
 	}, nil
 }
 
 // encodeJSONPretty marshals v with 2-space indent and a trailing
-// newline — teachers may inspect or hand-edit these files.
-// SetEscapeHTML(false) keeps `<`/`>` literal in case a future field
-// holds URLs or angle-bracketed text.
+// newline so teachers can inspect/hand-edit the files. EscapeHTML
+// is off to keep `<`/`>` literal in URLs.
 func encodeJSONPretty(v any) ([]byte, error) {
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)

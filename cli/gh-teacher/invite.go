@@ -115,11 +115,9 @@ func inviteToOrg(client *api.RESTClient, out, errOut io.Writer, org, username, r
 	return nil
 }
 
-// inviteOrgByID is the resolved-userID variant of inviteToOrg: skips
-// GET /users/{username} when the caller already has the numeric ID.
-// Used by the roster commands so a `roster import` with N rows
-// doesn't double its user-resolution call count. `username` is still
-// needed so classifyOrgInviteError can produce
+// inviteOrgByID is inviteToOrg without the GET /users/{username}
+// lookup; callers that already have the numeric ID save the call.
+// `username` is still required so classifyOrgInviteError can produce
 // "already a member" / "pending invite" messages.
 func inviteOrgByID(client *api.RESTClient, org, username string, userID int64, role string) error {
 	body, err := json.Marshal(map[string]any{
@@ -136,10 +134,9 @@ func inviteOrgByID(client *api.RESTClient, org, username string, userID int64, r
 	return nil
 }
 
-// lookupUser resolves a GitHub username to its canonical login (the
-// case GitHub stores it as) and immutable numeric ID. Roster
-// commands keep both; inviteToOrg uses only the userID. 404 produces
-// "GitHub user not found"; other failures wrap the request context.
+// lookupUser → (canonical login, immutable numeric ID). Roster
+// commands keep both; inviteToOrg uses only the ID. 404 →
+// "GitHub user not found".
 func lookupUser(client *api.RESTClient, username string) (login string, userID int64, err error) {
 	path := fmt.Sprintf("users/%s", url.PathEscape(username))
 	var user struct {
@@ -155,12 +152,10 @@ func lookupUser(client *api.RESTClient, username string) (login string, userID i
 	return user.Login, user.ID, nil
 }
 
-// orgMembershipKnownError is returned by classifyOrgInviteError
-// when GitHub rejects an org invite with 422 and a follow-up
-// membership lookup confirms the user is already active or pending.
-// Roster commands match on this via `errors.As` so an "already a
-// member" outcome from a TOCTOU race past getMembershipState's
-// pre-check doesn't surface as "org invite failed".
+// orgMembershipKnownError: 422 followed by a membership lookup
+// confirming the user is already active or pending. Roster commands
+// match on this via `errors.As` so a TOCTOU race past
+// getMembershipState doesn't surface as "org invite failed".
 type orgMembershipKnownError struct {
 	state string // "active" or "pending"
 	msg   string
@@ -168,9 +163,8 @@ type orgMembershipKnownError struct {
 
 func (e *orgMembershipKnownError) Error() string { return e.msg }
 
-// classifyOrgInviteError converts a POST /orgs/{org}/invitations error into a
-// user-facing message for common failure modes. Unrecognized errors fall
-// through to a single wrapped error that preserves the request context.
+// classifyOrgInviteError maps POST /orgs/{org}/invitations errors to
+// user-facing messages. Unrecognized errors wrap with request context.
 func classifyOrgInviteError(client *api.RESTClient, org, username, path string, err error) error {
 	if httpErr, ok := errors.AsType[*api.HTTPError](err); ok {
 		switch httpErr.StatusCode {
@@ -178,8 +172,8 @@ func classifyOrgInviteError(client *api.RESTClient, org, username, path string, 
 			return errors.New("authentication failed; run `gh teacher login` to (re)authenticate")
 
 		case http.StatusForbidden:
-			// X-OAuth-Scopes distinguishes missing-scope from not-an-admin;
-			// absent (e.g. fine-grained PAT) falls back to a generic message.
+			// X-OAuth-Scopes distinguishes missing scope from
+			// not-an-admin; absent (fine-grained PAT) → generic.
 			scopes := httpErr.Headers.Get("X-OAuth-Scopes")
 			switch {
 			case scopes == "":
@@ -194,7 +188,7 @@ func classifyOrgInviteError(client *api.RESTClient, org, username, path string, 
 			return fmt.Errorf("%s: organization not found or not accessible", org)
 
 		case http.StatusUnprocessableEntity:
-			// follow-up GET distinguishes already-member from pending-invite;
+			// Follow-up GET separates already-member from pending;
 			// other 422s fall through to the wrapped error below.
 			if state, ok := getMembershipState(client, org, username); ok {
 				switch state {
@@ -215,7 +209,7 @@ func classifyOrgInviteError(client *api.RESTClient, org, username, path string, 
 	return fmt.Errorf("POST %s: %w", path, err)
 }
 
-// hasOrgAdminScope reports whether the X-OAuth-Scopes value contains admin:org.
+// hasOrgAdminScope: X-OAuth-Scopes contains admin:org.
 func hasOrgAdminScope(scopes string) bool {
 	for _, s := range strings.Split(scopes, ",") {
 		if strings.TrimSpace(s) == "admin:org" {
@@ -225,7 +219,7 @@ func hasOrgAdminScope(scopes string) bool {
 	return false
 }
 
-// getMembershipState returns the user's org membership state ("active" or
+// getMembershipState returns the org membership state ("active" or
 // "pending"), or false on lookup failure.
 func getMembershipState(client *api.RESTClient, org, username string) (string, bool) {
 	path := fmt.Sprintf("orgs/%s/memberships/%s", url.PathEscape(org), url.PathEscape(username))

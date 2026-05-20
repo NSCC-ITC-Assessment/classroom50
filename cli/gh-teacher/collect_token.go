@@ -20,32 +20,29 @@ import (
 	"golang.org/x/term"
 )
 
-// readHiddenLine reads one line with terminal echo disabled so the
-// PAT never appears on screen.
+// readHiddenLine reads one line with echo off so the PAT never
+// appears on screen.
 func readHiddenLine(f *os.File) (string, error) {
 	b, err := term.ReadPassword(int(f.Fd()))
 	return string(b), err
 }
 
-// collectSecretName is the repo-level Actions secret that
+// collectSecretName: the repo-level Actions secret
 // collect-scores.yml consumes. Hardcoded because it appears verbatim
 // in the workflow YAML.
 const collectSecretName = "CLASSROOM50_COLLECT_TOKEN"
 
-// envCollectToken is the environment variable carrying the token
-// value. A `--collect-token <value>` flag is deliberately not
-// offered: flag values leak via shell history, process listings,
-// and CI logs.
+// envCollectToken: env var carrying the token. No --collect-token
+// flag is offered; flag values leak via shell history, process
+// listings, and CI logs.
 const envCollectToken = "CLASSROOM50_COLLECT_TOKEN"
 
-// readCollectToken returns the token from env or stdin. Behavior
-// splits on whether stdin/stderr are TTYs:
-//
-//   - env set: use it (most CI/scripted flows)
-//   - env unset, stdin piped: read one line (`echo $T | gh ...`)
-//   - env unset, stdin and stderr both TTY: hidden-echo prompt
-//   - env unset, stdin TTY, stderr piped: error — can't both prompt
-//     and stay quiet without surprising anyone under tee/script
+// readCollectToken returns the token from env or stdin:
+//   - env set: use it (CI/scripted)
+//   - env unset, stdin piped: read one line
+//   - env unset, stdin + stderr both TTY: hidden-echo prompt
+//   - env unset, stderr not a TTY: error (can't safely prompt under
+//     tee/script)
 func readCollectToken(cmd *cobra.Command) ([]byte, error) {
 	if v := strings.TrimSpace(os.Getenv(envCollectToken)); v != "" {
 		return []byte(v), nil
@@ -71,8 +68,7 @@ func readCollectToken(cmd *cobra.Command) ([]byte, error) {
 		return nil, fmt.Errorf("can't prompt for collect token without an interactive terminal on stderr; set %s in the environment", envCollectToken)
 	}
 
-	// Prompt on stderr so a `> file` redirect of stdout doesn't capture
-	// the prompt; read from stdin with echo disabled.
+	// Prompt on stderr so `> file` on stdout doesn't capture it.
 	_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "%s (input hidden, ends with Enter): ", envCollectToken)
 	v, err := readHiddenLine(os.Stdin)
 	_, _ = fmt.Fprintln(cmd.ErrOrStderr())
@@ -89,10 +85,8 @@ func readCollectToken(cmd *cobra.Command) ([]byte, error) {
 // provisionCollectSecret sealbox-encrypts `token` against the repo's
 // Actions public key and uploads it as the repo-level
 // CLASSROOM50_COLLECT_TOKEN secret. Repo-level (not org-level) keeps
-// the secret out of every other repo in the org — only
-// collect-scores.yml in <org>/classroom50 can read it. Idempotent —
-// the PUT replaces the encrypted value in place. Shared by `init`
-// and `rotate-collect-token`.
+// the secret invisible to other repos in the org. Idempotent (PUT
+// replaces in place). Shared by `init` and `rotate-collect-token`.
 func provisionCollectSecret(client *api.RESTClient, out io.Writer, owner, repo string, token []byte, verb string) error {
 	keyPath := fmt.Sprintf("repos/%s/%s/actions/secrets/public-key",
 		url.PathEscape(owner), url.PathEscape(repo))
@@ -143,9 +137,8 @@ func provisionCollectSecret(client *api.RESTClient, out io.Writer, owner, repo s
 	return nil
 }
 
-// rotateCollectTokenCmd re-runs only the secret-provisioning step
-// of `init`. Used when the PAT nears expiry, when the owning service
-// account changes, or as part of incident response.
+// rotateCollectTokenCmd re-runs just the secret-provisioning step
+// of `init` (PAT expiry, service-account changes, incident response).
 func rotateCollectTokenCmd() *cobra.Command {
 	var confirmSvc bool
 	cmd := &cobra.Command{
@@ -174,8 +167,8 @@ func rotateCollectTokenCmd() *cobra.Command {
 			out := cmd.OutOrStdout()
 			errOut := cmd.ErrOrStderr()
 
-			// Don't rotate the secret for an org that hasn't been
-			// init'd yet — the user probably mistyped the org.
+			// Refuse to rotate on an org without classroom50 — the
+			// user probably mistyped.
 			repoPath := fmt.Sprintf("repos/%s/%s", url.PathEscape(org), configRepoName)
 			if err := client.Get(repoPath, nil); err != nil {
 				if isHTTPStatus(err, http.StatusNotFound) {

@@ -94,11 +94,8 @@ func TestParseGitHubRemote_ErrorMentionsShape(t *testing.T) {
 }
 
 func TestResolveSubmitOwner(t *testing.T) {
-	// Pins the v0.1 → v0.2 forward-compat ordering:
-	//   - explicit config.owner is preferred,
-	//   - the remote URL owner is the fallback,
-	//   - both empty is a clear error pointing the student at
-	//     `gh student accept` to refresh metadata.
+	// Preference order: config.owner > remote fallback > error
+	// pointing at `gh student accept` to refresh metadata.
 	cases := []struct {
 		name          string
 		configOwner   string
@@ -106,9 +103,9 @@ func TestResolveSubmitOwner(t *testing.T) {
 		wantOwner     string
 		wantErrPart   string // empty → expect success
 	}{
-		{"v0.2 accept (config.owner set)", "cs50-fall-2026", "", "cs50-fall-2026", ""},
-		{"v0.2 with both populated prefers config.owner", "cs50-fall-2026", "elsewhere", "cs50-fall-2026", ""},
-		{"v0.1 accept (no config block) falls back to remote", "", "cs50-fall-2026", "cs50-fall-2026", ""},
+		{"config.owner set", "cs50-fall-2026", "", "cs50-fall-2026", ""},
+		{"both populated prefers config.owner", "cs50-fall-2026", "elsewhere", "cs50-fall-2026", ""},
+		{"missing config block falls back to remote", "", "cs50-fall-2026", "cs50-fall-2026", ""},
 		{"both empty surfaces the re-accept guidance", "", "", "", "gh student accept"},
 	}
 	for _, tc := range cases {

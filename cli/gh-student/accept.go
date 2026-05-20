@@ -62,7 +62,7 @@ func acceptCmd() *cobra.Command {
 
 			switch status.StatusCode {
 			case http.StatusOK:
-				// auto-accept any pending invite first.
+				// Auto-accept a pending org invite first.
 				if status.State == "pending" {
 					acceptStatus, err := acceptOrgInvite(client, org)
 					if err != nil {
@@ -101,7 +101,7 @@ type OrgStatus struct {
 	StatusCode int
 }
 
-// checkOrgStatus returns the authed user's membership state in org.
+// checkOrgStatus returns the authed user's membership in org.
 func checkOrgStatus(client *api.RESTClient, org string) (OrgStatus, error) {
 	path := fmt.Sprintf("user/memberships/orgs/%s", url.PathEscape(org))
 	var resp struct {
@@ -124,7 +124,6 @@ func checkOrgStatus(client *api.RESTClient, org string) (OrgStatus, error) {
 }
 
 type AcceptStatus struct {
-	State      string
 	StatusCode int
 }
 
@@ -136,10 +135,7 @@ func acceptOrgInvite(client *api.RESTClient, org string) (AcceptStatus, error) {
 	}
 
 	path := fmt.Sprintf("user/memberships/orgs/%s", url.PathEscape(org))
-	var resp struct {
-		State string `json:"state"`
-	}
-	if err := client.Patch(path, bytes.NewReader(body), &resp); err != nil {
+	if err := client.Patch(path, bytes.NewReader(body), nil); err != nil {
 		if httpErr, ok := errors.AsType[*api.HTTPError](err); ok {
 			return AcceptStatus{
 				StatusCode: httpErr.StatusCode,
@@ -149,18 +145,12 @@ func acceptOrgInvite(client *api.RESTClient, org string) (AcceptStatus, error) {
 		return AcceptStatus{}, fmt.Errorf("PATCH %s: %w", path, err)
 	}
 
-	return AcceptStatus{
-		State:      resp.State,
-		StatusCode: http.StatusOK,
-	}, nil
+	return AcceptStatus{StatusCode: http.StatusOK}, nil
 }
 
 // assignmentModeIndividual is the only mode `gh student accept`
-// currently supports. Mirrors the teacher-side constant of the same
-// name. `mode: group` returns a clear "not yet supported" error so a
-// teacher who tries `gh teacher assignment add --mode group` (which
-// the teacher CLI already rejects) doesn't see a confusing
-// student-side surprise.
+// supports; mirrors the teacher-side constant. Other modes surface
+// a clear "not yet supported" error.
 const assignmentModeIndividual = "individual"
 
 func acceptAssignment(cmd *cobra.Command, client *api.RESTClient, out io.Writer, org, classroom, assignment string) error {
@@ -169,12 +159,9 @@ func acceptAssignment(cmd *cobra.Command, client *api.RESTClient, out io.Writer,
 		return fmt.Errorf("retrieving authed username: %w", err)
 	}
 
-	// 1) look up the assignment entry on the published Pages site.
-	//    No token required (the publish-pages allow-list keeps the
-	//    site public); the template ref tells us which repo to
-	//    generate from, the mode tells us whether to short-circuit
-	//    on group mode, and the autograder ref tells us which YAML
-	//    to fetch in step 2.
+	// 1) Look up the assignment entry on the published Pages site
+	//    (no token; publish-pages keeps the JSON public). The entry
+	//    carries the template ref, mode, and autograder ref.
 	entry, err := fetchAssignmentEntry(cmd.Context(), org, classroom, assignment)
 	if err != nil {
 		return err
@@ -188,20 +175,17 @@ func acceptAssignment(cmd *cobra.Command, client *api.RESTClient, out io.Writer,
 			assignment, entry.Template.Owner, entry.Template.Repo, entry.Template.Branch)
 	}
 
-	// 2) fetch the autograder workflow from Pages *before* creating
-	//    the assignment repo. A 404 (unpublished autograder) or
-	//    malformed-YAML failure here surfaces a clean error with no
-	//    half-baked repo on the teacher's org — the student can
-	//    re-run accept after the instructor publishes the file.
+	// 2) Fetch the autograder workflow from Pages *before* creating
+	//    the assignment repo, so a 404 or malformed-YAML failure
+	//    doesn't leave a half-baked repo on the teacher's org.
 	autograderName := entry.ResolveAutograder()
 	workflow, err := fetchAutograderWorkflow(cmd.Context(), org, classroom, autograderName)
 	if err != nil {
 		return err
 	}
 
-	// 3) create the assignment repo from the entry's template. If
-	//    it already exists, short-circuit: the student accepted
-	//    before; don't touch their work.
+	// 3) Create the assignment repo. Already-exists → short-circuit
+	//    and leave the existing repo alone.
 	htmlURL, fullName, alreadyExisted, err := createTemplatedPrivateAssignmentRepoInOrg(client, out, username, classroom, assignment, org, entry.Template)
 	if err != nil {
 		return err
@@ -210,16 +194,15 @@ func acceptAssignment(cmd *cobra.Command, client *api.RESTClient, out io.Writer,
 		return reportAlreadyAccepted(out, fullName, htmlURL)
 	}
 
-	// 4) invite as `maintain`. PUT collaborators is upsert; covers
-	//    the spec's admin->maintain downgrade in a single call.
+	// 4) Invite as `maintain`. PUT collaborators is upsert, so this
+	//    also downgrades an existing admin collaborator.
 	if err := inviteUserToMaintain(client, out, username, classroom, assignment, org); err != nil {
 		return err
 	}
 
-	// 5) write .classroom50.yml + the fetched autograde workflow
-	//    in a single Tree commit. waitForStableBranch (inside
-	//    dropClassroomFiles) handles GitHub's post-templated-repo
-	//    replication lag.
+	// 5) Write .classroom50.yml + the autograde workflow in one
+	//    Tree commit. dropClassroomFiles waits out GitHub's
+	//    post-template-generation replication lag.
 	repoName := assignmentRepoName(classroom, assignment, username)
 	cfg := ClassroomConfig{
 		Classroom:  classroom,
@@ -249,12 +232,11 @@ func acceptAssignment(cmd *cobra.Command, client *api.RESTClient, out io.Writer,
 			ClassroomMetadataPath, autogradeWorkflowPath, org, repoName, autograderName)
 	}
 
-	// 6) report success.
 	return reportAccepted(out, fullName, htmlURL)
 }
 
-// is422AlreadyExists reports whether the 422's message or any of its Errors
-// items mentions "already exists" (case-insensitive).
+// is422AlreadyExists matches "already exists" (case-insensitive) in
+// the 422 message or any Errors[] item.
 func is422AlreadyExists(httpErr *api.HTTPError) bool {
 	if strings.Contains(strings.ToLower(httpErr.Message), "already exists") {
 		return true
@@ -267,14 +249,14 @@ func is422AlreadyExists(httpErr *api.HTTPError) bool {
 	return false
 }
 
-// reportAccepted prints the success header + clone instructions.
+// reportAccepted: success header + clone instructions.
 func reportAccepted(out io.Writer, fullName, htmlURL string) error {
 	_, _ = fmt.Fprintf(out, "Assignment accepted: %s\n\n", fullName)
 	return printCloneInstructions(out, htmlURL)
 }
 
-// reportAlreadyAccepted prints the friendly message for re-runs against an
-// existing repo; the existing repo is never touched.
+// reportAlreadyAccepted: re-run message; the existing repo is
+// never touched.
 func reportAlreadyAccepted(out io.Writer, fullName, htmlURL string) error {
 	_, _ = fmt.Fprintf(out, "Assignment already accepted: %s\n\n", fullName)
 	_, _ = fmt.Fprintln(out, "Your existing repository contains your latest submissions and commits.")
@@ -282,8 +264,8 @@ func reportAlreadyAccepted(out io.Writer, fullName, htmlURL string) error {
 	return printCloneInstructions(out, htmlURL)
 }
 
-// printCloneInstructions writes the clone block, with an inside-Git-repo
-// warning when applicable.
+// printCloneInstructions: clone block; warns if cwd is inside a
+// Git repo (nested clones are confusing).
 func printCloneInstructions(out io.Writer, htmlURL string) error {
 	root, insideRepo, err := currentGitRoot()
 	if err != nil {
@@ -325,12 +307,11 @@ type GeneratedRepo struct {
 	HasWiki     bool `json:"has_wiki"`
 }
 
-// assignmentRepoName returns the canonical <classroom>-<assignment>-<username>
-// name (lowercased) that `gh student accept` creates. Cross-binary contract:
-// cli/gh-teacher/download.go rebuilds the <classroom>-<assignment>- prefix by
-// hand to find these repos (separate go.mod modules, no shared symbol).
-// Changing the shape here without updating it there silently makes
-// `gh teacher download` return zero repos.
+// assignmentRepoName: canonical lowercased
+// <classroom>-<assignment>-<username> repo name. Cross-binary
+// contract — cli/gh-teacher/download.go rebuilds the prefix by hand
+// (separate go.mod, no shared symbol). Changing the shape here
+// silently makes `gh teacher download` return zero repos.
 func assignmentRepoName(classroom, assignment, username string) string {
 	return fmt.Sprintf("%s-%s-%s",
 		strings.ToLower(classroom),
@@ -339,17 +320,12 @@ func assignmentRepoName(classroom, assignment, username string) string {
 	)
 }
 
-// createTemplatedPrivateAssignmentRepoInOrg generates a private repo
-// named <classroom>-<assignment>-<username> (lowercased) in <org>
-// from the entry's template and disables issues/projects/wiki.
-//
-// The template lives wherever `gh teacher assignment add` pointed
-// it — same org or a different org (so long as it's visible to the
-// student's token). A 404 on the generate call means the template
-// isn't readable by the student; surface the cross-org visibility
-// message instead of a raw "POST 404". On 422-already-exists,
-// alreadyExisted=true and the PATCH is skipped so re-runs don't
-// disturb an existing repo.
+// createTemplatedPrivateAssignmentRepoInOrg generates a private
+// repo from the entry's template and disables
+// issues/projects/wiki. 404 on generate → cross-org visibility
+// message (template not readable by the student).
+// 422-already-exists → alreadyExisted=true and the PATCH is skipped
+// so re-runs don't disturb an existing repo.
 func createTemplatedPrivateAssignmentRepoInOrg(client *api.RESTClient, out io.Writer, username, classroom, assignment, org string, tmpl templateRef) (htmlURL, fullName string, alreadyExisted bool, err error) {
 	newRepoName := assignmentRepoName(classroom, assignment, username)
 	createBody, err := json.Marshal(map[string]any{
@@ -411,9 +387,8 @@ func createTemplatedPrivateAssignmentRepoInOrg(client *api.RESTClient, out io.Wr
 	return updated.HTMLURL, updated.FullName, false, nil
 }
 
-// inviteUserToMaintain adds username as a maintain-level collaborator on
-// their assignment repo. PUT collaborators is upsert; this also covers the
-// spec's admin->maintain downgrade.
+// inviteUserToMaintain adds username as a maintain collaborator.
+// PUT collaborators is upsert (covers admin → maintain downgrade).
 func inviteUserToMaintain(client *api.RESTClient, out io.Writer, username, classroom, assignment, org string) error {
 	body, err := json.Marshal(map[string]string{
 		"permission": "maintain",
@@ -443,10 +418,10 @@ func currentGitRoot() (string, bool, error) {
 	out, err := cmd.Output()
 	if err != nil {
 		if _, ok := errors.AsType[*exec.ExitError](err); ok {
-			// not inside a git tree.
+			// Not inside a git tree.
 			return "", false, nil
 		}
-		// e.g., git not installed.
+		// e.g. git not installed.
 		return "", false, fmt.Errorf("check git repository: %w", err)
 	}
 

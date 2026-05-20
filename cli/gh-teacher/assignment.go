@@ -41,9 +41,8 @@ func assignmentCmd() *cobra.Command {
 	return cmd
 }
 
-// assignmentAddCmd implements `gh teacher assignment add`. The
-// `--mode` flag accepts only "individual" today but is exposed so a
-// CI script can pin the value explicitly across CLI versions.
+// assignmentAddCmd: `--mode` accepts only "individual"; the flag is
+// exposed so CI scripts can pin the value across CLI versions.
 func assignmentAddCmd() *cobra.Command {
 	var (
 		name        string
@@ -160,10 +159,9 @@ func assignmentAddCmd() *cobra.Command {
 	return cmd
 }
 
-// assignmentRemoveCmd implements `gh teacher assignment remove`.
-// Idempotent (a missing slug exits 0) and never touches existing
-// student repos — only new `gh student accept` calls stop finding
-// the slug.
+// assignmentRemoveCmd is idempotent (missing slug exits 0) and
+// leaves existing student repos untouched — only future
+// `gh student accept` calls stop finding the slug.
 func assignmentRemoveCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "remove <org> <classroom> <slug>",
@@ -201,12 +199,9 @@ func assignmentRemoveCmd() *cobra.Command {
 	return cmd
 }
 
-// assignmentListCmd implements the read-only `gh teacher assignment
-// list`. Default output is one slug per line on stdout (pipeable
-// into `xargs gh teacher download`, `grep`, agent loops); `--json`
-// emits the full entries array for agents that need template/due/
-// tests without a second API call. The stderr summary is
-// `-q`-suppressible so capturing scripts see only the payload.
+// assignmentListCmd: read-only. stdout = one slug per line by
+// default; `--json` emits the full entries array; `-q` suppresses
+// the stderr summary so capturing scripts see only stdout.
 func assignmentListCmd() *cobra.Command {
 	var (
 		asJSON bool
@@ -257,10 +252,9 @@ func assignmentListCmd() *cobra.Command {
 	return cmd
 }
 
-// runAssignmentList orchestrates the read-only path: one branch
-// resolve, one file read, no commit. A missing assignments.json
-// surfaces the standard "run `gh teacher classroom add` first"
-// message — same contract as add/remove.
+// runAssignmentList: one branch resolve, one file read, no commit.
+// Missing assignments.json points the teacher at
+// `gh teacher classroom add`.
 func runAssignmentList(client *api.RESTClient, out, errOut io.Writer, org, classroom string, asJSON, quiet bool) error {
 	branch, err := resolveConfigRepoBranch(client, org)
 	if err != nil {
@@ -290,11 +284,10 @@ func runAssignmentList(client *api.RESTClient, out, errOut io.Writer, org, class
 }
 
 // formatAssignmentListJSON marshals the bare entries array (no
-// `{schema, assignments}` envelope) with the on-disk pretty-print
-// + trailing newline so terminal output and `jq` pipes behave
-// identically. Nil entries / nil Tests normalize to `[]` and empty
-// Autograder normalizes to "default" so consumers can index without
-// nil guards or the v0.1 → v0.2 forward-compat shim.
+// `{schema, assignments}` envelope) with on-disk pretty-print +
+// trailing newline so terminal output and `jq` pipes match. Nil
+// slices and empty Autograder are normalized so consumers can
+// index without nil guards.
 func formatAssignmentListJSON(entries []assignmentEntry) ([]byte, error) {
 	if entries == nil {
 		entries = []assignmentEntry{}
@@ -310,9 +303,8 @@ func formatAssignmentListJSON(entries []assignmentEntry) ([]byte, error) {
 	return encodeJSONPretty(entries)
 }
 
-// summarizeAssignmentList produces the one-line stderr summary the
-// non-quiet path prints. Shape matches every other CLI confirmation
-// line (`<org>/<repo>/<path>: <message>`).
+// summarizeAssignmentList: one-line stderr summary shaped
+// `<org>/<repo>/<path>: <message>` to match other CLI commands.
 func summarizeAssignmentList(org, classroom string, count int) string {
 	path := fmt.Sprintf("%s/%s/%s", org, configRepoName, assignmentsFilePath(classroom))
 	switch count {
@@ -325,32 +317,19 @@ func summarizeAssignmentList(org, classroom string, count int) string {
 	}
 }
 
-// assignmentsFilePath is the on-repo path to a classroom's
-// assignments.json — centralized so the path shape lives in one
-// place (matches rosterFilePath's role for students.csv).
+// assignmentsFilePath: on-repo path to a classroom's assignments.json
+// (matches rosterFilePath's role for students.csv).
 func assignmentsFilePath(classroom string) string {
 	return classroom + "/assignments.json"
 }
 
-// runAssignmentAdd orchestrates `assignment add`:
-//
-//  1. Resolve the config repo's default branch (404 → "run init").
-//  2. Validate the template repo (visible, is_template:true, resolve
-//     @branch fallback to default_branch).
-//  3. Validate the entry shape against the on-disk schema.
-//  4. commitTree loop: read assignments.json, verify the referenced
-//     autograder file exists at parentSHA, upsert by slug, encode,
-//     PATCH the ref with fast-forward.
-//
-// Steps 1-3 run before the commit loop so a template-visibility
-// failure or a malformed tests file never produces a partial-state
-// commit. The autograder existence probe runs inside the build
-// callback against each attempt's parent SHA so a teacher who
-// concurrently deletes the referenced autograder loses cleanly on
-// retry rather than landing a dangling reference. The rebase loop
-// handles concurrent edits to *different* slugs cleanly; same-slug
-// races are last-writer-wins, with both commits visible in git
-// history for `git revert` recovery.
+// runAssignmentAdd validates template visibility and entry shape
+// before entering the commitTree loop so a bad input never produces
+// a partial-state commit. The autograder existence probe runs inside
+// the build callback against each attempt's parent SHA: a concurrent
+// delete of the referenced autograder loses cleanly on retry rather
+// than landing a dangling reference. Same-slug races are
+// last-writer-wins; both commits stay in history for `git revert`.
 func runAssignmentAdd(client *api.RESTClient, out, errOut io.Writer, org, classroom, slug, name, description string, tmpl templateArg, due, mode, autograder string, tests []assignmentTest) error {
 	branch, err := resolveConfigRepoBranch(client, org)
 	if err != nil {
@@ -381,12 +360,9 @@ func runAssignmentAdd(client *api.RESTClient, out, errOut io.Writer, org, classr
 
 	var action string
 	build := func(parentSHA string) (map[string]string, error) {
-		// Verify the autograder file exists at the parent SHA
-		// before encoding the new entry. A `--autograder default`
-		// against a classroom where someone deleted default.yml
-		// loses here with an actionable message; without this
-		// guard the assignment writes successfully and every
-		// student's accept 404s on the Pages fetch later.
+		// Verify the autograder file exists at parent SHA before
+		// writing — otherwise the assignment lands successfully and
+		// every student's accept 404s on the Pages fetch later.
 		exists, err := autograderExists(client, org, configRepoName, classroom, entry.Autograder, parentSHA)
 		if err != nil {
 			return nil, fmt.Errorf("check autograder %s/%s/%s: %w",
@@ -469,12 +445,10 @@ func runAssignmentRemove(client *api.RESTClient, out io.Writer, org, classroom, 
 	return nil
 }
 
-// loadAssignments fetches and parses assignments.json at `ref`.
-// commitTree build callbacks pass the parent commit SHA (consistent
-// read across rebase attempts); the read-only list path passes the
-// branch name. GitHub's contents API accepts both via its `ref`
-// query parameter. A missing file points the teacher at
-// `gh teacher classroom add`.
+// loadAssignments reads assignments.json at `ref` (commit SHA for
+// rebase-consistent reads inside commitTree, branch name for the
+// read-only list path — the contents API accepts both). Missing
+// file → points the teacher at `gh teacher classroom add`.
 func loadAssignments(client *api.RESTClient, org, classroom, ref string) (assignmentsJSON, error) {
 	path := assignmentsFilePath(classroom)
 	data, ok, err := readFileContents(client, org, configRepoName, path, ref)
@@ -492,19 +466,18 @@ func loadAssignments(client *api.RESTClient, org, classroom, ref string) (assign
 	return file, nil
 }
 
-// templateArg is the parsed `--template` flag. Branch is empty when
+// templateArg is the parsed `--template` flag. Branch is empty if
 // the teacher omits `@branch`; validateTemplateRepo then fills it
-// from the template's `default_branch`. Distinct from templateRef
-// (the on-disk shape) because on-disk Branch MUST be populated.
+// from the template's `default_branch`. Kept distinct from
+// templateRef because on-disk Branch must be populated.
 type templateArg struct {
 	Owner  string
 	Repo   string
 	Branch string // empty → use the repo's default_branch
 }
 
-// parseTemplateRef parses `<owner>/<repo>` or `<owner>/<repo>@<branch>`.
-// Rejects empty parts and extra `/` or `@` so typos like
-// `cs50//hello@main` or `cs50/hello@@main` surface clearly.
+// parseTemplateRef parses `<owner>/<repo>[@branch]`. Rejects empty
+// parts and extra `/` or `@` (e.g. `cs50//hello`, `cs50/hello@@main`).
 func parseTemplateRef(raw string) (templateArg, error) {
 	if raw == "" {
 		return templateArg{}, errors.New("--template must not be empty")
@@ -528,8 +501,8 @@ func parseTemplateRef(raw string) (templateArg, error) {
 }
 
 // normalizeDueDate validates an RFC 3339 timestamp and echoes it
-// back unchanged, preserving the teacher's timezone offset on disk.
-// Empty is valid (--due is optional; absent means "no deadline").
+// back unchanged so the teacher's timezone offset round-trips.
+// Empty → no deadline (--due is optional).
 func normalizeDueDate(raw string) (string, error) {
 	if raw == "" {
 		return "", nil
@@ -540,16 +513,11 @@ func normalizeDueDate(raw string) (string, error) {
 	return raw, nil
 }
 
-// loadTestsFile reads --tests if set. Top-level value must be a JSON
-// array. Returns nil for the "no flag" case so the caller can
-// distinguish that from "explicit empty array" — both render as `[]`
-// on disk regardless.
-//
-// Three shape guards fire before structural validation: bare `null`
-// (would silently become `[]` on re-encode), unknown fields (typos
-// like `compairson-method`), and trailing content after the first
-// value (concatenated duplicate body or stray text). Schema errors
-// cite tests[N] + test-name so a teacher can locate the offender.
+// loadTestsFile reads --tests if set. Top-level must be a JSON
+// array. Returns nil when the flag is absent (distinct from an
+// explicit empty array, though both render as `[]` on disk).
+// Three shape guards reject bare `null`, unknown fields (typos like
+// `compairson-method`), and trailing content after the first value.
 func loadTestsFile(path string) ([]assignmentTest, error) {
 	if path == "" {
 		return nil, nil
@@ -580,11 +548,9 @@ func loadTestsFile(path string) ([]assignmentTest, error) {
 	return tests, nil
 }
 
-// validateTemplateRepo checks <owner>/<repo> exists, is a template
-// repo, and resolves an absent --template @branch to the repo's
-// default_branch so the on-disk Branch is always populated. The
-// 404 path produces the cross-org visibility message (private repo
-// in another org). All post-HTTP decisions live in
+// validateTemplateRepo checks <owner>/<repo> exists and is a
+// template repo, then resolves missing @branch to default_branch so
+// on-disk Branch is always populated. Post-HTTP decisions live in
 // resolveTemplateBranch so the decision table is unit-testable
 // without an httptest scaffold.
 func validateTemplateRepo(client *api.RESTClient, t templateArg) (templateRef, error) {
@@ -603,10 +569,9 @@ func validateTemplateRepo(client *api.RESTClient, t templateArg) (templateRef, e
 	return resolveTemplateBranch(t, resp.IsTemplate, resp.DefaultBranch)
 }
 
-// resolveTemplateBranch is the pure post-HTTP logic deciding the
-// final templateRef from --template + repo fields. Four control
-// paths: not-a-template, explicit @branch, default_branch fallback,
-// empty-default_branch defensive guard.
+// resolveTemplateBranch picks the final templateRef from
+// --template + repo fields: not-a-template, explicit @branch,
+// default_branch fallback, or empty-default_branch guard.
 func resolveTemplateBranch(t templateArg, isTemplate bool, defaultBranch string) (templateRef, error) {
 	if !isTemplate {
 		return templateRef{}, fmt.Errorf("`%s/%s` is not a template repository — toggle Settings → \"Template repository\" on the repo, then re-run", t.Owner, t.Repo)
@@ -616,9 +581,8 @@ func resolveTemplateBranch(t templateArg, isTemplate bool, defaultBranch string)
 		branch = defaultBranch
 	}
 	if branch == "" {
-		// Defense against a fresh repo returning an empty
-		// default_branch; an empty Branch on disk would trip
-		// `gh student accept` later.
+		// Defensive: a fresh repo can return empty default_branch,
+		// and an empty Branch on disk would trip `gh student accept`.
 		return templateRef{}, fmt.Errorf("template `%s/%s` has no default branch — pass --template %s/%s@<branch> explicitly", t.Owner, t.Repo, t.Owner, t.Repo)
 	}
 	return templateRef{Owner: t.Owner, Repo: t.Repo, Branch: branch}, nil

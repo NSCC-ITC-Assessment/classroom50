@@ -10,17 +10,15 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// requiredScopes are the OAuth scopes gh-teacher needs on top of the gh
-// defaults: admin:org for the org-membership endpoints used by
-// `gh teacher invite <org> <user>`. Kept in one place so loginCmd and the
-// auto-login fallback in requireAuthClient stay in sync.
+// requiredScopes: extras on top of gh's defaults — admin:org for the
+// org-membership endpoints used by `gh teacher invite`. One source
+// of truth for loginCmd and requireAuthClient's auto-login.
 var requiredScopes = []string{"admin:org"}
 
-// requireAuthClient returns a REST client, transparently running
-// `gh auth login` first if no token is configured for the default host. This
-// turns the otherwise cryptic "authentication token not found for host
-// github.com" failure into a guided login. In non-interactive shells (where
-// the browser flow can't run) it returns a clear error instead.
+// requireAuthClient returns a REST client, auto-running
+// `gh auth login` when no token is set for the default host so the
+// cryptic "token not found" failure becomes a guided login.
+// Non-interactive shells get a clear error instead.
 func requireAuthClient(cmd *cobra.Command) (*api.RESTClient, error) {
 	host, _ := auth.DefaultHost()
 	if host == "" {
@@ -39,10 +37,9 @@ func requireAuthClient(cmd *cobra.Command) (*api.RESTClient, error) {
 	return client, nil
 }
 
-// autoLogin shells out to `gh auth login` with the scopes gh-teacher needs,
-// targeting the same host requireAuthClient just checked. Mirrors what
-// `gh teacher login` does so a fresh user hitting any other command lands in
-// the same login flow.
+// autoLogin shells out to `gh auth login` with gh-teacher's scopes
+// against the same host requireAuthClient checked. Mirrors
+// `gh teacher login` so a fresh user lands in the same flow.
 func autoLogin(cmd *cobra.Command, host string) error {
 	if !isInteractiveTTY() {
 		return fmt.Errorf("not signed in to %s; run `gh teacher login` from an interactive terminal to authenticate", host)
@@ -66,9 +63,8 @@ func autoLogin(cmd *cobra.Command, host string) error {
 	return nil
 }
 
-// isInteractiveTTY reports whether both stdin and stderr are connected to a
-// terminal. `gh auth login` writes its prompts to stderr and reads from
-// stdin, so both must be a TTY for the browser/device-code flow to work.
+// isInteractiveTTY: both stdin and stderr must be a TTY because
+// `gh auth login` reads from stdin and prompts on stderr.
 func isInteractiveTTY() bool {
 	return isCharDevice(os.Stdin) && isCharDevice(os.Stderr)
 }

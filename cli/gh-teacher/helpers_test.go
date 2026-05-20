@@ -11,9 +11,9 @@ import (
 )
 
 func TestIsHTTPStatus(t *testing.T) {
-	// Each case pins one rung of the err → *api.HTTPError → StatusCode
-	// chain that every command uses to distinguish 404 / 409 / 422 from
-	// generic transport errors.
+	// Each case pins one rung of the err → *api.HTTPError →
+	// StatusCode chain commands rely on to distinguish 404 / 409 /
+	// 422 from generic transport errors.
 	cases := []struct {
 		name string
 		err  error
@@ -40,9 +40,8 @@ func TestIsHTTPStatus(t *testing.T) {
 		},
 		{
 			name: "wrapped HTTPError still resolves",
-			// errors.AsType walks the error chain, so a caller that
-			// wraps via fmt.Errorf("ctx: %w", err) doesn't break the
-			// classification.
+			// errors.As walks the chain, so a caller that wraps via
+			// fmt.Errorf("ctx: %w", err) doesn't break classification.
 			err:  fmt.Errorf("GET something: %w", &api.HTTPError{StatusCode: http.StatusUnprocessableEntity}),
 			code: http.StatusUnprocessableEntity,
 			want: true,
@@ -61,8 +60,8 @@ func TestIsHTTPStatus(t *testing.T) {
 		},
 		{
 			name: "HTTPError with code 0 matches only 0",
-			// The zero-status case shouldn't accidentally satisfy any
-			// real status check.
+			// Zero-status must not accidentally satisfy a real
+			// status check.
 			err:  &api.HTTPError{},
 			code: http.StatusNotFound,
 			want: false,
@@ -78,10 +77,10 @@ func TestIsHTTPStatus(t *testing.T) {
 }
 
 func TestValidateShortName_LabelFlowsIntoError(t *testing.T) {
-	// The label is part of the error wording surface — write-time
-	// callers pass "slug", "short-name", or "classroom", and a
-	// teacher should see the exact noun back. Pin the contract so a
-	// future refactor that hardcodes a single label is caught.
+	// The label is part of the error surface — callers pass
+	// "slug", "short-name", or "classroom" and the teacher should
+	// see that exact noun back. Pin it so a refactor can't quietly
+	// hardcode a single label.
 	cases := []struct {
 		label    string
 		name     string
@@ -100,9 +99,8 @@ func TestValidateShortName_LabelFlowsIntoError(t *testing.T) {
 			if !strings.Contains(err.Error(), tc.wantPart) {
 				t.Fatalf("err = %q, want substring %q", err.Error(), tc.wantPart)
 			}
-			// The pattern description should travel with every error
-			// so a hand-editor sees the rule without having to look
-			// it up.
+			// Every error must carry the pattern description so a
+			// hand-editor learns the rule without external docs.
 			if !strings.Contains(err.Error(), shortNamePatternDescription) {
 				t.Errorf("err = %q, want substring %q", err.Error(), shortNamePatternDescription)
 			}

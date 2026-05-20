@@ -37,9 +37,8 @@ func main() {
 	root.AddCommand(removeCmd())
 	root.AddCommand(downloadCmd())
 
-	// signal-aware root context: subcommands see cmd.Context()
-	// cancel on Ctrl-C / SIGTERM, so in-flight HTTP work unwinds
-	// promptly instead of waiting for the per-call timeout.
+	// Signal-aware root context: subcommands see cmd.Context()
+	// cancel on Ctrl-C / SIGTERM so in-flight HTTP unwinds.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 

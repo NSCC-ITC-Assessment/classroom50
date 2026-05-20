@@ -17,28 +17,25 @@ import (
 	"github.com/cli/go-gh/v2/pkg/api"
 )
 
-// skeletonFS embeds the files committed by `gh teacher init`. The
-// source tree uses `dotgithub/` because Go's embed (without the
-// `all:` prefix) skips paths starting with `.`; rewritten to
-// `.github/` at commit time.
+// skeletonFS holds the files committed by `gh teacher init`. The
+// source tree uses `dotgithub/` because `//go:embed` (without `all:`)
+// skips dot-prefixed paths; rewritten to `.github/` at commit time.
 //
 //go:embed skeleton
 var skeletonFS embed.FS
 
-// skeletonProbePath detects "skeleton already committed" on re-runs.
-// publish-pages.yml is unique to the config repo — README.md isn't
+// skeletonProbePath detects "already committed" on re-runs.
+// publish-pages.yml is unique to the config repo; README.md isn't
 // reliable because auto_init creates one.
 const skeletonProbePath = ".github/workflows/publish-pages.yml"
 
-// defaultBranchPlaceholder is substituted in embedded workflow YAML
-// at commit time so publish-pages.yml listens on the org's actual
-// default branch.
+// defaultBranchPlaceholder is substituted at commit time so
+// publish-pages.yml listens on the org's actual default branch.
 const defaultBranchPlaceholder = "{{DEFAULT_BRANCH}}"
 
-// skeletonFiles returns destination-path → content for every file
-// commitSkeleton writes. The `skeleton/` prefix is stripped,
-// `dotgithub/` is rewritten to `.github/`, and {{DEFAULT_BRANCH}} is
-// substituted.
+// skeletonFiles returns destination-path → content. Strips the
+// `skeleton/` prefix, rewrites `dotgithub/` → `.github/`, and
+// substitutes {{DEFAULT_BRANCH}}.
 func skeletonFiles(defaultBranch string) (map[string]string, error) {
 	files := make(map[string]string)
 	walkErr := fs.WalkDir(skeletonFS, "skeleton", func(p string, d fs.DirEntry, err error) error {
@@ -67,10 +64,10 @@ func skeletonFiles(defaultBranch string) (map[string]string, error) {
 	return files, nil
 }
 
-// commitSkeleton lands the embedded skeleton on defaultBranch in a
-// single Tree commit. Re-runs no-op via the probe file. When
-// `created` is true (fresh auto_init), refAndTree retries briefly on
-// 404 — GitHub doesn't propagate the initial ref synchronously.
+// commitSkeleton lands the embedded skeleton on defaultBranch in
+// one Tree commit. Re-runs no-op via the probe file. When `created`
+// is true, refAndTree retries on 404 because GitHub doesn't
+// propagate auto_init's initial ref synchronously.
 func commitSkeleton(client *api.RESTClient, out io.Writer, owner, repo, defaultBranch string, created bool) error {
 	files, err := skeletonFiles(defaultBranch)
 	if err != nil {
@@ -127,8 +124,7 @@ func commitSkeleton(client *api.RESTClient, out io.Writer, owner, repo, defaultB
 	return nil
 }
 
-// contentsExists reports whether `path` exists at `ref`. 404 →
-// false, 200 → true, anything else → error.
+// contentsExists: 404 → false, 200 → true, else error.
 func contentsExists(client *api.RESTClient, owner, repo, path, ref string) (bool, error) {
 	segs := strings.Split(path, "/")
 	for i := range segs {
@@ -146,10 +142,9 @@ func contentsExists(client *api.RESTClient, owner, repo, path, ref string) (bool
 	return true, nil
 }
 
-// refAndTree returns the parent commit SHA and its tree SHA for
-// `defaultBranch`. Parent SHA becomes the new commit's parent; tree
-// SHA becomes the new tree's `base_tree` so unchanged paths inherit
-// without re-uploading.
+// refAndTree returns (parentCommitSHA, parentTreeSHA) for branch.
+// parentTreeSHA becomes the new tree's `base_tree` so unchanged
+// paths inherit without re-uploading.
 func refAndTree(client *api.RESTClient, owner, repo, defaultBranch string) (commitSHA, treeSHA string, err error) {
 	refPath := fmt.Sprintf("repos/%s/%s/git/refs/heads/%s",
 		url.PathEscape(owner), url.PathEscape(repo), url.PathEscape(defaultBranch))
@@ -182,10 +177,9 @@ type treeEntry struct {
 	SHA  string `json:"sha"`
 }
 
-// uploadBlobs creates one blob per file and returns tree entries
-// pointing at them. Always base64-encoded — the overhead is
-// negligible and the correctness story is simpler than per-file
-// encoding detection.
+// uploadBlobs creates one blob per file and returns the tree
+// entries. Always base64-encoded; simpler than per-file encoding
+// detection with negligible overhead.
 func uploadBlobs(client *api.RESTClient, owner, repo string, files map[string]string) ([]treeEntry, error) {
 	paths := make([]string, 0, len(files))
 	for p := range files {

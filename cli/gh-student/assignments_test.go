@@ -10,12 +10,10 @@ import (
 )
 
 func TestPagesAssignmentsURL(t *testing.T) {
-	// The Pages URL shape is part of the public contract: the
-	// teacher's `publish-pages.yml` allow-list publishes
-	// `<classroom>/assignments.json` to
-	// `https://<org>.github.io/classroom50/<classroom>/assignments.json`.
-	// The student CLI builds this URL purely from the args; a typo
-	// here would silently 404 for every accept.
+	// Public contract: publish-pages publishes
+	// `<classroom>/assignments.json` at
+	// `https://<org>.github.io/classroom50/...`. A typo here would
+	// 404 every accept.
 	got := pagesAssignmentsURL("cs50-fall-2026", "cs-principles")
 	want := "https://cs50-fall-2026.github.io/classroom50/cs-principles/assignments.json"
 	if got != want {
@@ -24,8 +22,7 @@ func TestPagesAssignmentsURL(t *testing.T) {
 }
 
 func TestPagesAutograderURL(t *testing.T) {
-	// Mirrors the publish-pages allow-list (`*/autograders/*.yml`).
-	// Pin the shape — a change in either place must trip this test.
+	// Mirrors publish-pages' `*/autograders/*.yml` allow-list.
 	got := pagesAutograderURL("cs50-fall-2026", "cs-principles", "default")
 	want := "https://cs50-fall-2026.github.io/classroom50/cs-principles/autograders/default.yml"
 	if got != want {
@@ -34,9 +31,8 @@ func TestPagesAutograderURL(t *testing.T) {
 }
 
 func TestAssignmentEntryResolveAutograder(t *testing.T) {
-	// The v0.1 → v0.2 forward-compat hatch: an entry without the
-	// autograder field still resolves to a usable name. The
-	// explicit case must round-trip the teacher's choice verbatim.
+	// Empty Autograder resolves to "default"; explicit values
+	// round-trip verbatim.
 	cases := []struct {
 		in   assignmentEntry
 		want string
@@ -54,11 +50,9 @@ func TestAssignmentEntryResolveAutograder(t *testing.T) {
 }
 
 func TestParseAutogradeVersionSentinel(t *testing.T) {
-	// Mirrors the gh-teacher stripAutogradeVersion test — same
-	// header-scan semantics, separate copy (two CLIs, no shared
-	// package). A drift between the two would only surface during
-	// student-side diagnostics, so the canonical header shape is
-	// pinned here too.
+	// Mirrors gh-teacher's stripAutogradeVersion test (no shared
+	// package between the CLIs). Drift would only surface in
+	// student-side diagnostics, so pin the header shape here too.
 	cases := []struct {
 		name    string
 		content string
@@ -93,10 +87,8 @@ func TestParseAutogradeVersionSentinel(t *testing.T) {
 }
 
 func TestFetchAutograderWorkflow_HappyPath(t *testing.T) {
-	// The fetched bytes round-trip to the caller verbatim — that's
-	// the public contract dropClassroomFiles writes to the student
-	// repo. The version sentinel parser also runs on the bytes;
-	// confirm both halves work together.
+	// Fetched bytes round-trip verbatim into the student repo, and
+	// the version-sentinel parser runs over the same bytes.
 	body := "# classroom50-autograde-version: 0.2.0\n" +
 		"name: Autograde\n" +
 		"on:\n" +
@@ -125,9 +117,8 @@ func TestFetchAutograderWorkflow_HappyPath(t *testing.T) {
 }
 
 func TestFetchAutograderWorkflow_404SurfacesActionableGuidance(t *testing.T) {
-	// A 404 is the most likely failure shape (teacher hasn't run
-	// publish-pages yet, or the file was deleted). The error must
-	// name the autograder, the URL, and the fix.
+	// 404 is the most likely failure (Pages not deployed yet or
+	// file deleted). Error must name the autograder, URL, and fix.
 	server, cleanup := newAutograderServer(t, "not found", http.StatusNotFound)
 	defer cleanup()
 
@@ -143,11 +134,9 @@ func TestFetchAutograderWorkflow_404SurfacesActionableGuidance(t *testing.T) {
 }
 
 func TestFetchAutograderWorkflow_RejectsMalformedYAML(t *testing.T) {
-	// A teacher who typo'd the YAML structure (e.g. unbalanced
-	// braces) must hear about it at fetch time, before the broken
-	// workflow lands in the student repo. The error wording is
-	// the actionable signal a student passes back to the
-	// instructor.
+	// Malformed YAML must fail at fetch time, before landing in
+	// the student repo. Error is the signal the student forwards
+	// to the instructor.
 	server, cleanup := newAutograderServer(t, "name: Autograde\non: { invalid: [\n", http.StatusOK)
 	defer cleanup()
 
@@ -164,9 +153,8 @@ func TestFetchAutograderWorkflow_RejectsMalformedYAML(t *testing.T) {
 }
 
 func TestFetchAutograderWorkflow_RejectsEmptyBody(t *testing.T) {
-	// Pages occasionally serves a stub response while a new
-	// deployment is in flight. Treat empty as "retry" rather than
-	// silently dropping an empty workflow into the student repo.
+	// Pages occasionally serves a stub during deployment.
+	// Empty body → "retry" rather than empty workflow on disk.
 	server, cleanup := newAutograderServer(t, "   \n   \n", http.StatusOK)
 	defer cleanup()
 
@@ -179,8 +167,8 @@ func TestFetchAutograderWorkflow_RejectsEmptyBody(t *testing.T) {
 	}
 }
 
-// newAutograderServer is the autograder-fetch sibling of
-// newPagesServer below — same pattern, different mounted path.
+// newAutograderServer: same pattern as newPagesServer below,
+// mounted at the autograders path.
 func newAutograderServer(t *testing.T, body string, status int) (*httptest.Server, func()) {
 	t.Helper()
 	mux := http.NewServeMux()
@@ -256,8 +244,7 @@ func TestFetchAssignmentEntry_ReturnsTypedNotFound(t *testing.T) {
 	if !IsAssignmentNotFound(err) {
 		t.Errorf("expected assignmentNotFoundError (so callers can branch via errors.As); got %T: %v", err, err)
 	}
-	// Verify it survives wrapping — the caller in acceptAssignment
-	// would normally chain context with %w.
+	// Should survive %w-chained wrapping at the call site.
 	wrapped := errors.New("wrapped: " + err.Error())
 	if IsAssignmentNotFound(wrapped) {
 		t.Errorf("IsAssignmentNotFound should not match a string-wrapped error (lost typing)")
@@ -265,10 +252,8 @@ func TestFetchAssignmentEntry_ReturnsTypedNotFound(t *testing.T) {
 }
 
 func TestFetchAssignmentEntry_404Surfaces_PagesGuidance(t *testing.T) {
-	// A 404 from the Pages URL probably means publish-pages hasn't
-	// run yet (new classroom) or the classroom argument was typo'd.
-	// The error should give the student something actionable to ask
-	// their instructor about.
+	// 404 → publish-pages hasn't run or the classroom arg is
+	// typo'd. Error must give the student something to ask for.
 	server, cleanup := newPagesServer(t, "not found", http.StatusNotFound)
 	defer cleanup()
 
@@ -284,9 +269,8 @@ func TestFetchAssignmentEntry_404Surfaces_PagesGuidance(t *testing.T) {
 	}
 }
 
-// fetchOneTestEntry spins up an httptest.Server serving `body` at
-// `/cs-principles/assignments.json`, calls fetchAssignmentEntry, and
-// returns the entry. Centralizes the server boilerplate.
+// fetchOneTestEntry serves `body` at /cs-principles/assignments.json
+// and runs fetchAssignmentEntry against it.
 func fetchOneTestEntry(t *testing.T, body, slug string) (assignmentEntry, func()) {
 	t.Helper()
 	server, cleanup := newPagesServer(t, body, http.StatusOK)
@@ -299,9 +283,8 @@ func fetchOneTestEntry(t *testing.T, body, slug string) (assignmentEntry, func()
 	return entry, cleanup
 }
 
-// newPagesServer returns a server that responds to GET
-// /cs-principles/assignments.json with `body` and `status`. Any
-// other path 404s — pins the Pages-URL contract.
+// newPagesServer mounts `body`/`status` at the canonical
+// assignments.json path; other paths 404 (pins the URL shape).
 func newPagesServer(t *testing.T, body string, status int) (*httptest.Server, func()) {
 	t.Helper()
 	mux := http.NewServeMux()

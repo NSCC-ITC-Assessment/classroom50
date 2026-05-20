@@ -11,20 +11,13 @@ import (
 	"strings"
 )
 
-// rosterColumns is the canonical column order: identity fields
-// first, then section, then the CLI-managed github_id.
-//
-// `github_id` is populated from `GET /users/{username}` — teachers
-// shouldn't hand-edit it. Capturing the immutable numeric ID at
-// roster time defends against a mid-class username change. The
-// column is named `github_id` (not the API-side `id`) so a teacher
-// inspecting the CSV can tell at a glance which numbering scheme
-// it follows. `email` is optional per row (values may be empty).
+// rosterColumns: canonical column order. github_id is CLI-managed
+// (populated from `GET /users/{username}`); the immutable numeric ID
+// defends against mid-class username changes. Email may be empty.
 var rosterColumns = []string{"username", "first_name", "last_name", "email", "section", "github_id"}
 
-// maxFieldBytes caps each parsed cell. 320 matches RFC 5321's email
-// max — generous for names/sections but bounded enough that a single
-// oversized field can't push the file past the contents API's 1 MB
+// maxFieldBytes caps each parsed cell at RFC 5321's email max so a
+// hand-edit can't push the file past the contents API's 1 MB
 // ceiling and wedge future reads with encoding:"none".
 const maxFieldBytes = 320
 
@@ -35,8 +28,7 @@ const maxFieldBytes = 320
 var utf8BOM = []byte{0xEF, 0xBB, 0xBF}
 
 // rosterRow is one student in students.csv. GitHubID == 0 means
-// "unresolved" — a 5-column import row before the CLI calls
-// GET /users/{username}. Email may be empty.
+// unresolved (a 5-column import row before GET /users/{username}).
 type rosterRow struct {
 	Username  string
 	FirstName string
@@ -46,18 +38,15 @@ type rosterRow struct {
 	GitHubID  int64
 }
 
-// parseRoster decodes a students.csv buffer into rows in source
-// order. The header MUST match rosterColumns exactly; mis-shaped or
-// renamed headers are rejected rather than silently coerced so a
-// hand-edit can't drop or shift data. Empty input is rejected — the
-// file should always carry the header `gh teacher classroom add`
-// wrote.
+// parseRoster decodes students.csv. Header MUST match rosterColumns
+// exactly so a hand-edit can't silently drop or shift data. Empty
+// input is rejected.
 func parseRoster(data []byte) ([]rosterRow, error) {
 	data = bytes.TrimPrefix(data, utf8BOM)
 	r := csv.NewReader(bytes.NewReader(data))
-	// Read the header without field-count enforcement so a 5-column
-	// or renamed header produces our "unexpected header" message
-	// instead of csv's generic "wrong number of fields" wrap.
+	// Read header without field-count enforcement so a renamed or
+	// short header surfaces our message instead of csv's generic
+	// "wrong number of fields".
 	r.FieldsPerRecord = -1
 
 	header, err := r.Read()
@@ -90,10 +79,9 @@ func parseRoster(data []byte) ([]rosterRow, error) {
 	return rows, nil
 }
 
-// parseImportCSV decodes a teacher-supplied import CSV. Accepts
-// either the 6-column canonical shape (github_id ignored — the CLI
-// re-resolves it) or the 5-column form omitting github_id (the
-// documented hand-edit shape).
+// parseImportCSV decodes a teacher-supplied import CSV. Accepts the
+// 6-column canonical shape (github_id ignored; the CLI re-resolves
+// it) or the 5-column hand-edit shape.
 func parseImportCSV(data []byte) ([]rosterRow, error) {
 	data = bytes.TrimPrefix(data, utf8BOM)
 	r := csv.NewReader(bytes.NewReader(data))
@@ -137,10 +125,8 @@ func parseImportCSV(data []byte) ([]rosterRow, error) {
 		if err := validateRosterEmail(row.Email); err != nil {
 			return nil, fmt.Errorf("line %d: %w", line, err)
 		}
-		// record[5] (github_id) is ignored on input; the CLI
-		// re-resolves it. checkFieldLengths still ran over the full
-		// record, so an oversized value there is rejected like any
-		// other.
+		// record[5] (github_id) ignored; the CLI re-resolves it.
+		// checkFieldLengths still bounds the oversized case.
 		rows = append(rows, row)
 	}
 	return rows, nil
@@ -170,9 +156,8 @@ func recordToRow(record []string, line int) (rosterRow, error) {
 	return row, nil
 }
 
-// encodeRoster serializes rows back into students.csv with RFC 4180
-// quoting and a trailing newline, matching the shape
-// `gh teacher classroom add` writes at scaffold time.
+// encodeRoster writes rows back as RFC 4180 students.csv (trailing
+// newline) to match the scaffold shape.
 func encodeRoster(rows []rosterRow) ([]byte, error) {
 	var buf bytes.Buffer
 	w := csv.NewWriter(&buf)
@@ -185,8 +170,7 @@ func encodeRoster(rows []rosterRow) ([]byte, error) {
 			githubID = strconv.FormatInt(row.GitHubID, 10)
 		}
 		// Defang formula-trigger cells (=/+/-/@/\t/\r prefix).
-		// github_id is numeric (FormatInt over positive values), so
-		// it never matches a trigger.
+		// github_id is numeric so it never matches.
 		record := []string{
 			defangCSVCell(row.Username),
 			defangCSVCell(row.FirstName),
@@ -206,10 +190,9 @@ func encodeRoster(rows []rosterRow) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-// upsertRosterRow replaces a row with matching Username
-// (case-insensitive, matching GitHub's username comparison rules)
-// or appends if absent. Position is preserved on replace. Returns
-// the new slice and whether the operation was a replace.
+// upsertRosterRow replaces by Username (case-insensitive, matching
+// GitHub's username rules) or appends. Position preserved on
+// replace. Returns the slice and whether a row was replaced.
 func upsertRosterRow(rows []rosterRow, row rosterRow) ([]rosterRow, bool) {
 	for i := range rows {
 		if strings.EqualFold(rows[i].Username, row.Username) {
@@ -220,8 +203,8 @@ func upsertRosterRow(rows []rosterRow, row rosterRow) ([]rosterRow, bool) {
 	return append(rows, row), false
 }
 
-// removeRosterRow drops the row with matching Username (case-insensitive).
-// Returns the new slice and whether a row was actually removed.
+// removeRosterRow drops by Username (case-insensitive). Returns the
+// slice and whether a row was removed.
 func removeRosterRow(rows []rosterRow, username string) ([]rosterRow, bool) {
 	for i := range rows {
 		if strings.EqualFold(rows[i].Username, username) {
@@ -231,16 +214,11 @@ func removeRosterRow(rows []rosterRow, username string) ([]rosterRow, bool) {
 	return rows, false
 }
 
-// validateRosterEmail accepts values for the email column (either
-// from `--email` or per-row in import CSVs). Empty is valid. A
-// non-empty value must parse via net/mail.ParseAddress in bare
-// `local@domain` form — the display-name form
-// (`Alice <alice@example.edu>`) is rejected so name metadata can't
-// sneak into the email column.
-//
-// Intentional non-strictness: no TLD requirement (classroom emails
-// routinely use internal-only domains like `alice@school.local`),
-// no DNS resolution, no length cap.
+// validateRosterEmail: empty is valid. Non-empty must parse via
+// net/mail.ParseAddress in bare `local@domain` form; the display-name
+// form (`Alice <alice@example.edu>`) is rejected so name metadata
+// doesn't sneak into the email column. No TLD requirement (internal
+// `*.local` domains are common in classrooms), no DNS check.
 func validateRosterEmail(email string) error {
 	if email == "" {
 		return nil
@@ -267,11 +245,9 @@ func equalSlices(a, b []string) bool {
 	return true
 }
 
-// checkFieldLengths rejects records where any cell exceeds
-// maxFieldBytes — defense against a hand-edited CSV pushing the file
-// past the contents API's 1 MB ceiling. The error names the column
-// from rosterColumns when possible; non-canonical input falls back
-// to the numeric column index.
+// checkFieldLengths rejects cells over maxFieldBytes so a hand-edit
+// can't push the file past the contents API's 1 MB ceiling. Errors
+// name the column from rosterColumns when possible.
 func checkFieldLengths(line int, record []string) error {
 	for i, v := range record {
 		if len(v) <= maxFieldBytes {
@@ -286,10 +262,9 @@ func checkFieldLengths(line int, record []string) error {
 	return nil
 }
 
-// isFormulaTrigger reports whether `b` is a byte some spreadsheet
-// apps (Excel, LibreOffice) treat as a formula prefix at cell start.
-// The defang/undefang pair guards against CSV-injection at the
-// disk-write boundary without otherwise touching cell content.
+// isFormulaTrigger reports whether `b` would be parsed as a formula
+// prefix by Excel/LibreOffice. The defang/undefang pair guards
+// against CSV-injection at the disk-write boundary.
 func isFormulaTrigger(b byte) bool {
 	switch b {
 	case '=', '+', '-', '@', '\t', '\r':
@@ -298,9 +273,9 @@ func isFormulaTrigger(b byte) bool {
 	return false
 }
 
-// defangCSVCell prefixes a cell with `'` when its first byte is a
-// formula trigger, so a roster commit can't carry an executable
-// payload to a co-teacher who opens students.csv in Excel.
+// defangCSVCell prepends `'` when the first byte is a formula
+// trigger so a roster row can't smuggle an executable payload to a
+// co-teacher who opens the file in Excel.
 func defangCSVCell(s string) string {
 	if s == "" || !isFormulaTrigger(s[0]) {
 		return s
@@ -308,9 +283,9 @@ func defangCSVCell(s string) string {
 	return "'" + s
 }
 
-// undefangCSVCell reverses defangCSVCell so parse → upsert → encode
-// round-trips symmetrically. Cells without the exact `'<trigger>`
-// pattern pass through unchanged (preserves user-typed apostrophes).
+// undefangCSVCell inverts defangCSVCell so parse/encode round-trips.
+// Cells without the exact `'<trigger>` pattern pass through
+// (preserves user-typed apostrophes).
 func undefangCSVCell(s string) string {
 	if len(s) >= 2 && s[0] == '\'' && isFormulaTrigger(s[1]) {
 		return s[1:]

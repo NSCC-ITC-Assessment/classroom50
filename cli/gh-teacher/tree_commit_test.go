@@ -18,14 +18,13 @@ func TestIsNonFastForwardMessage(t *testing.T) {
 		in   string
 		want bool
 	}{
-		// Real shape GitHub returns today.
+		// Real shape GitHub returns.
 		{"Update is not a fast forward", true},
-		// Defensive: tolerate hyphenated rewordings.
+		// Tolerate hyphenated rewordings.
 		{"Update is not a fast-forward", true},
-		// Mixed case.
 		{"UPDATE IS NOT A FAST FORWARD", true},
-		// Other 422 reasons must NOT match — these are the cases the
-		// rebase loop would have mis-retried before this fix.
+		// Other 422 reasons must NOT match — mis-retrying them would
+		// busy-loop the rebase path.
 		{"Reference does not exist", false},
 		{"Resource not accessible by integration", false},
 		{"Validation failed", false},
@@ -40,11 +39,10 @@ func TestIsNonFastForwardMessage(t *testing.T) {
 	}
 }
 
-// hostRewriteTransport routes every request to a single test server,
-// preserving the original path so the handler can dispatch on it. The
-// stock api.RESTClient otherwise targets api.github.com; this is the
-// canonical seam the go-gh docs recommend for testing (ClientOptions
-// .Transport "should be reserved for testing purposes").
+// hostRewriteTransport redirects every request to a single test
+// server while preserving the path so the handler can dispatch on
+// it. This is the seam go-gh's docs recommend for tests
+// (ClientOptions.Transport "should be reserved for testing").
 type hostRewriteTransport struct {
 	target *url.URL
 }
@@ -56,8 +54,8 @@ func (h *hostRewriteTransport) RoundTrip(req *http.Request) (*http.Response, err
 }
 
 // newTestRESTClient wires a real api.RESTClient at the given test
-// server. AuthToken is non-empty so the header-injection layer leaves
-// the Authorization header alone (the test server doesn't validate it).
+// server. AuthToken must be non-empty so go-gh's header-injection
+// layer leaves Authorization alone.
 func newTestRESTClient(t *testing.T, server *httptest.Server) *api.RESTClient {
 	t.Helper()
 	u, err := url.Parse(server.URL)
@@ -77,14 +75,13 @@ func newTestRESTClient(t *testing.T, server *httptest.Server) *api.RESTClient {
 }
 
 // TestCommitTree_RetriesOnNonFastForward exercises the rebase loop
-// end-to-end: a single concurrent-writer race injected on the first
-// patchRef attempt forces commitTree to re-invoke build against the
-// rebased parent SHA, then succeed on attempt 2. Pins the contract
-// for every caller (classroom add, roster add/remove/import,
-// assignment add/remove).
+// end-to-end: a concurrent-writer race on the first patchRef forces
+// commitTree to re-invoke build against the rebased parent SHA and
+// succeed on attempt 2. Pins the contract for every caller of
+// commitTree.
 //
-// One retry × 200ms backoff keeps the test well under a second; the
-// constant lives in tree_commit.go as rebaseAttempts × 200ms × 2^n.
+// One retry × 200ms backoff keeps this well under a second; tune
+// via rebaseAttempts × 200ms × 2^n in tree_commit.go.
 func TestCommitTree_RetriesOnNonFastForward(t *testing.T) {
 	var (
 		mu             sync.Mutex
@@ -96,11 +93,9 @@ func TestCommitTree_RetriesOnNonFastForward(t *testing.T) {
 	parentTrees := []string{"parent-tree-1", "parent-tree-2"}
 
 	mux := http.NewServeMux()
-	// refAndTree: GET the ref to find the parent commit SHA, then GET
-	// the commit to find its tree SHA. The attempt counter on the
-	// patch endpoint drives which parent commit the test server
-	// advertises on subsequent reads — simulating a real concurrent
-	// writer advancing the branch between attempts.
+	// refAndTree: GET the ref → parent commit SHA; GET the commit
+	// → tree SHA. The patch-attempt counter advances the parent the
+	// server returns, simulating a concurrent writer.
 	mux.HandleFunc("/repos/o/r/git/refs/heads/main", func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
 		attempt := patchAttempts
@@ -116,12 +111,11 @@ func TestCommitTree_RetriesOnNonFastForward(t *testing.T) {
 			n := patchAttempts
 			mu.Unlock()
 			if n == 1 {
-				// First attempt: concurrent writer won — return the
+				// First attempt: concurrent writer won. Return the
 				// real-shape non-FF rejection so isNonFastForwardMessage
-				// triggers the retry path. Content-Type matters here:
-				// go-gh's HandleHTTPError parses the `message` field
-				// out of the body only when the response advertises
-				// application/json.
+				// triggers the retry path. The application/json
+				// Content-Type is required — go-gh's HandleHTTPError
+				// only parses `message` when the response declares it.
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusUnprocessableEntity)
 				_, _ = io.WriteString(w, `{"message":"Update is not a fast forward"}`)
@@ -134,8 +128,7 @@ func TestCommitTree_RetriesOnNonFastForward(t *testing.T) {
 		}
 	})
 	mux.HandleFunc("/repos/o/r/git/commits/", func(w http.ResponseWriter, r *http.Request) {
-		// commits/{sha} responds with the matching tree SHA from the
-		// parents/parentTrees pair above.
+		// commits/{sha} → the matching tree SHA from parentTrees.
 		sha := strings.TrimPrefix(r.URL.Path, "/repos/o/r/git/commits/")
 		var tree string
 		for i, p := range parents {
@@ -145,8 +138,7 @@ func TestCommitTree_RetriesOnNonFastForward(t *testing.T) {
 			}
 		}
 		if tree == "" {
-			// Also handles the POST /git/commits creation — return an
-			// arbitrary new commit SHA.
+			// Falls through to POST /git/commits creation.
 			_ = json.NewEncoder(w).Encode(map[string]string{"sha": "new-commit-sha"})
 			return
 		}
@@ -155,16 +147,14 @@ func TestCommitTree_RetriesOnNonFastForward(t *testing.T) {
 		})
 	})
 	mux.HandleFunc("/repos/o/r/git/commits", func(w http.ResponseWriter, r *http.Request) {
-		// POST /git/commits creates the new commit object.
 		_ = json.NewEncoder(w).Encode(map[string]string{"sha": "new-commit-sha"})
 	})
 	mux.HandleFunc("/repos/o/r/git/blobs", func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]string{"sha": "blob-sha"})
 	})
 	mux.HandleFunc("/repos/o/r/git/trees", func(w http.ResponseWriter, r *http.Request) {
-		// Sanity-check that base_tree matches the parent tree the
-		// build callback observed — i.e., the retry attempt rebased
-		// against parents[1] rather than reusing parents[0].
+		// base_tree must track the parent the build callback saw —
+		// the retry must rebase against parents[1], not parents[0].
 		body, _ := io.ReadAll(r.Body)
 		var payload struct {
 			BaseTree string `json:"base_tree"`
@@ -212,11 +202,10 @@ func TestCommitTree_RetriesOnNonFastForward(t *testing.T) {
 	}
 }
 
-// TestCommitTree_PropagatesBuildErrorWithoutRetry pins the contract
-// that an error from build short-circuits the rebase loop. addClassroom
-// relies on this: its "classroom already exists" check returns an
-// error from inside build, and the user must see exactly one
-// short-circuit (not five retried "already exists" reports).
+// TestCommitTree_PropagatesBuildErrorWithoutRetry: a build error
+// must short-circuit the rebase loop. addClassroom's "already
+// exists" check raises an error from inside build and the user
+// must see one error, not five retries of it.
 func TestCommitTree_PropagatesBuildErrorWithoutRetry(t *testing.T) {
 	var (
 		mu          sync.Mutex
@@ -237,8 +226,8 @@ func TestCommitTree_PropagatesBuildErrorWithoutRetry(t *testing.T) {
 			"tree": map[string]string{"sha": "parent-tree"},
 		})
 	})
-	// Any blob upload counts as "build's error wasn't honored" — we
-	// must never reach the upload phase when build returns an error.
+	// Any blob upload here means build's error wasn't honored —
+	// the upload phase must be unreachable when build errored.
 	mux.HandleFunc("/repos/o/r/git/blobs", func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
 		blobUploads++
@@ -272,10 +261,10 @@ func TestCommitTree_PropagatesBuildErrorWithoutRetry(t *testing.T) {
 	}
 }
 
-// TestCommitTree_NoOpOnEmptyMap pins the "build returns empty map →
-// no commit" contract. runRosterRemove and runAssignmentRemove
-// depend on this: when the row/entry is already absent, build returns
-// (nil, nil) and the command must NOT produce a same-tree commit.
+// TestCommitTree_NoOpOnEmptyMap: build returning an empty map must
+// produce no commit. runRosterRemove and runAssignmentRemove rely
+// on this — when the target row/entry is already absent, build
+// returns (nil, nil) and no same-tree commit must land.
 func TestCommitTree_NoOpOnEmptyMap(t *testing.T) {
 	var (
 		mu          sync.Mutex
@@ -339,13 +328,11 @@ func TestCommitTree_NoOpOnEmptyMap(t *testing.T) {
 	}
 }
 
-// builtError is a test-only error type so the build-callback error
-// has a distinct identity rather than a free-floating errors.New
-// string; helps assertions stay specific.
+// builtError gives build-callback errors a distinct test identity
+// so assertions can be type-specific.
 type builtError struct{ msg string }
 
 func (e *builtError) Error() string { return e.msg }
 
-// Compile-time guard that the test transport satisfies the
-// http.RoundTripper interface go-gh demands.
+// Compile-time guard for go-gh's RoundTripper contract.
 var _ http.RoundTripper = (*hostRewriteTransport)(nil)

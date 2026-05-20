@@ -15,8 +15,7 @@ func TestRenderClassroomMetadata_FullShape(t *testing.T) {
 	// `.classroom50.yml` carries four blocks: identity (classroom +
 	// assignment), source (template), config (config repo), and
 	// autograde (version sentinel). The round-trip pins the on-disk
-	// shape so a future reader can branch on schema without
-	// re-discovering the current keys.
+	// shape so a reader branching on schema knows the current keys.
 	cfg := ClassroomConfig{
 		Classroom:  "cs-principles",
 		Assignment: "hello",
@@ -40,8 +39,8 @@ func TestRenderClassroomMetadata_FullShape(t *testing.T) {
 		t.Fatalf("renderClassroomMetadata: %v", err)
 	}
 
-	// Every string scalar should be double-quoted to defend against
-	// auto-typing slugs like "yes" or "2026".
+	// String scalars must be double-quoted so YAML doesn't
+	// auto-type slugs like "yes" or "2026".
 	wantSubs := []string{
 		`classroom: "cs-principles"`,
 		`assignment: "hello"`,
@@ -77,10 +76,9 @@ func TestRenderClassroomMetadata_FullShape(t *testing.T) {
 }
 
 func TestRenderClassroomMetadata_OmitsEmptyOptionalBlocks(t *testing.T) {
-	// An older metadata file (no Config / no Autograde) round-trips
-	// through the reader → re-renderer. Optional blocks must drop
-	// out cleanly when zero-valued so we don't pollute the file
-	// with empty `config: {}` keys.
+	// Metadata without Config/Autograde must round-trip cleanly:
+	// zero-valued optional blocks must omit so the file doesn't
+	// sprout empty `config: {}` keys.
 	cfg := ClassroomConfig{
 		Classroom:  "cs-principles",
 		Assignment: "hello",
@@ -103,10 +101,9 @@ func TestRenderClassroomMetadata_OmitsEmptyOptionalBlocks(t *testing.T) {
 }
 
 func TestRenderClassroomMetadata_PreservesNumericLookingSlugs(t *testing.T) {
-	// Pins the double-quoting defense: a numeric-looking
-	// year-based classroom slug must NOT be re-encoded as a YAML
-	// integer (which would break downstream string comparisons
-	// against the args).
+	// Pins double-quoting: a numeric-looking classroom slug must
+	// not encode as a YAML integer — downstream string compares
+	// against args would break.
 	cfg := ClassroomConfig{
 		Classroom:  "2026",
 		Assignment: "hello",

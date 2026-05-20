@@ -7,8 +7,8 @@ import (
 )
 
 func TestValidateShortName(t *testing.T) {
-	// Covers the defense-in-depth case: a malicious or hand-typed
-	// classroom argument shouldn't reach the contents API as a path.
+	// Defense-in-depth: a hostile classroom arg must not reach the
+	// contents API as a path segment.
 	cases := []struct {
 		in     string
 		wantOK bool
@@ -53,11 +53,11 @@ func TestShortNamePattern(t *testing.T) {
 		{"a1", true},
 		{"0class", true},
 		{"abcdefghijklmnopqrstuvwxyz0123456789-ab", true}, // 39 chars (max)
-		// Invalid — first character.
+		// Invalid — first char must be alnum.
 		{"-cs50", false},
-		// Invalid — single character (regex requires 2-39).
+		// Invalid — single char (regex requires 2-39).
 		{"a", false},
-		// Invalid — too long (40 chars).
+		// Invalid — 40 chars.
 		{"abcdefghijklmnopqrstuvwxyz0123456789-abc", false},
 		// Invalid — uppercase.
 		{"CS-50", false},
@@ -67,7 +67,6 @@ func TestShortNamePattern(t *testing.T) {
 		{"cs.principles", false},
 		{"cs/50", false},
 		{"cs 50", false},
-		// Invalid — empty.
 		{"", false},
 	}
 	for _, tc := range cases {
@@ -101,11 +100,10 @@ func TestClassroomScaffold(t *testing.T) {
 		}
 	}
 
-	// The default autograder file is the per-classroom contract
-	// `gh teacher assignment add --autograder default` resolves to
-	// and `gh student accept` fetches from Pages. Pin the public
-	// pieces so a future refactor can't silently break the
-	// scaffold → Pages → student fetch chain.
+	// Default autograder is the contract `assignment add
+	// --autograder default` resolves to and `gh student accept`
+	// fetches from Pages. Pin the public pieces so a refactor can't
+	// silently break the scaffold → Pages → student chain.
 	autograder := files["cs-principles/autograders/default.yml"]
 	wantSentinel := "# classroom50-autograde-version: " + autogradeLibraryVersion
 	if !strings.Contains(autograder, wantSentinel) {
@@ -151,7 +149,7 @@ func TestClassroomScaffold(t *testing.T) {
 	if len(assignments.Assignments) != 0 {
 		t.Errorf("assignments.json should start empty, got %d entries", len(assignments.Assignments))
 	}
-	// `[]` not `null` on the wire: empty list must serialize as a literal `[]`.
+	// `[]` not `null` on the wire — empty list must serialize as a literal `[]`.
 	if !strings.Contains(files["cs-principles/assignments.json"], "\"assignments\": []") {
 		t.Errorf("assignments.json should serialize the empty list as [], got:\n%s", files["cs-principles/assignments.json"])
 	}
@@ -164,14 +162,13 @@ func TestClassroomScaffold(t *testing.T) {
 		t.Errorf("scores.json schema = %q, want %q", scores.Schema, scoresSchemaV1)
 	}
 	if scores.Submissions == nil {
-		t.Errorf("scores.json Submissions should be a non-nil empty slice (so it marshals to [], not null) — collect-scores.yml depends on the field being present from scaffold time")
+		t.Errorf("scores.json Submissions must be a non-nil empty slice so it marshals to [], not null; collect-scores.yml needs the field present from scaffold time")
 	}
 	if len(scores.Submissions) != 0 {
 		t.Errorf("scores.json should start empty, got %d submissions", len(scores.Submissions))
 	}
-	// `[]` not `null` on the wire — collect_scores.py expects to be
-	// able to .append() to the array without first having to
-	// normalize a null.
+	// `[]` not `null` on the wire — collect_scores.py appends to
+	// the array without normalizing null first.
 	if !strings.Contains(files["cs-principles/scores.json"], "\"submissions\": []") {
 		t.Errorf("scores.json should serialize the empty list as [], got:\n%s", files["cs-principles/scores.json"])
 	}

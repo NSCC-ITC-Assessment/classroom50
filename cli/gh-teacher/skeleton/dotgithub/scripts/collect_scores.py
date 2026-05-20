@@ -1,52 +1,31 @@
 #!/usr/bin/env python3
 """Teacher-triggered scores collector.
 
-Walks the classroom roster × assignment manifest deterministically:
-for every (student, assignment) pair the script computes the
-canonical repo name `<classroom>-<assignment>-<username>` and asks
-GitHub for that repo's latest release. Each release carries a
-`result.json` asset (produced by the autograde library) whose
-contents are upserted into `<classroom>/scores.json`.
+Walks roster × assignment manifest: for each (student, assignment)
+pair, fetches the canonical `<classroom>-<assignment>-<username>`
+repo's latest release, validates the `result.json` asset, and
+upserts into `<classroom>/scores.json`.
 
-The collect workflow is the single writer for every `scores.json`
-in the config repo. Re-runs are idempotent: unchanged submissions
-are no-ops, and any existing entry carrying `"override": true` is
-preserved verbatim regardless of the incoming release contents —
-teacher manual corrections never get overwritten.
+Single writer per scores.json. Re-runs are idempotent: unchanged
+submissions are no-ops, and `"override": true` entries are
+preserved verbatim so teacher corrections never get overwritten.
 
-Per-classroom writes are atomic: encode to `scores.json.tmp`, parse
-back as a sanity check, then `os.replace` into place. On any
-exception the original file is untouched, so a mid-run crash never
-leaves corrupt JSON on disk.
-
-A missing release for an expected (student, assignment) pair is
-not an error — it just means the student hasn't accepted, hasn't
-submitted, or the autograde workflow hasn't finished yet. The
-collector logs a per-assignment "X of Y submitted" summary so a
-teacher can see roster coverage at a glance.
+Per-classroom writes are atomic via tmp + os.replace. A missing
+release is not an error (student hasn't accepted/submitted yet);
+the per-assignment "X of Y submitted" log shows roster coverage.
 
 Environment (set by `collect-scores.yml`):
-
-* `CLASSROOM50_COLLECT_TOKEN` — fine-grained PAT scoped to
-  `Contents: read` on `<classroom>-*` repos. Required for the
-  cross-repo `result.json` asset downloads. Rotated via
-  `gh teacher rotate-collect-token <org>`.
-* `CLASSROOM_FILTER` — optional classroom short-name. When set, the
-  run is restricted to that single classroom.
-* `GITHUB_REPOSITORY_OWNER` — the org name. Auto-set by Actions.
-* `GITHUB_API_URL` — Actions-provided API URL. Present on GHES
-  runners and used when no explicit override is set.
-* `GH_API_URL` — optional explicit API override (takes precedence
-  over `GITHUB_API_URL`). Used by tests pointing at a local test
-  server.
+  CLASSROOM50_COLLECT_TOKEN — fine-grained PAT, Contents: read.
+  CLASSROOM_FILTER          — optional single-classroom limit.
+  GITHUB_REPOSITORY_OWNER   — org name (auto-set by Actions).
+  GITHUB_API_URL            — API URL on GHES runners.
+  GH_API_URL                — explicit override (test servers).
 
 Exit codes:
-
-* `0` — success (whether or not any new submissions landed).
-* `1` — operational failure (missing token, scores.json corruption,
-  unrecoverable network error). The workflow run log carries the
-  details and points at `gh teacher rotate-collect-token` when the
-  collect PAT is the cause.
+  0 — success.
+  1 — operational failure (missing token, malformed scores.json,
+      unrecoverable network error). The run log points the teacher
+      at `gh teacher rotate-collect-token` for PAT issues.
 """
 
 from __future__ import annotations
@@ -70,33 +49,29 @@ ASSIGNMENTS_SCHEMA_V1 = "classroom50/assignments/v1"
 SCORES_SCHEMA_V1 = "classroom50/scores/v1"
 RESULT_SCHEMA_V1 = "classroom50/result/v1"
 
-# Trigger contract: only releases whose tag begins with this prefix
-# are accepted as autograde submissions. Mirrors the `submit/*` tag
-# that `gh student submit` pushes.
+# Trigger contract: only `submit/*` tag releases count as
+# submissions (mirrors `gh student submit`).
 SUBMIT_TAG_PREFIX = "submit/"
 
-# Hard cap on the result.json size we'll accept. Real payloads are
-# well under 1 MiB; a 10 MiB ceiling defends against a hostile
-# release asset trying to OOM the collector without rejecting any
-# plausible real submission.
+# Release asset name written by the autograde library. Cross-binary
+# contract — keep aligned with autograde-library.yml.
+RESULT_ASSET_NAME = "result.json"
+
+# Hard cap on result.json size. Real payloads sit well under 1 MiB;
+# 10 MiB bounds a hostile asset without rejecting any plausible
+# submission.
 MAX_RESULT_BYTES = 10 * 1024 * 1024
 
-# When `/releases/latest` points at a hand-created non-submit release,
-# scan a small bounded window for the newest submit-tag release. The
-# happy path remains deterministic and direct; the fallback handles
-# the rare "student made their own release" case without walking
-# unbounded history.
+# When `/releases/latest` points at a non-submit release, scan a
+# bounded window for the newest submit-tag release.
 MAX_RELEASES_FALLBACK = 30
 
-# The roster header `gh teacher classroom add` scaffolds and the
-# six columns `gh teacher roster add/import` writes. Mirrors
-# `rosterColumns` in `cli/gh-teacher/students_csv.go`.
+# Roster header written by `gh teacher classroom add`. Mirrors
+# rosterColumns in cli/gh-teacher/students_csv.go.
 ROSTER_HEADER = ("username", "first_name", "last_name", "email", "section", "github_id")
 
-# GitHub usernames are 1-39 chars, alphanumeric + hyphen, no
-# leading/trailing/consecutive hyphens. The defensive check below
-# only catches obviously-bogus values (empty, slashes, etc.) so a
-# typo'd row doesn't get formatted into a URL — it's not a strict
+# Coarse filter for obviously-bogus usernames (empty, slashes, etc.)
+# so they don't get formatted into a URL. Not a strict GitHub
 # username validator.
 _USERNAME_BAD_CHARS = re.compile(r"[^A-Za-z0-9-]")
 
@@ -157,11 +132,6 @@ def main() -> int:
                     f"({exc.reason or 'no reason'}) — run `gh teacher rotate-collect-token {org}` "
                     f"with a fine-grained PAT scoped to Contents: read on the student repos"
                 )
-            elif is_hard_http_error(exc):
-                emit_error(
-                    f"{classroom_short}: collect failed with HTTP {exc.code} "
-                    f"({exc.reason or 'no reason'})"
-                )
             else:
                 emit_error(
                     f"{classroom_short}: collect failed with HTTP {exc.code} "
@@ -192,14 +162,10 @@ def main() -> int:
 def iter_classrooms(
     base_dir: pathlib.Path, classroom_filter: str
 ) -> Iterable[tuple[str, dict[str, Any], dict[str, Any], list[dict[str, str]]]]:
-    """Yield (short_name, classroom_meta, assignments, roster) per classroom.
-
-    Classrooms whose schema sentinel doesn't match v1 are skipped
-    with a workflow warning — preserving forward-compat with future
-    schema versions instead of crashing the whole run. A missing
-    `students.csv` is also a skip: the collect strategy is
-    roster-driven, so a classroom without a roster has nothing to
-    poll.
+    """Yield (short_name, classroom_meta, assignments, roster) per
+    classroom. Non-v1 schemas and missing students.csv both skip
+    with a workflow warning (preserves forward-compat without
+    crashing the run).
     """
     if not base_dir.is_dir():
         return
@@ -247,26 +213,17 @@ def iter_classrooms(
 
 
 class RosterFileError(Exception):
-    """Raised on a malformed students.csv that the collector can't reason about."""
+    """Malformed students.csv."""
 
 
 def read_students_csv(path: pathlib.Path) -> list[dict[str, str]]:
-    """Parse students.csv and return one dict per row.
-
-    Reads via `csv.DictReader` so quoted fields and embedded commas
-    round-trip correctly. The canonical 6-column header is
-    enforced — a hand-edit that drops `github_id` or renames
-    `username` would otherwise let the run finish with silent
-    missing data.
-
-    Rows with an empty `username` are skipped (a partially-filled
-    template row shouldn't trip the collector).
+    """Parse students.csv into row dicts. Rejects a renamed/short
+    header so a hand-edit can't silently drop data. Empty-username
+    rows are skipped.
     """
     try:
-        # utf-8-sig strips a leading BOM, matching the Go-side
-        # students_csv.go reader. Spreadsheet tools sometimes add
-        # a BOM; a strict utf-8 open would see "\ufeffusername" and
-        # reject an otherwise-valid roster header.
+        # utf-8-sig strips Excel's BOM, matching the Go-side
+        # students_csv.go reader.
         with path.open(newline="", encoding="utf-8-sig") as fh:
             reader = csv.DictReader(fh)
             if reader.fieldnames is None:
@@ -311,15 +268,10 @@ def collect_classroom(
     roster: list[dict[str, str]],
     collect_token: str,
 ) -> list[dict[str, Any]]:
-    """Return validated result payloads for every (student, assignment) pair.
-
-    The Cartesian product `roster × assignments.json` defines the
-    full set of repos to poll. Per-repo failures (no release, asset
-    missing, payload validation) emit a workflow warning or summary
-    line and move on; no failure here blocks other students from
-    being collected. Hard failures (expired/under-scoped collect
-    token: 401/403; synthetic 599 network outage after retries)
-    propagate and main() converts them to exit 1.
+    """Return validated result payloads for every (student,
+    assignment) pair. Per-repo failures warn and skip; hard
+    failures (auth: 401/403; network: synthetic 599) propagate and
+    main() converts them to exit 1.
     """
     results: list[dict[str, Any]] = []
     for entry in assignments.get("assignments") or []:
@@ -346,11 +298,9 @@ def collect_classroom(
                 emit_warning(f"{org}/{repo_name}: latest release response malformed ({exc}); skipping")
                 continue
             if release is None:
-                # No release yet — student hasn't submitted, hasn't
-                # accepted, or the autograde workflow hasn't
-                # finished. The per-assignment summary at the end
-                # of this loop reports the gap; individual misses
-                # are intentionally quiet.
+                # Student hasn't submitted/accepted/finished
+                # grading. Individual misses are quiet; the
+                # per-assignment summary reports the gap.
                 continue
 
             try:
@@ -385,9 +335,9 @@ def collect_classroom(
 
 
 def assignment_repo_name(classroom: str, assignment: str, username: str) -> str:
-    """Canonical student-repo name. Mirrors `assignmentRepoName` in
-    `cli/gh-student/accept.go` — changing the shape here without
-    updating the Go side would silently break the collect loop."""
+    """Canonical student-repo name. Cross-binary contract — mirrors
+    `assignmentRepoName` in cli/gh-student/accept.go; changing the
+    shape here without updating Go silently breaks the collect loop."""
     return f"{classroom.lower()}-{assignment.lower()}-{username.lower()}"
 
 
@@ -403,12 +353,9 @@ class AssetMissingError(Exception):
 
 
 def strict_json_loads(raw: str) -> Any:
-    """Parse JSON while rejecting NaN / Infinity constants.
-
-    Python's json module accepts those non-standard numeric values
-    by default, but Go's encoding/json rejects them. scores.json is
-    read by both ecosystems, so collect must fail before preserving
-    or writing a file containing non-finite numbers.
+    """Parse JSON rejecting NaN/Infinity. Python's json accepts
+    them by default but Go's encoding/json doesn't, and scores.json
+    is read by both ecosystems.
     """
 
     def reject_constant(value: str) -> None:
@@ -418,11 +365,9 @@ def strict_json_loads(raw: str) -> Any:
 
 
 def load_scores(path: pathlib.Path) -> dict[str, Any]:
-    """Read scores.json from disk, returning the parsed shape.
-
-    A missing file (e.g. fresh classroom) returns a v1 skeleton. A
-    malformed file raises — the caller fails the workflow rather
-    than silently overwriting the teacher's work.
+    """Read scores.json. Missing or empty returns the v1 skeleton.
+    Malformed raises so the workflow fails instead of overwriting
+    the teacher's work.
     """
     if not path.is_file():
         return {"schema": SCORES_SCHEMA_V1, "submissions": []}
@@ -453,28 +398,23 @@ def load_scores(path: pathlib.Path) -> dict[str, Any]:
 
 
 def save_scores(path: pathlib.Path, scores: dict[str, Any]) -> None:
-    """Atomic write of scores.json.
-
-    Encode to `path.tmp`, parse the bytes back as a JSON sanity
-    check, then `os.replace` into place. On any exception the
-    original file is left untouched and the temp file is removed.
+    """Atomic write: encode → parse-back sanity check → tmp + replace.
+    On any exception the original is untouched and the tmp is removed.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
         payload = json.dumps(scores, indent=2, allow_nan=False) + "\n"
     except ValueError as exc:
         raise ScoresFileError(f"{path}: encode failed: {exc}") from exc
-    # Re-parse as a sanity check: any silent corruption (e.g. NaN
-    # leaking into a score) would surface here before we touch the
-    # destination file.
+    # Re-parse to catch silent corruption (e.g. NaN in a score)
+    # before touching the destination file.
     strict_json_loads(payload)
     tmp_path = path.with_name(path.name + ".tmp")
     try:
         tmp_path.write_text(payload)
         os.replace(tmp_path, path)
     except OSError as exc:
-        # Best-effort cleanup of the temp file so a retry doesn't
-        # trip over a stale .tmp.
+        # Clean up the tmp so a retry doesn't trip over a stale .tmp.
         try:
             tmp_path.unlink(missing_ok=True)
         except OSError:
@@ -486,16 +426,12 @@ def save_scores(path: pathlib.Path, scores: dict[str, Any]) -> None:
 
 
 def apply_updates(scores: dict[str, Any], updates: Iterable[dict[str, Any]]) -> int:
-    """Merge incoming result payloads into `scores["submissions"]`.
-
-    Returns the number of rows actually changed (added or replaced).
-    An existing row with `"override": true` is preserved verbatim
-    regardless of the incoming payload — teacher manual corrections
-    take precedence over collect.
-
-    Rows are keyed by (assignment, lowercased single username); v0.2
-    individual-mode assignments always have exactly one username, so
-    the key uniquely identifies a row.
+    """Merge incoming result payloads into scores["submissions"];
+    return the number of rows added or replaced. Existing rows with
+    `"override": true` are preserved verbatim. Rows are keyed by
+    (assignment, tuple(lowercased usernames)) — individual mode has
+    exactly one username today; the tuple shape leaves room for
+    group submissions later.
     """
     submissions = scores["submissions"]
     by_key: dict[tuple[str, tuple[str, ...]], int] = {}
@@ -523,11 +459,8 @@ def apply_updates(scores: dict[str, Any], updates: Iterable[dict[str, Any]]) -> 
             continue
         if same_submission(existing, update):
             continue
-        # Preserve the override field if it was explicitly false on
-        # the existing row — a teacher may have set "override": false
-        # to indicate "I checked this row and it's correct, but the
-        # autograder should still keep refreshing it on the next
-        # submit".
+        # Preserve an explicit "override": false on replacement —
+        # the teacher's "I reviewed this, keep refreshing" signal.
         if "override" in existing and "override" not in update:
             update = dict(update)
             update["override"] = existing["override"]
@@ -537,11 +470,9 @@ def apply_updates(scores: dict[str, Any], updates: Iterable[dict[str, Any]]) -> 
 
 
 def submission_key(record: dict[str, Any]) -> tuple[str, tuple[str, ...]] | None:
-    """(assignment, lowercased-usernames-tuple) — the unique row key.
-
-    v0.2 individual-mode always carries exactly one username, but
-    the tuple shape forward-compats group mode (v0.3+) without
-    forcing a key migration.
+    """(assignment, tuple(lowercased usernames)). None signals an
+    unkeyable record (missing assignment, missing/empty usernames,
+    or any non-string username).
     """
     assignment = record.get("assignment")
     usernames = record.get("usernames") or []
@@ -573,14 +504,10 @@ _REQUIRED_STR_FIELDS = ("submission", "commit", "release", "review", "datetime")
 def validate_result(
     payload: Any, expected_classroom: str, expected_assignment: str, expected_username: str
 ) -> None:
-    """Raise ValueError if the payload doesn't satisfy the v1 contract.
-
-    The mismatch checks (classroom/assignment/username) defend
-    against a hostile result.json — a student crafting a payload
-    claiming to be for a different classroom can't land it in the
-    wrong scores.json, because we reject anything that doesn't match
-    the source repo's expected (classroom, assignment, student)
-    tuple.
+    """Raise ValueError if the payload fails the v1 contract. The
+    classroom/assignment/username checks defend against a hostile
+    result.json trying to land in someone else's scores.json — the
+    triple must match the source repo's expected identity.
     """
     if not isinstance(payload, dict):
         raise ValueError(f"top-level value must be an object, got {type(payload).__name__}")
@@ -648,8 +575,8 @@ def validate_result(
 
 
 class _AuthStrippingRedirect(urllib.request.HTTPRedirectHandler):
-    """Drop `Authorization` on redirect so the GitHub token doesn't
-    leak to the S3-signed asset URL the API redirects asset reads to.
+    """Drop Authorization on redirect so the GitHub token doesn't
+    leak to the S3-signed asset URL GitHub redirects asset reads to.
     """
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):
@@ -666,17 +593,20 @@ class _AuthStrippingRedirect(urllib.request.HTTPRedirectHandler):
 _OPENER = urllib.request.build_opener(_AuthStrippingRedirect)
 
 
+def _repo_url(api_url: str, owner: str, repo: str) -> str:
+    return (
+        f"{api_url}/repos/{urllib.parse.quote(owner, safe='')}/"
+        f"{urllib.parse.quote(repo, safe='')}"
+    )
+
+
 def latest_submit_release_or_none(
     api_url: str, owner: str, repo: str, token: str
 ) -> dict[str, Any] | None:
-    """Return the newest submit-tag release for a repo, if one exists.
-
-    Fast path: one direct call to `/releases/latest`. If that latest
-    release is a submit tag, return it. If it is absent (404), return
-    None. If it is a non-submit release, scan a small bounded window
-    of recent releases for the newest `submit/*` tag so a student's
-    hand-created release does not permanently hide their latest
-    submission from collection.
+    """Return the newest submit-tag release for a repo, or None.
+    Fast path: one call to `/releases/latest`. When latest is a
+    non-submit release, scan a bounded recent-releases window so a
+    student's hand-created release doesn't hide their submission.
     """
     latest = latest_release_or_none(api_url, owner, repo, token)
     if latest is None:
@@ -695,25 +625,15 @@ def latest_submit_release_or_none(
 def latest_release_or_none(
     api_url: str, owner: str, repo: str, token: str
 ) -> dict[str, Any] | None:
-    """One direct call to GET /repos/{owner}/{repo}/releases/latest.
-
-    Returns the release object, or None when the repo has no
-    releases (404) — which is the common case for a student who
-    hasn't yet run `gh student submit`. A 404 on the repo itself
-    (the student never accepted the assignment) returns None for
-    the same reason: the collect run shouldn't fail just because
-    one student isn't participating.
-
-    Any other HTTP error (401 from a bad token, 403 from a
-    permission gap, 5xx from a transient outage) propagates so the
-    workflow can fail loudly and the teacher can act.
+    """GET /repos/{owner}/{repo}/releases/latest. 404 → None
+    (covers both "no releases yet" and "repo not accepted yet"; the
+    nightly run shouldn't fail because one student isn't
+    participating). Other HTTP errors propagate so the workflow
+    fails loudly.
     """
-    url = (
-        f"{api_url}/repos/{urllib.parse.quote(owner, safe='')}/"
-        f"{urllib.parse.quote(repo, safe='')}/releases/latest"
-    )
+    url = f"{_repo_url(api_url, owner, repo)}/releases/latest"
     try:
-        body, _headers = _http_get(url, token, accept="application/vnd.github+json")
+        body = _http_get(url, token, accept="application/vnd.github+json")
     except urllib.error.HTTPError as exc:
         if exc.code == 404:
             return None
@@ -727,31 +647,21 @@ def latest_release_or_none(
 def list_recent_releases(
     api_url: str, owner: str, repo: str, token: str, *, limit: int
 ) -> list[dict[str, Any]]:
-    """Return up to `limit` most recent releases from the repo.
-
-    The GitHub releases endpoint returns newest first. We only need a
-    small bounded window as a fallback when `/releases/latest` points
-    at a non-submit tag.
+    """Up to `limit` most recent releases (newest first). Used as a
+    bounded fallback when `/releases/latest` is a non-submit tag.
     """
     per_page = max(1, min(limit, 100))
-    url = (
-        f"{api_url}/repos/{urllib.parse.quote(owner, safe='')}/"
-        f"{urllib.parse.quote(repo, safe='')}/releases?per_page={per_page}"
-    )
-    body, _headers = _http_get(url, token, accept="application/vnd.github+json")
+    url = f"{_repo_url(api_url, owner, repo)}/releases?per_page={per_page}"
+    body = _http_get(url, token, accept="application/vnd.github+json")
     releases = json.loads(body.decode("utf-8"))
     if not isinstance(releases, list):
         raise ValueError(f"GET {url}: expected JSON array, got {type(releases).__name__}")
-    out: list[dict[str, Any]] = []
     for i, release in enumerate(releases):
-        if i >= limit:
-            break
         if not isinstance(release, dict):
             raise ValueError(
                 f"GET {url}: expected release object at index {i}, got {type(release).__name__}"
             )
-        out.append(release)
-    return out
+    return releases
 
 
 def download_result_asset(
@@ -767,23 +677,22 @@ def download_result_asset(
         json.JSONDecodeError if the bytes don't parse as JSON.
         ValueError if the asset is too large to accept.
     """
-    matches = []
-    for candidate in release.get("assets") or []:
-        if (candidate.get("name") or "").lower() == "result.json":
-            matches.append(candidate)
+    matches = [
+        c for c in (release.get("assets") or [])
+        if (c.get("name") or "").lower() == RESULT_ASSET_NAME
+    ]
     if not matches:
-        raise AssetMissingError("result.json asset missing from latest submit release")
+        raise AssetMissingError(f"{RESULT_ASSET_NAME} asset missing from latest submit release")
     if len(matches) > 1:
-        raise ValueError(f"latest submit release has {len(matches)} result.json assets")
-    asset = matches[0]
+        raise ValueError(f"latest submit release has {len(matches)} {RESULT_ASSET_NAME} assets")
 
-    asset_url = asset.get("url")
+    asset_url = matches[0].get("url")
     if not asset_url:
         raise ValueError("asset record missing url field")
 
     asset_url = rewrite_asset_url(asset_url, api_url)
 
-    body, _ = _http_get(
+    body = _http_get(
         asset_url,
         token,
         accept="application/octet-stream",
@@ -795,14 +704,11 @@ def download_result_asset(
 
 
 def rewrite_asset_url(asset_url: str, api_url: str) -> str:
-    """Rewrite an asset API URL to the configured API host.
-
-    Tests point the collector at a local server via GH_API_URL, but
-    GitHub's asset records still contain API-origin absolute URLs
-    (usually https://api.github.com/...). Parse and replace only the
-    scheme+netloc rather than slicing a hard-coded prefix. Preserve
-    a GHES-style API path prefix (e.g. /api/v3) when the asset URL
-    does not already include it.
+    """Rewrite an asset API URL to the configured API host. Asset
+    records still carry api.github.com URLs even when GH_API_URL
+    points at a test server or GHES — parse and swap scheme+netloc
+    rather than string-slice a hardcoded prefix. Preserves a
+    GHES-style /api/v3 prefix when the asset URL lacks it.
     """
     parsed_asset = urllib.parse.urlsplit(asset_url)
     parsed_api = urllib.parse.urlsplit(api_url)
@@ -827,15 +733,12 @@ def rewrite_asset_url(asset_url: str, api_url: str) -> str:
 
 def _http_get(
     url: str, token: str, *, accept: str, max_bytes: int | None = None, _retries: int = 3
-) -> tuple[bytes, dict[str, str]]:
-    """GET `url` with bearer auth; return (body, response-headers).
-
-    Retries on transient 5xx and 429 with exponential backoff. The
-    custom redirect handler strips Authorization before following
-    the asset-download redirect to S3 (otherwise GitHub's signed
-    URLs would reject the forwarded GitHub token).
+) -> bytes:
+    """GET `url` with bearer auth; return the body. Retries 5xx/429
+    with exponential backoff. The custom redirect handler strips
+    Authorization before following GitHub's asset-download redirect
+    to S3 (otherwise the signed URL rejects the forwarded token).
     """
-    last_exc: urllib.error.HTTPError | None = None
     for attempt in range(_retries):
         req = urllib.request.Request(
             url,
@@ -849,14 +752,10 @@ def _http_get(
         )
         try:
             with _OPENER.open(req, timeout=30) as resp:
-                body = resp.read(max_bytes) if max_bytes is not None else resp.read()
-                headers = {k: v for k, v in resp.headers.items()}
-                return body, headers
+                return resp.read(max_bytes) if max_bytes is not None else resp.read()
         except urllib.error.HTTPError as exc:
-            last_exc = exc
             if exc.code in (429, 500, 502, 503, 504) and attempt < _retries - 1:
-                # Honor Retry-After when present (capped at 30s);
-                # otherwise back off exponentially.
+                # Honor Retry-After (capped at 30s); else exp backoff.
                 retry_after = exc.headers.get("Retry-After") if exc.headers else None
                 delay = min(int(retry_after), 30) if (retry_after or "").isdigit() else 2 ** attempt
                 time.sleep(delay)
@@ -873,19 +772,14 @@ def _http_get(
                 hdrs=None,  # type: ignore[arg-type]
                 fp=None,
             ) from exc
-    if last_exc is not None:
-        raise last_exc
-    return b"", {}
+    raise RuntimeError(f"_http_get called with _retries={_retries}")
 
 
 def is_hard_http_error(exc: urllib.error.HTTPError) -> bool:
-    """Whether an HTTP failure should fail the whole collect run.
-
-    Auth errors mean the collect token is invalid or under-scoped.
-    Code 599 is our synthetic "network unavailable" status after
-    retrying URL errors. Treating either class like a per-student
-    "not submitted" gap would make the nightly collect run green
-    while silently collecting nothing.
+    """Hard failures that should fail the whole run: 401/403 (bad
+    or under-scoped token) and 599 (synthetic "network unavailable"
+    after retries). Treating these as per-student "not submitted"
+    would make a broken run report success while collecting nothing.
     """
     return exc.code in (401, 403, 599)
 

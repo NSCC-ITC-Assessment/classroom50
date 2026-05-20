@@ -2,8 +2,8 @@ name: Classroom50 Autograde Library
 
 # Reusable autograde workflow consumed by per-classroom autograders
 # (e.g. `<classroom>/autograders/default.yml`) in any teaching org's
-# `classroom50` config repo. Authored here in classroom50-dev and
-# mirrored to `foundation50/classroom50` by `mirror-to-public.yaml`
+# `classroom50` config repo. Lives at
+# `foundation50/classroom50/.github/workflows/autograde-library.yml`
 # so cross-org `uses: foundation50/classroom50/...@<ref>` resolves.
 #
 # Contract (every caller must satisfy this, the library will not

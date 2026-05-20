@@ -34,7 +34,7 @@ func inviteCmd() *cobra.Command {
 				return errors.New("username must not be empty")
 			}
 
-			// <org>/<repo>: exactly two non-empty components.
+			// Exactly two non-empty components.
 			parts := strings.SplitN(target, "/", 3)
 			if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
 				return fmt.Errorf("invalid target %q: expected <org>/<repo>", target)
@@ -55,7 +55,7 @@ func inviteCmd() *cobra.Command {
 	return cmd
 }
 
-// inviteUserToPush adds username as a push-level collaborator on org/repo.
+// inviteUserToPush adds username as a push collaborator on org/repo.
 func inviteUserToPush(client *api.RESTClient, out io.Writer, org, repo, username string) error {
 	body, err := json.Marshal(map[string]string{
 		"permission": "push",

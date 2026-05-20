@@ -9,6 +9,7 @@ roster CSV parser, and the deterministic repo-name formula.
 
 from __future__ import annotations
 
+import csv
 import json
 import os
 import pathlib
@@ -56,11 +57,11 @@ def make_result(
 def write_roster(path, rows: list[dict[str, str]]) -> None:
     """Write a 6-column students.csv at `path`. Each row dict only needs
     the fields the test cares about; missing fields default to ''."""
-    header = ",".join(cs.ROSTER_HEADER) + "\n"
-    body_rows: list[str] = []
-    for row in rows:
-        body_rows.append(",".join(row.get(col, "") for col in cs.ROSTER_HEADER))
-    path.write_text(header + "\n".join(body_rows) + ("\n" if body_rows else ""))
+    with path.open("w", newline="") as fh:
+        writer = csv.DictWriter(fh, fieldnames=list(cs.ROSTER_HEADER), extrasaction="ignore")
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({col: row.get(col, "") for col in cs.ROSTER_HEADER})
 
 
 def write_minimal_classroom(root: pathlib.Path) -> pathlib.Path:
@@ -92,35 +93,28 @@ def write_minimal_classroom(root: pathlib.Path) -> pathlib.Path:
 
 class TestSubmissionKey:
     def test_canonical_record_returns_lowercased_tuple_key(self):
-        # The dedup key must lowercase usernames so a teacher who
-        # hand-edits "Alice" in scores.json doesn't get a duplicate
-        # row the next time collect lands the canonical "alice".
+        # Lowercased usernames keep a hand-edited "Alice" and the
+        # canonical "alice" from creating duplicate rows.
         rec = {"assignment": "hello", "usernames": ["Alice"]}
         assert cs.submission_key(rec) == ("hello", ("alice",))
 
     def test_missing_assignment_returns_none(self):
-        # No assignment → no row key → apply_updates will skip the
-        # row entirely rather than appending a malformed entry.
         assert cs.submission_key({"usernames": ["alice"]}) is None
 
     def test_missing_usernames_returns_none(self):
         assert cs.submission_key({"assignment": "hello"}) is None
 
     def test_empty_usernames_list_returns_none(self):
-        # An empty `usernames` array is the v0.3 group-mode error
-        # path; collect rejects rather than guesses.
         assert cs.submission_key({"assignment": "hello", "usernames": []}) is None
 
     def test_non_string_username_returns_none(self):
-        # Defensive type check — a hand-edited file with a numeric
-        # username would silently match nothing in `apply_updates`
-        # if we accepted it.
+        # Defensive — a hand-edited numeric username would silently
+        # match nothing in apply_updates.
         assert cs.submission_key({"assignment": "hello", "usernames": [123]}) is None
 
     def test_multi_username_preserves_order_lowercased(self):
-        # v0.3 group mode: the tuple shape is intentionally
-        # extensible so a key migration isn't required when group
-        # mode lands.
+        # Tuple shape is intentionally extensible so a key migration
+        # isn't needed if group submissions land.
         rec = {"assignment": "hello", "usernames": ["Alice", "Bob"]}
         assert cs.submission_key(rec) == ("hello", ("alice", "bob"))
 
@@ -136,8 +130,7 @@ class TestApplyUpdates:
         assert scores["submissions"] == [make_result()]
 
     def test_replaces_existing_submission_in_place(self):
-        # Order preservation matters: a teacher reading
-        # scores.json shouldn't see rows shuffle on each collect.
+        # Row order is preserved across collect runs.
         first = make_result(username="alice", score=10)
         second = make_result(username="bob", score=5)
         scores = {"schema": cs.SCORES_SCHEMA_V1, "submissions": [first, second]}
@@ -150,9 +143,8 @@ class TestApplyUpdates:
         assert scores["submissions"][1] == second  # bob is untouched
 
     def test_skips_overridden_rows(self):
-        # The override contract: a teacher correction is final until
-        # they clear it. The fresh result release MUST NOT silently
-        # overwrite it.
+        # Override contract: teacher correction is final until cleared.
+        # A fresh result must not silently overwrite it.
         existing = make_result(username="alice", score=20)
         existing["override"] = True
         scores = {"schema": cs.SCORES_SCHEMA_V1, "submissions": [existing]}
@@ -162,9 +154,8 @@ class TestApplyUpdates:
         assert scores["submissions"][0] == existing
 
     def test_override_false_is_not_a_skip_signal(self):
-        # An explicit "override": false is treated like absence —
-        # the row gets refreshed normally, but the explicit false
-        # marker is preserved on replacement.
+        # Explicit "override": false is treated like absent for
+        # the refresh decision, but preserved on replacement.
         existing = make_result(username="alice", score=5)
         existing["override"] = False
         scores = {"schema": cs.SCORES_SCHEMA_V1, "submissions": [existing]}
@@ -175,16 +166,15 @@ class TestApplyUpdates:
         assert scores["submissions"][0]["override"] is False
 
     def test_identical_incoming_is_a_noop(self):
-        # Re-running collect on a stable classroom must produce no
-        # commits. `same_submission` is the gate.
+        # `same_submission` gates re-runs: stable classroom → no commits.
         existing = make_result()
         scores = {"schema": cs.SCORES_SCHEMA_V1, "submissions": [existing]}
         changes = cs.apply_updates(scores, [make_result()])
         assert changes == 0
 
     def test_identical_modulo_override_field_is_a_noop(self):
-        # An existing row with "override": false vs an incoming row
-        # without the field — same effective data, no change.
+        # "override": false on existing vs absent on incoming →
+        # same effective data, no change.
         existing = make_result()
         existing["override"] = False
         scores = {"schema": cs.SCORES_SCHEMA_V1, "submissions": [existing]}
@@ -194,8 +184,7 @@ class TestApplyUpdates:
         assert scores["submissions"][0]["override"] is False
 
     def test_handles_malformed_existing_row_gracefully(self):
-        # A teacher who hand-edited an entry into a non-dict
-        # value (e.g. a stray list) doesn't crash the collector;
+        # A hand-edited non-dict entry doesn't crash the collector;
         # apply_updates ignores it and appends the new row.
         scores = {"schema": cs.SCORES_SCHEMA_V1, "submissions": ["junk"]}
         changes = cs.apply_updates(scores, [make_result()])
@@ -237,9 +226,8 @@ class TestValidateResult:
             cs.validate_result(payload, "cs-principles", "hello", "alice")
 
     def test_rejects_mismatched_classroom(self):
-        # Defense against a hostile result.json: a student
-        # crafting a payload claiming to be for a different
-        # classroom can't land it in the wrong scores.json.
+        # Hostile-payload defense: a fake classroom can't land in
+        # the wrong scores.json.
         payload = make_result(classroom="other-classroom")
         with pytest.raises(ValueError, match="classroom"):
             cs.validate_result(payload, "cs-principles", "hello", "alice")
@@ -250,8 +238,8 @@ class TestValidateResult:
             cs.validate_result(payload, "cs-principles", "hello", "alice")
 
     def test_rejects_mismatched_username(self):
-        # The username has to match the one derived from the
-        # roster — that's the link back to scores by student.
+        # Username must match the roster-derived value — that's the
+        # link back to scores by student.
         payload = make_result(username="mallory")
         with pytest.raises(ValueError, match="usernames"):
             cs.validate_result(payload, "cs-principles", "hello", "alice")
@@ -262,24 +250,21 @@ class TestValidateResult:
         cs.validate_result(payload, "cs-principles", "hello", "alice")
 
     def test_rejects_multi_user_payload_in_v02(self):
-        # v0.2 individual mode is strict: exactly one username.
-        # Group mode lands in v0.3 with its own schema bump.
+        # Individual mode is strict: exactly one username.
         payload = make_result()
         payload["usernames"] = ["alice", "bob"]
         with pytest.raises(ValueError, match="one-element"):
             cs.validate_result(payload, "cs-principles", "hello", "alice")
 
     def test_rejects_non_submit_tag(self):
-        # The trigger contract: only `submit/*` tags are graded.
-        # A payload claiming a non-submit submission shouldn't
-        # even make it into scores.json.
+        # Trigger contract: only `submit/*` tags are graded. A
+        # payload claiming otherwise must not land in scores.json.
         payload = make_result(submission_tag="manual-2026-06-01")
         with pytest.raises(ValueError, match="submit/"):
             cs.validate_result(payload, "cs-principles", "hello", "alice")
 
     def test_rejects_score_greater_than_max(self):
-        # The autograde library shouldn't emit this, but a hostile
-        # custom autograder might.
+        # A hostile custom autograder could emit this.
         payload = make_result(score=50, max_score=10)
         with pytest.raises(ValueError, match=r"score \(50\)"):
             cs.validate_result(payload, "cs-principles", "hello", "alice")
@@ -290,10 +275,8 @@ class TestValidateResult:
             cs.validate_result(payload, "cs-principles", "hello", "alice")
 
     def test_rejects_boolean_score(self):
-        # Python's bool is a subtype of int — a careless
-        # `isinstance(value, int)` would happily accept True/False.
-        # The defense lives in validate_result for the same reason
-        # the rest of the schema checks are defensive.
+        # bool is a subtype of int in Python — a naive
+        # isinstance(value, int) would accept True/False.
         payload = make_result()
         payload["score"] = True  # type: ignore[assignment]
         with pytest.raises(ValueError, match="non-negative"):
@@ -313,9 +296,8 @@ class TestValidateResult:
             cs.validate_result(payload, "cs-principles", "hello", "alice")
 
     def test_rejects_test_score_greater_than_test_max_score(self):
-        # Top-level score is already bounded; pin the same invariant
-        # per test so a custom autograder cannot emit internally
-        # inconsistent rows.
+        # Same per-test bound so custom autograders can't emit
+        # internally inconsistent rows.
         payload = make_result()
         payload["tests"] = [
             {"test-name": "unit", "passed": True, "score": 11, "max-score": 10}
@@ -324,8 +306,7 @@ class TestValidateResult:
             cs.validate_result(payload, "cs-principles", "hello", "alice")
 
     def test_empty_tests_array_is_valid(self):
-        # An assignment with no tests still produces a valid
-        # release — the score is just 0/0.
+        # No tests → 0/0 score; still a valid release.
         payload = make_result(score=0, max_score=0)
         payload["tests"] = []
         cs.validate_result(payload, "cs-principles", "hello", "alice")
@@ -337,19 +318,16 @@ class TestValidateResult:
 class TestAssignmentRepoName:
     def test_lowercases_all_three_components(self):
         # Cross-binary contract with assignmentRepoName in
-        # cli/gh-student/accept.go — the formula has to match
-        # exactly or the collect call to releases/latest 404s
-        # for every student.
+        # cli/gh-student/accept.go — drift makes the collect
+        # releases/latest call 404 for every student.
         assert (
             cs.assignment_repo_name("CS-Principles", "Hello", "Alice")
             == "cs-principles-hello-alice"
         )
 
     def test_preserves_hyphens_within_components(self):
-        # An assignment slug like `hello-world` and a username with
-        # a hyphen both flow through unchanged — the joining
-        # hyphens between components are added by the formula, not
-        # the components themselves.
+        # Slug/username with internal hyphens flow through unchanged;
+        # joining hyphens come from the formula, not the components.
         assert (
             cs.assignment_repo_name("cs-principles", "hello-world", "ada-l")
             == "cs-principles-hello-world-ada-l"
@@ -376,9 +354,8 @@ class TestReadStudentsCSV:
         ]
 
     def test_utf8_bom_header_is_accepted(self, tmp_path):
-        # Mirrors the Go-side students_csv.go BOM tolerance. A
-        # spreadsheet-edited CSV may start with a UTF-8 BOM; the
-        # collector should treat it as a clean canonical header.
+        # Mirrors the Go-side students_csv.go BOM tolerance for
+        # spreadsheet-edited CSVs.
         path = tmp_path / "students.csv"
         path.write_text(
             "\ufeffusername,first_name,last_name,email,section,github_id\n"
@@ -388,9 +365,7 @@ class TestReadStudentsCSV:
         assert cs.read_students_csv(path) == [{"username": "alice", "github_id": "111"}]
 
     def test_skips_rows_with_empty_username(self, tmp_path):
-        # A partially-filled template row (e.g., teacher previewed
-        # the file in a spreadsheet that added a blank line) must
-        # not become a fake student in the collect pass.
+        # A blank/template row mustn't become a fake student.
         path = tmp_path / "students.csv"
         write_roster(
             path,
@@ -404,9 +379,7 @@ class TestReadStudentsCSV:
         assert [r["username"] for r in roster] == ["alice", "bob"]
 
     def test_skips_rows_with_malformed_username(self, tmp_path):
-        # A hand-edit that introduces a slash or space into a
-        # username shouldn't reach the GitHub URL builder — the
-        # row is skipped with a warning.
+        # Slashes/spaces must not reach the URL builder — warn and skip.
         path = tmp_path / "students.csv"
         write_roster(
             path,
@@ -426,8 +399,7 @@ class TestReadStudentsCSV:
             cs.read_students_csv(path)
 
     def test_wrong_header_raises(self, tmp_path):
-        # A hand-edited header (renamed `username`, dropped
-        # `github_id`, etc.) is rejected so the collect run can't
+        # A renamed or short header is rejected so the run can't
         # finish with silent missing data.
         path = tmp_path / "students.csv"
         path.write_text(
@@ -437,8 +409,7 @@ class TestReadStudentsCSV:
             cs.read_students_csv(path)
 
     def test_handles_quoted_fields(self, tmp_path):
-        # CSV-quoted values with embedded commas (e.g. "Last, Jr.")
-        # must round-trip cleanly through DictReader.
+        # Quoted values with embedded commas must round-trip through DictReader.
         path = tmp_path / "students.csv"
         path.write_text(
             textwrap.dedent(
@@ -452,8 +423,7 @@ class TestReadStudentsCSV:
         assert roster == [{"username": "alice", "github_id": "111"}]
 
     def test_header_only_file_returns_empty_list(self, tmp_path):
-        # A fresh classroom with no students yet — collect should
-        # report 0/0 and move on, not crash.
+        # Fresh classroom, no students: report 0/0, don't crash.
         path = tmp_path / "students.csv"
         write_roster(path, [])
         assert cs.read_students_csv(path) == []
@@ -486,25 +456,24 @@ class TestScoresIO:
             cs.load_scores(path)
 
     def test_load_normalizes_null_submissions(self, tmp_path):
-        # A hand-edited file with `"submissions": null` shouldn't
-        # crash the collector — normalize to [] and carry on.
+        # `"submissions": null` normalizes to [] so a hand-edit
+        # doesn't crash the collector.
         path = tmp_path / "scores.json"
         path.write_text(json.dumps({"schema": cs.SCORES_SCHEMA_V1, "submissions": None}))
         scores = cs.load_scores(path)
         assert scores["submissions"] == []
 
     def test_load_raises_when_submissions_is_not_a_list(self, tmp_path):
-        # Defensive: a dict-shaped submissions field is corrupt
-        # and we don't try to repair it silently.
+        # Defensive — a dict-shaped submissions field is corrupt;
+        # don't silently repair it.
         path = tmp_path / "scores.json"
         path.write_text(json.dumps({"schema": cs.SCORES_SCHEMA_V1, "submissions": {}}))
         with pytest.raises(cs.ScoresFileError, match="must be a list"):
             cs.load_scores(path)
 
     def test_load_rejects_non_finite_numbers(self, tmp_path):
-        # Python's json.loads accepts NaN/Infinity by default, but
-        # Go's encoding/json rejects them. scores.json must stay
-        # valid for both implementations.
+        # Python's json accepts NaN/Infinity; Go's encoding/json
+        # doesn't. scores.json has to stay valid for both.
         path = tmp_path / "scores.json"
         path.write_text(
             '{"schema":"classroom50/scores/v1","submissions":[{"assignment":"hello","usernames":["alice"],"score":NaN}]}'
@@ -517,17 +486,15 @@ class TestScoresIO:
         scores = {"schema": cs.SCORES_SCHEMA_V1, "submissions": [make_result()]}
         cs.save_scores(path, scores)
 
-        # The final file is well-formed JSON matching what we
-        # passed in.
         round_trip = json.loads(path.read_text())
         assert round_trip == scores
 
-        # The .tmp file was renamed into place (not left behind).
+        # .tmp was renamed into place, not left behind.
         assert not (tmp_path / "scores.json.tmp").exists()
 
     def test_save_rejects_non_finite_numbers(self, tmp_path):
-        # json.dumps defaults to allow_nan=True. Pin allow_nan=False
-        # so a bad custom score cannot write Go-invalid JSON.
+        # allow_nan=False keeps a bad custom score from writing
+        # Go-invalid JSON.
         path = tmp_path / "scores.json"
         scores = {"schema": cs.SCORES_SCHEMA_V1, "submissions": [make_result(score=1)]}
         scores["submissions"][0]["score"] = float("nan")
@@ -536,8 +503,8 @@ class TestScoresIO:
         assert not path.exists()
 
     def test_save_preserves_existing_file_when_replace_fails(self, tmp_path, monkeypatch):
-        # If os.replace raises (e.g. permissions), the original
-        # file must be untouched and the temp file cleaned up.
+        # On os.replace failure (e.g. permissions), the original is
+        # untouched and the temp file is cleaned up.
         path = tmp_path / "scores.json"
         path.write_text(json.dumps({"schema": cs.SCORES_SCHEMA_V1, "submissions": []}))
         original = path.read_text()
@@ -549,9 +516,7 @@ class TestScoresIO:
         with pytest.raises(cs.ScoresFileError, match="atomic write failed"):
             cs.save_scores(path, {"schema": cs.SCORES_SCHEMA_V1, "submissions": [make_result()]})
 
-        # Original file untouched.
         assert path.read_text() == original
-        # Temp file cleaned up.
         assert not (tmp_path / "scores.json.tmp").exists()
 
 
@@ -560,9 +525,8 @@ class TestScoresIO:
 
 class TestErrorClassification:
     def test_auth_errors_are_hard_failures(self):
-        # 401/403 from GitHub means the collect PAT is missing,
-        # expired, or under-scoped. The workflow must fail red
-        # rather than warn per student and exit 0.
+        # 401/403 means the collect PAT is missing, expired, or
+        # under-scoped — fail the run instead of warn-and-skip.
         for code in (401, 403):
             exc = cs.urllib.error.HTTPError(
                 url="https://api.github.com/x",
@@ -574,9 +538,8 @@ class TestErrorClassification:
             assert cs.is_hard_http_error(exc) is True
 
     def test_network_error_is_a_hard_failure(self):
-        # _http_get turns a final URLError into synthetic 599.
-        # That means GitHub or DNS is unreachable, not "student has
-        # not submitted", so the workflow should fail.
+        # _http_get raises synthetic 599 on final URLError —
+        # GitHub/DNS unreachable, not "student didn't submit".
         exc = cs.urllib.error.HTTPError(
             url="https://api.github.com/x",
             code=599,
@@ -587,8 +550,8 @@ class TestErrorClassification:
         assert cs.is_hard_http_error(exc) is True
 
     def test_non_auth_http_errors_are_per_repo_warnings(self):
-        # Transient or per-repo failures are warn-and-skip at the
-        # call site; only auth errors poison the entire run.
+        # Transient/per-repo failures warn-and-skip at the call
+        # site; only auth errors poison the whole run.
         for code in (404, 429, 500):
             exc = cs.urllib.error.HTTPError(
                 url="https://api.github.com/x",
@@ -600,9 +563,8 @@ class TestErrorClassification:
             assert cs.is_hard_http_error(exc) is False
 
     def test_missing_result_asset_has_its_own_exception_type(self):
-        # Missing result.json is not an HTTP 404 from GitHub; it is
-        # a malformed latest release. Keep it distinct so logs don't
-        # misleadingly look like a failed API request.
+        # Missing result.json is a malformed release, not an HTTP
+        # 404 — distinct type keeps logs unambiguous.
         with pytest.raises(cs.AssetMissingError, match="result.json"):
             cs.download_result_asset(
                 "https://api.github.com",
@@ -611,10 +573,8 @@ class TestErrorClassification:
             )
 
     def test_duplicate_result_assets_are_rejected(self):
-        # The autograde library uploads with --clobber, so normal
-        # releases have a single result.json. If a custom autograder
-        # produces duplicates, collecting the "first" one would make
-        # grading ambiguous.
+        # Normal releases have a single result.json (library uses
+        # --clobber). Duplicates make grading ambiguous, so reject.
         release = {
             "url": "https://api.github.com/repos/o/r/releases/1",
             "assets": [
@@ -626,15 +586,13 @@ class TestErrorClassification:
             cs.download_result_asset("https://api.github.com", release, "token")
 
     def test_download_result_asset_uses_bounded_read(self, monkeypatch):
-        # The MAX_RESULT_BYTES check must be protective, not a
-        # post-hoc check after reading an unbounded asset into
-        # memory. Pin that the HTTP helper is called with
-        # max_bytes = MAX_RESULT_BYTES + 1.
+        # MAX_RESULT_BYTES must be enforced at read time, not
+        # post-hoc — pin that _http_get gets max_bytes=cap+1.
         seen = {}
 
         def fake_http_get(url, token, *, accept, max_bytes=None):
             seen["max_bytes"] = max_bytes
-            return json.dumps(make_result()).encode(), {}
+            return json.dumps(make_result()).encode()
 
         monkeypatch.setattr(cs, "_http_get", fake_http_get)
         release = {
@@ -659,7 +617,7 @@ class TestReleaseLookup:
 
         def fake_http_get(url, token, *, accept, max_bytes=None):
             calls.append(url)
-            return json.dumps({"tag_name": "submit/2026-06-01T14-32-05Z"}).encode(), {}
+            return json.dumps({"tag_name": "submit/2026-06-01T14-32-05Z"}).encode()
 
         monkeypatch.setattr(cs, "_http_get", fake_http_get)
         release = cs.latest_submit_release_or_none("https://api.github.com", "org", "repo", "token")
@@ -669,23 +627,22 @@ class TestReleaseLookup:
     def test_latest_submit_release_falls_back_when_latest_is_non_submit(self, monkeypatch):
         def fake_http_get(url, token, *, accept, max_bytes=None):
             if url.endswith("/releases/latest"):
-                return json.dumps({"tag_name": "manual-release"}).encode(), {}
+                return json.dumps({"tag_name": "manual-release"}).encode()
             assert url.endswith("/releases?per_page=30")
             return json.dumps(
                 [
                     {"tag_name": "manual-release"},
                     {"tag_name": "submit/2026-06-01T14-32-05Z"},
                 ]
-            ).encode(), {}
+            ).encode()
 
         monkeypatch.setattr(cs, "_http_get", fake_http_get)
         release = cs.latest_submit_release_or_none("https://api.github.com", "org", "repo", "token")
         assert release["tag_name"] == "submit/2026-06-01T14-32-05Z"
 
     def test_collect_classroom_warns_and_skips_malformed_latest_release(self, monkeypatch, capsys):
-        # A single malformed latest-release response should not
-        # crash the entire classroom collect. It is a per-repo
-        # failure, unlike auth/network hard failures.
+        # One malformed latest-release response is a per-repo
+        # failure, not a run-killer like auth/network errors.
         def malformed_latest(*args, **kwargs):
             raise ValueError("expected JSON object")
 
@@ -707,10 +664,9 @@ class TestReleaseLookup:
 
 class TestRewriteAssetURL:
     def test_rewrites_only_scheme_and_host_for_local_test_server(self):
-        # Tests use GH_API_URL to point the collector at a local
-        # server while release payloads still carry API-origin
-        # absolute asset URLs. Preserve the path/query and swap only
-        # scheme+host.
+        # GH_API_URL can point at a local test server while release
+        # payloads still carry api.github.com URLs — swap scheme+host
+        # only, preserve path/query.
         got = cs.rewrite_asset_url(
             "https://api.github.com/repos/o/r/releases/assets/123?name=result.json",
             "http://127.0.0.1:9999",
@@ -718,10 +674,9 @@ class TestRewriteAssetURL:
         assert got == "http://127.0.0.1:9999/repos/o/r/releases/assets/123?name=result.json"
 
     def test_github_enterprise_paths_are_not_prefix_sliced(self):
-        # GHES API URLs often carry a path prefix such as /api/v3.
-        # The old hard-coded slicing approach would corrupt any URL
-        # not starting with https://api.github.com. Parsing avoids
-        # that while preserving the asset path verbatim.
+        # GHES API URLs carry a path prefix like /api/v3; parsing
+        # preserves the asset path instead of corrupting non-
+        # api.github.com URLs.
         got = cs.rewrite_asset_url(
             "https://ghe.example.test/api/v3/repos/o/r/releases/assets/123",
             "https://mirror.example.test/api/v3",
@@ -729,9 +684,8 @@ class TestRewriteAssetURL:
         assert got == "https://mirror.example.test/api/v3/repos/o/r/releases/assets/123"
 
     def test_github_enterprise_api_prefix_is_added_when_missing(self):
-        # If the configured API URL is a GHES-style /api/v3 endpoint
-        # but the incoming asset URL is host-only shaped, retain the
-        # API prefix in the rewritten URL.
+        # When the API URL is GHES /api/v3 but the asset URL is
+        # host-only, keep the /api/v3 prefix in the result.
         got = cs.rewrite_asset_url(
             "https://api.github.com/repos/o/r/releases/assets/123",
             "https://ghe.example.test/api/v3",
@@ -739,8 +693,8 @@ class TestRewriteAssetURL:
         assert got == "https://ghe.example.test/api/v3/repos/o/r/releases/assets/123"
 
     def test_relative_asset_url_is_left_alone(self):
-        # Defensive fallback for malformed fixtures: don't invent a
-        # host when the source URL was not absolute.
+        # Defensive — don't invent a host when the source URL
+        # wasn't absolute.
         assert cs.rewrite_asset_url("/repos/o/r/releases/assets/123", "http://127.0.0.1") == (
             "/repos/o/r/releases/assets/123"
         )
@@ -775,9 +729,8 @@ class TestMain:
         assert seen == ["http://127.0.0.1:9999"]
 
     def test_hard_http_error_prints_actionable_message(self, tmp_path, monkeypatch, capsys):
-        # Regression test for a stale helper name: main should turn
-        # hard HTTP failures into a clean workflow error, not crash
-        # with NameError and a Python traceback.
+        # Hard HTTP failures must surface a clean workflow error,
+        # not a Python traceback.
         write_minimal_classroom(tmp_path)
 
         def fail_collect(**kwargs):

@@ -52,27 +52,18 @@ func submitCmd() *cobra.Command {
 			out := cmd.OutOrStdout()
 			errOut := cmd.ErrOrStderr()
 
-			var opts SubmitOptions
-			return submitAssignment(cmd.Context(), client, out, errOut, opts)
+			return submitAssignment(cmd.Context(), client, out, errOut)
 		},
 	}
 
 	return cmd
 }
 
-type SubmitOptions struct {
-	Message string
-	Remote  string
-	Branch  string
-}
-
-func submitAssignment(ctx context.Context, client *api.RESTClient, out io.Writer, errOut io.Writer, opts SubmitOptions) error {
-	if opts.Remote == "" {
-		opts.Remote = "origin"
-	}
-	if opts.Branch == "" {
-		opts.Branch = "main"
-	}
+func submitAssignment(ctx context.Context, client *api.RESTClient, out io.Writer, errOut io.Writer) error {
+	const (
+		remote = "origin"
+		branch = "main"
+	)
 
 	root, inside, err := currentGitRoot()
 	if err != nil {
@@ -87,19 +78,17 @@ func submitAssignment(ctx context.Context, client *api.RESTClient, out io.Writer
 		return err
 	}
 
-	if opts.Message == "" {
-		opts.Message = fmt.Sprintf("Submit %s", config.Assignment)
-	}
+	message := fmt.Sprintf("Submit %s", config.Assignment)
 
-	// Stamp the commit so a fresh shell with no global git identity still submits.
+	// Stamp the commit so a shell without git identity still submits.
 	identity, err := fetchGitIdentity(client)
 	if err != nil {
 		return fmt.Errorf("resolve git identity: %w", err)
 	}
 
-	remoteURL, err := gitOutput(root, "config", "--get", "remote."+opts.Remote+".url")
+	remoteURL, err := gitOutput(root, "config", "--get", "remote."+remote+".url")
 	if err != nil {
-		return fmt.Errorf("read remote %q URL: %w", opts.Remote, err)
+		return fmt.Errorf("read remote %q URL: %w", remote, err)
 	}
 	remoteURL = strings.TrimSpace(remoteURL)
 
@@ -153,30 +142,25 @@ func submitAssignment(ctx context.Context, client *api.RESTClient, out io.Writer
 		}
 	}
 
-	// Re-fetch the autograder ref from assignments.json on every
-	// submit. A teacher's autograder-reference change in
-	// assignments.json propagates immediately (not just on next
-	// accept), and the workflow body itself is always overwritten
-	// from the Pages source so source-of-truth lives in the config
-	// repo. `repoOwner` from the remote URL is a forward-compat
-	// fallback for `.classroom50.yml` files written by v0.1 which
-	// don't carry the `config:` block.
+	// Re-fetch the autograder on every submit so teacher-side edits
+	// (to the workflow body or the autograder reference in
+	// assignments.json) propagate without per-repo maintenance.
+	// `repoOwner` from the remote is a fallback when
+	// `.classroom50.yml` is missing the `config:` block.
 	autograderName, workflow, err := refetchAutograderWorkflow(ctx, config, repoOwner)
 	if err != nil {
 		return err
 	}
 
-	// Drop the fetched workflow into the work tree, overwriting any
-	// stale autograde.yml the template's .github/ fetch may have
-	// brought along.
+	// Drop the fetched workflow over any stale autograde.yml that
+	// the template's .github/ fetch may have brought along.
 	if err := writeAutogradeWorkflow(workTree, workflow.Content); err != nil {
 		return err
 	}
 
-	// Re-render .classroom50.yml so source, fetched_at, and the
-	// version sentinel track the freshly-fetched workflow. The
-	// previously-tracked classroom / assignment / source / config
-	// fields round-trip through ClassroomConfig untouched.
+	// Re-render .classroom50.yml so autograde source/fetched_at/version
+	// track the just-fetched workflow; classroom/assignment/source/
+	// config round-trip untouched.
 	config.Autograde = AutogradeMetadata{
 		Source:    "autograders/" + autograderName + ".yml",
 		FetchedAt: time.Now().UTC().Format(time.RFC3339),
@@ -187,15 +171,15 @@ func submitAssignment(ctx context.Context, client *api.RESTClient, out io.Writer
 	}
 
 	if verbose {
-		_, _ = fmt.Fprintf(out, "Pushing submission to %s %s\n", opts.Remote, opts.Branch)
+		_, _ = fmt.Fprintf(out, "Pushing submission to %s %s\n", remote, branch)
 	}
 
 	commitSHA, err := commitWorkTreeOnRemoteBranch(
 		gitDir,
 		workTree,
 		remoteURL,
-		opts.Branch,
-		opts.Message,
+		branch,
+		message,
 		identity,
 		out,
 		errOut,
@@ -204,11 +188,10 @@ func submitAssignment(ctx context.Context, client *api.RESTClient, out io.Writer
 		return err
 	}
 
-	// Push a lightweight submit tag at the same commit SHA. This is
-	// the trigger the autograde workflow listens on (`tags: ["submit/*"]`),
-	// so each submission produces its own immutable history entry plus
-	// its own Release. Tagging *after* the push avoids the
-	// workflow-fires-before-commit-lands race.
+	// Push a lightweight submit tag at the same SHA. The autograde
+	// workflow triggers on `tags: ["submit/*"]`, so each submission
+	// gets its own immutable history entry and Release. Tag *after*
+	// the push so the workflow can resolve the tagged commit.
 	tagName := buildSubmitTagName(time.Now().UTC())
 	if err := pushSubmitTag(gitDir, tagName, commitSHA, out, errOut); err != nil {
 		return err
@@ -329,26 +312,21 @@ func fetchRepoPath(
 }
 
 // refetchAutograderWorkflow re-reads the assignment entry from
-// Pages (so a teacher-side change to entry.autograder propagates
-// without re-accept) and fetches the referenced workflow YAML.
-// The two-step shape is intentional: the assignments.json fetch
-// pins the ref the teacher means *right now*, and the autograder
-// fetch pins the workflow body at the same moment.
+// Pages (so a teacher's autograder-reference change propagates
+// without re-accept) and fetches the referenced workflow body. The
+// assignments.json fetch pins the ref *right now*; the workflow
+// fetch pins the body at the same moment.
 //
-// `config.Config.Owner` is preferred — v0.2 accept always writes
-// the `config:` block. `fallbackOwner` (the org parsed from the
-// repo's git remote) is the forward-compat path for v0.1
-// `.classroom50.yml` files that pre-date the config block.
+// Owner preference: config.Config.Owner first; fall back to the org
+// parsed from the git remote when the config block is absent.
 func refetchAutograderWorkflow(ctx context.Context, config *ClassroomConfig, fallbackOwner string) (string, AutogradeWorkflow, error) {
 	owner, err := resolveSubmitOwner(config, fallbackOwner)
 	if err != nil {
 		return "", AutogradeWorkflow{}, err
 	}
-	// Each fetch carries its own pagesFetchTimeout via the
-	// per-call http.Client, so a wrapping context.WithTimeout
-	// would be redundant. ctx flows from cobra's cmd.Context()
-	// so Ctrl-C cancels the in-flight Pages fetches instead of
-	// waiting for the HTTP timeout.
+	// Each fetch carries its own pagesFetchTimeout via the per-call
+	// http.Client. ctx is the cobra command context so Ctrl-C
+	// cancels the fetch instead of waiting out the HTTP timeout.
 
 	entry, err := fetchAssignmentEntry(ctx, owner, config.Classroom, config.Assignment)
 	if err != nil {
@@ -362,21 +340,10 @@ func refetchAutograderWorkflow(ctx context.Context, config *ClassroomConfig, fal
 	return name, workflow, nil
 }
 
-// resolveSubmitOwner picks the org name to fetch the assignment
-// manifest from. Preference order:
-//
-//  1. `config.Config.Owner` — the canonical value v0.2 accept writes
-//     into `.classroom50.yml` (the `config:` block didn't exist in
-//     v0.1, so this is empty for repos accepted under the older CLI).
-//  2. `fallbackOwner` — the owner parsed from the repo's git remote.
-//     Carries the v0.1 → v0.2 forward-compat path: a student who
-//     accepted under v0.1 and upgraded can still submit, because the
-//     remote URL points at the same org the missing config block
-//     would.
-//
-// Returns an error when both are empty — that combination implies
-// either a hand-mangled `.classroom50.yml` or a clone with the
-// remote stripped, neither of which submit can repair on its own.
+// resolveSubmitOwner picks the org to fetch the assignment manifest
+// from: config.Config.Owner first, else the org parsed from the git
+// remote. Returns an error when both are empty — submit can't
+// repair a hand-mangled `.classroom50.yml` or a remoteless clone.
 func resolveSubmitOwner(config *ClassroomConfig, fallbackOwner string) (string, error) {
 	if config.Config.Owner != "" {
 		return config.Config.Owner, nil
@@ -389,10 +356,9 @@ func resolveSubmitOwner(config *ClassroomConfig, fallbackOwner string) (string, 
 }
 
 // writeAutogradeWorkflow drops `content` at the canonical in-repo
-// path, overwriting any stale copy a template fetch may have left
-// behind. Symmetric to dropClassroomFiles' Tree commit — accept
-// pushes the file via the API while submit lays it on disk for the
-// commit-then-push path to pick up.
+// path, overwriting any stale copy from a template fetch. Symmetric
+// to accept's Tree commit; submit lays the file on disk and lets
+// commit-then-push pick it up.
 func writeAutogradeWorkflow(workTree, content string) error {
 	dst := filepath.Join(workTree, filepath.FromSlash(autogradeWorkflowPath))
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
@@ -404,11 +370,9 @@ func writeAutogradeWorkflow(workTree, content string) error {
 	return nil
 }
 
-// refreshClassroomMetadata re-renders .classroom50.yml in the work
-// tree from the parsed config. Called after refreshing
-// `cfg.Autograde.{Source,FetchedAt,Version}` so the recorded
-// diagnostics always reflect the most recent Pages fetch. The file
-// is CLI-managed (the wiki tells students not to hand-edit), so a
+// refreshClassroomMetadata re-renders .classroom50.yml from the
+// parsed config so cfg.Autograde tracks the latest Pages fetch. The
+// file is CLI-managed (students are told not to hand-edit) so a
 // blind re-render is safe.
 func refreshClassroomMetadata(workTree string, cfg ClassroomConfig) error {
 	yamlBytes, err := renderClassroomMetadata(cfg)
@@ -422,10 +386,9 @@ func refreshClassroomMetadata(workTree string, cfg ClassroomConfig) error {
 	return nil
 }
 
-// buildSubmitTagName returns `submit/<UTC-timestamp>` for `t`. The
-// timestamp uses hyphens between hour/minute/second so the tag
-// round-trips cleanly through environments that treat `:` as
-// reserved. Example: `submit/2026-06-01T14-32-05Z`.
+// buildSubmitTagName: `submit/<UTC-timestamp>`. Uses hyphens for
+// hour/minute/second so the tag round-trips through environments
+// that treat `:` as reserved. Example: `submit/2026-06-01T14-32-05Z`.
 func buildSubmitTagName(t time.Time) string {
 	utc := t.UTC()
 	return fmt.Sprintf("submit/%04d-%02d-%02dT%02d-%02d-%02dZ",
@@ -433,10 +396,9 @@ func buildSubmitTagName(t time.Time) string {
 		utc.Hour(), utc.Minute(), utc.Second())
 }
 
-// pushSubmitTag creates and pushes a lightweight tag at `commitSHA`
-// against `origin`. Run after the main-branch push has already
-// succeeded so the autograde workflow (which triggers on `submit/*`
-// tags) can resolve the tag's commit immediately.
+// pushSubmitTag creates and pushes a lightweight tag at `commitSHA`.
+// Must run after the main-branch push so the workflow can resolve
+// the tagged commit.
 func pushSubmitTag(gitDir, tagName, commitSHA string, out, errOut io.Writer) error {
 	tag := func(args ...string) error {
 		return runGitWithDirAndTree(gitDir, "", out, errOut, args...)
@@ -450,11 +412,10 @@ func pushSubmitTag(gitDir, tagName, commitSHA string, out, errOut io.Writer) err
 	return nil
 }
 
-// parseGitHubRemote extracts owner and repo from a GitHub remote
-// URL. Accepts both SSH (`git@github.com:owner/repo[.git]`) and
-// HTTPS (`https://github.com/owner/repo[.git]`) shapes. Used by
-// submit to build human-readable result URLs (the submit tag's
-// browse URL, the actions page, the eventual release URL).
+// parseGitHubRemote: extract (owner, repo) from a GitHub remote
+// URL. Accepts SSH (`git@github.com:owner/repo[.git]`), HTTPS
+// (`https://github.com/owner/repo[.git]`), and
+// `ssh://git@github.com/...` shapes.
 func parseGitHubRemote(remoteURL string) (owner, repo string, err error) {
 	remoteURL = strings.TrimSpace(remoteURL)
 	remoteURL = strings.TrimSuffix(remoteURL, ".git")
@@ -477,8 +438,8 @@ func parseGitHubRemote(remoteURL string) (owner, repo string, err error) {
 	return owner, repo, nil
 }
 
-// splitOwnerRepo splits "owner/repo" or "owner/repo/extra" on the
-// first slash, returning ("", "") if either side is empty.
+// splitOwnerRepo splits "owner/repo[/extra]" on the first slash.
+// Empty either side → ("", "").
 func splitOwnerRepo(s string) (owner, repo string) {
 	parts := strings.SplitN(s, "/", 3)
 	if len(parts) < 2 {
@@ -488,9 +449,8 @@ func splitOwnerRepo(s string) (owner, repo string) {
 }
 
 // commitWorkTreeOnRemoteBranch clones origin into a temporary bare
-// repo, stages workTree on top of `branch`, commits with `identity`,
-// and pushes. Returns the SHA of the new commit so the caller can
-// tag it.
+// repo, stages workTree onto `branch`, commits with `identity`, and
+// pushes. Returns the new commit SHA so the caller can tag it.
 func commitWorkTreeOnRemoteBranch(gitDir string, workTree string, remoteURL string, branch string, message string, identity gitIdentity, out io.Writer, errOut io.Writer) (string, error) {
 	if err := runCmd(out, errOut, "", "git", "clone", "--bare", remoteURL, gitDir); err != nil {
 		return "", fmt.Errorf("clone remote history: %w", err)
@@ -510,7 +470,8 @@ func commitWorkTreeOnRemoteBranch(gitDir string, workTree string, remoteURL stri
 		return "", fmt.Errorf("stage work tree: %w", err)
 	}
 
-	// `-c` scopes identity to this commit; env vars (GIT_AUTHOR_*, GIT_COMMITTER_*) still win.
+	// `-c` scopes identity to this commit; env vars
+	// (GIT_AUTHOR_*, GIT_COMMITTER_*) still win.
 	if err := git(
 		"-c", "user.name="+identity.Name,
 		"-c", "user.email="+identity.Email,
@@ -523,7 +484,7 @@ func commitWorkTreeOnRemoteBranch(gitDir string, workTree string, remoteURL stri
 		return "", fmt.Errorf("push submission: %w", err)
 	}
 
-	// Capture the SHA we just pushed; the submit tag will point at it.
+	// Capture the SHA the submit tag will point at.
 	sha, err := gitOutputWithGitDir(gitDir, "rev-parse", "HEAD")
 	if err != nil {
 		return "", fmt.Errorf("resolve submission SHA: %w", err)
@@ -531,10 +492,9 @@ func commitWorkTreeOnRemoteBranch(gitDir string, workTree string, remoteURL stri
 	return strings.TrimSpace(sha), nil
 }
 
-// gitOutputWithGitDir runs `git --git-dir=<gitDir> <args>` and
-// captures stdout. Separate from `gitOutput` (which expects a work
-// tree) because rev-parsing the submitted commit runs against the
-// bare clone, which has no work tree.
+// gitOutputWithGitDir runs `git --git-dir=<gitDir> <args>`.
+// Separate from gitOutput because rev-parsing the submitted commit
+// runs against the bare clone (no work tree).
 func gitOutputWithGitDir(gitDir string, args ...string) (string, error) {
 	fullArgs := append([]string{"--git-dir", gitDir}, args...)
 	cmd := exec.Command("git", fullArgs...)
