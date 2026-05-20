@@ -1,0 +1,35 @@
+# classroom50-autograde-version: {{AUTOGRADE_VERSION}}
+#
+# Generic autograde workflow dropped by `gh student accept` and
+# refreshed by `gh student submit`. The version sentinel above is
+# substituted from the gh-student CLI's `autogradeVersion` constant
+# at write time and is also recorded in `.classroom50.yml` so the
+# workflow's load job (when it lands) can detect drift between a
+# student's local copy and the canonical version.
+#
+# Placeholder shape: fires on submit-tags and exits cleanly with a
+# `::warning::`. The actual grading logic — load job that fetches
+# `assignments.json` from the Pages URL, matrix run step dispatching
+# to `classroom-resources/autograding-io-grader@v1` and
+# `autograding-command-grader@v1`, report job that publishes a
+# GitHub Release with `autograde.json` as an asset — lands in a
+# follow-up.
+
+name: Autograde
+
+on:
+  push:
+    tags: ["submit/*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  statuses: write
+
+jobs:
+  placeholder:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Autograde placeholder
+        run: |
+          echo "::warning::classroom50-autograde-version {{AUTOGRADE_VERSION}} — autograde workflow not yet wired up; the full grading job lands in a follow-up release."

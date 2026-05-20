@@ -2,8 +2,6 @@ package main
 
 import (
 	"bytes"
-	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -15,90 +13,107 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// ClassroomMetadataPath is the in-repo path of the per-assignment metadata file.
+// ClassroomMetadataPath is the in-repo path of the per-assignment
+// metadata file. Hardcoded because both the student CLI and the
+// autograde workflow's load job read it from this exact location.
 const ClassroomMetadataPath = ".classroom50.yml"
 
-// ClassroomConfig is the on-disk shape of .classroom50.yml. Add a new
-// yaml-tagged field here and it round-trips through both writer and reader.
+// ClassroomConfig is the on-disk shape of `.classroom50.yml`. Add a
+// new yaml-tagged field here and it round-trips through both writer
+// and reader.
+//
+// `source:` records the *template* repo. `config:` records the
+// per-org *config* repo — the authoritative source of
+// `assignments.json` and `scores.json` that the autograde workflow
+// reads at run time. `autograde:` records the version sentinel of
+// the workflow YAML this CLI last wrote, so the workflow's load job
+// can detect drift between the local copy and the canonical version.
 type ClassroomConfig struct {
-	Classroom  string          `yaml:"classroom"`
-	Assignment string          `yaml:"assignment"`
-	Source     ClassroomSource `yaml:"source"`
+	Classroom  string             `yaml:"classroom"`
+	Assignment string             `yaml:"assignment"`
+	Source     ClassroomSource    `yaml:"source"`
+	Config     ClassroomConfigRef `yaml:"config,omitempty"`
+	Autograde  AutogradeMetadata  `yaml:"autograde,omitempty"`
 }
 
-// ClassroomSource is the source.* block; submit reads it to fetch instructor files.
+// ClassroomSource is the source.* block — the template repo. Submit
+// reads it to fetch instructor-side files like `.gitignore`.
 type ClassroomSource struct {
 	Owner  string `yaml:"owner"`
 	Repo   string `yaml:"repo"`
 	Branch string `yaml:"branch"`
 }
 
-// WriteClassroomMetadata uploads cfg to <owner>/<repo>:<branch> at
-// .classroom50.yml. Idempotent: updates in place if the file already exists.
-// This function is the seam to swap for a remote metadata source later.
-func WriteClassroomMetadata(client *api.RESTClient, owner, repo, branch string, cfg ClassroomConfig) error {
+// ClassroomConfigRef is the config.* block — the authoritative
+// classroom directory in the teacher's per-org config repo. The
+// autograde workflow reads `assignments.json` from
+// `https://<owner>.github.io/<repo>/<path>/assignments.json` (the
+// published Pages URL, no token required).
+type ClassroomConfigRef struct {
+	Owner  string `yaml:"owner"`
+	Repo   string `yaml:"repo"`
+	Branch string `yaml:"branch"`
+	Path   string `yaml:"path"`
+}
+
+// AutogradeMetadata is the autograde.* block. `Version` mirrors the
+// `# classroom50-autograde-version: <semver>` sentinel comment at
+// the top of `.github/workflows/autograde.yml` so the workflow's
+// load job can compare against the canonical version without
+// re-parsing the YAML header.
+type AutogradeMetadata struct {
+	Version string `yaml:"version"`
+}
+
+// renderClassroomMetadata serializes cfg to the canonical
+// double-quoted YAML shape that lands on disk. Used by both initial
+// drop (in accept) and refresh (in submit).
+func renderClassroomMetadata(cfg ClassroomConfig) ([]byte, error) {
 	yamlBytes, err := marshalQuotedYAML(cfg)
 	if err != nil {
-		return fmt.Errorf("marshal classroom metadata: %w", err)
+		return nil, fmt.Errorf("marshal classroom metadata: %w", err)
 	}
-	encoded := base64.StdEncoding.EncodeToString(yamlBytes)
+	return yamlBytes, nil
+}
 
-	apiPath := fmt.Sprintf(
-		"repos/%s/%s/contents/%s",
-		url.PathEscape(owner),
-		url.PathEscape(repo),
-		escapeContentPath(ClassroomMetadataPath),
-	)
-
-	// fresh repos briefly 409 ("Git Repository is empty") on the contents API.
+// dropClassroomFiles commits `.classroom50.yml` (rendered from cfg)
+// AND `.github/workflows/autograde.yml` (the version-substituted
+// embedded skeleton) on `branch` in a single Tree commit, so the
+// student repo's initial shape lands atomically instead of as two
+// separate single-file PUTs.
+//
+// `waitForStableBranch` polls first because GitHub doesn't propagate
+// the post-templated-repo commit ref synchronously — the contents
+// API briefly returns 409 "Git Repository is empty" otherwise.
+func dropClassroomFiles(client *api.RESTClient, owner, repo, branch string, cfg ClassroomConfig) error {
 	if err := waitForStableBranch(client, owner, repo, branch); err != nil {
 		return err
 	}
 
-	sha, err := existingMetadataSHA(client, apiPath, branch)
+	metadataBytes, err := renderClassroomMetadata(cfg)
+	if err != nil {
+		return err
+	}
+	workflowContent, err := autogradeWorkflowContent()
 	if err != nil {
 		return err
 	}
 
-	body := map[string]any{
-		"message": fmt.Sprintf("create or update %s", ClassroomMetadataPath),
-		"content": encoded,
-		"branch":  branch,
+	files := map[string]string{
+		ClassroomMetadataPath: string(metadataBytes),
+		autogradeWorkflowPath: workflowContent,
 	}
-	if sha != "" {
-		body["sha"] = sha
-	}
-
-	requestBody, err := json.Marshal(body)
-	if err != nil {
-		return fmt.Errorf("encode upsert %s: %w", ClassroomMetadataPath, err)
-	}
-	if err := client.Put(apiPath, bytes.NewReader(requestBody), nil); err != nil {
-		return fmt.Errorf("PUT %s: %w", apiPath, err)
-	}
-	return nil
+	return commitFiles(client, owner, repo, branch,
+		"Initialize .classroom50.yml and autograde workflow (gh student accept)",
+		files)
 }
 
-// existingMetadataSHA returns the SHA of the metadata file, or "" if it
-// doesn't exist (404) or the repo is still replicating (409).
-func existingMetadataSHA(client *api.RESTClient, apiPath, branch string) (string, error) {
-	getPath := fmt.Sprintf("%s?ref=%s", apiPath, url.QueryEscape(branch))
-	var existing struct {
-		SHA string `json:"sha"`
-	}
-	if err := client.Get(getPath, &existing); err != nil {
-		if httpErr, ok := errors.AsType[*api.HTTPError](err); ok {
-			if httpErr.StatusCode == http.StatusNotFound || httpErr.StatusCode == http.StatusConflict {
-				return "", nil
-			}
-		}
-		return "", fmt.Errorf("GET %s: %w", getPath, err)
-	}
-	return existing.SHA, nil
-}
-
-// waitForStableBranch polls the branches API until two consecutive successful
-// reads agree on a non-empty commit SHA, or returns after 20 attempts.
+// waitForStableBranch polls the branches API until two consecutive
+// successful reads agree on a non-empty commit SHA, or returns after
+// 20 attempts. Required against a freshly-templated branch ref
+// before any git-data write — GitHub doesn't propagate the
+// post-templated-repo commit ref synchronously, so the contents/
+// git-data APIs briefly 409 with "Git Repository is empty".
 func waitForStableBranch(client *api.RESTClient, owner, repo, branch string) error {
 	path := fmt.Sprintf(
 		"repos/%s/%s/branches/%s",
@@ -141,7 +156,9 @@ func waitForStableBranch(client *api.RESTClient, owner, repo, branch string) err
 	return fmt.Errorf("branch %s/%s:%s did not stabilize", owner, repo, branch)
 }
 
-// escapeContentPath URL-encodes each path segment, preserving slashes.
+// escapeContentPath URL-encodes each path segment, preserving
+// slashes. Used by submit's contents-API fetch of `.gitignore` /
+// `.github/` from the template.
 func escapeContentPath(path string) string {
 	parts := strings.Split(path, "/")
 	for i, part := range parts {
@@ -150,8 +167,9 @@ func escapeContentPath(path string) string {
 	return strings.Join(parts, "/")
 }
 
-// marshalQuotedYAML serializes v as YAML with double-quoted string scalars
-// and 2-space indent. Defends against auto-typing of slugs like "yes" or "2026".
+// marshalQuotedYAML serializes v as YAML with double-quoted string
+// scalars and 2-space indent. Defends against auto-typing of slugs
+// like "yes" or "2026".
 func marshalQuotedYAML(v any) ([]byte, error) {
 	var node yaml.Node
 	if err := node.Encode(v); err != nil {
@@ -172,8 +190,8 @@ func marshalQuotedYAML(v any) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-// quoteStringValues forces DoubleQuotedStyle on every string-tagged scalar
-// value in n. Mapping keys, numbers, and booleans pass through.
+// quoteStringValues forces DoubleQuotedStyle on every string-tagged
+// scalar value in n. Mapping keys, numbers, and booleans pass through.
 func quoteStringValues(n *yaml.Node) {
 	if n == nil {
 		return
@@ -193,4 +211,13 @@ func quoteStringValues(n *yaml.Node) {
 			n.Style = yaml.DoubleQuotedStyle
 		}
 	}
+}
+
+// isHTTPNotFound reports whether err carries a *api.HTTPError with
+// StatusCode == 404. Collapses the err → *api.HTTPError → StatusCode
+// pattern used at every gh-student site that distinguishes "missing
+// resource" from a generic transport error.
+func isHTTPNotFound(err error) bool {
+	httpErr, ok := errors.AsType[*api.HTTPError](err)
+	return ok && httpErr.StatusCode == http.StatusNotFound
 }

@@ -19,14 +19,18 @@ func acceptCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "accept <org> <classroom> <assignment>",
 		Short: "Accept an assignment from an organization's classroom",
-		Long: "Accept an assignment from a classroom by creating a private copy of\n" +
-			"the template repo named <classroom>-<assignment>-<username> (lowercased)\n" +
-			"in <org>. If the student has a pending org invite it is auto-accepted\n" +
-			"first. After creating the repo, the student is added as a `maintain`\n" +
-			"collaborator, `.classroom50.yml` is written with the source coordinates,\n" +
-			"and clone instructions are printed. Re-running on an already-accepted\n" +
-			"assignment short-circuits without touching the existing repo.",
-		Example: "  gh student accept cs50 cs50-fall-2026 assignment-0\n",
+		Long: "Accept an assignment by creating a private copy of the template\n" +
+			"repo at <org>/<classroom>-<assignment>-<username> (lowercased).\n" +
+			"The template repo (which may live outside <org>), due date, and\n" +
+			"autograding tests are looked up in the published assignments.json\n" +
+			"on the classroom's GitHub Pages site (no token required).\n\n" +
+			"If the student has a pending org invite it is auto-accepted first.\n" +
+			"After creating the repo, the student is added as a `maintain`\n" +
+			"collaborator, and `.classroom50.yml` and the generic autograde\n" +
+			"workflow are written in a single Tree commit. Re-running on an\n" +
+			"already-accepted assignment short-circuits without touching the\n" +
+			"existing repo.",
+		Example: "  gh student accept cs50 cs50-fall-2026 hello\n",
 		Args:    cobra.ExactArgs(3),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cmd.SilenceUsage = true
@@ -60,7 +64,7 @@ func acceptCmd() *cobra.Command {
 					}
 					switch acceptStatus.StatusCode {
 					case http.StatusOK:
-						return acceptAssignment(client, out, org, classroom, assignment)
+						return acceptAssignment(cmd, client, out, org, classroom, assignment)
 					case http.StatusNotFound:
 						return fmt.Errorf("%s: no membership found for accept", org)
 					case http.StatusForbidden:
@@ -79,7 +83,7 @@ func acceptCmd() *cobra.Command {
 				return fmt.Errorf("%s: unknown status received (%d)", org, status.StatusCode)
 			}
 
-			return acceptAssignment(client, out, org, classroom, assignment)
+			return acceptAssignment(cmd, client, out, org, classroom, assignment)
 		},
 	}
 
@@ -145,15 +149,42 @@ func acceptOrgInvite(client *api.RESTClient, org string) (AcceptStatus, error) {
 	}, nil
 }
 
-func acceptAssignment(client *api.RESTClient, out io.Writer, org, classroom, assignment string) error {
+// assignmentModeIndividual is the only mode `gh student accept`
+// currently supports. Mirrors the teacher-side constant of the same
+// name. `mode: group` returns a clear "not yet supported" error so a
+// teacher who tries `gh teacher assignment add --mode group` (which
+// the teacher CLI already rejects) doesn't see a confusing
+// student-side surprise.
+const assignmentModeIndividual = "individual"
+
+func acceptAssignment(cmd *cobra.Command, client *api.RESTClient, out io.Writer, org, classroom, assignment string) error {
 	username, err := getAuthedUsername(client)
 	if err != nil {
 		return fmt.Errorf("retrieving authed username: %w", err)
 	}
 
-	// 1) create the assignment repo. If it already exists, short-circuit:
-	//    the student accepted before; don't touch their work.
-	htmlURL, fullName, alreadyExisted, err := createTemplatedPrivateAssignmentRepoInOrg(client, out, username, classroom, assignment, org)
+	// 1) look up the assignment entry on the published Pages site.
+	//    No token required (the publish-pages allow-list keeps the
+	//    site public); the template ref tells us which repo to
+	//    generate from, and the mode tells us whether to short-
+	//    circuit on group mode.
+	entry, err := fetchAssignmentEntry(cmd.Context(), org, classroom, assignment)
+	if err != nil {
+		return err
+	}
+	if entry.Mode != "" && entry.Mode != assignmentModeIndividual {
+		return fmt.Errorf("assignment %q is mode %q — group assignments are not yet supported",
+			assignment, entry.Mode)
+	}
+	if entry.Template.Owner == "" || entry.Template.Repo == "" || entry.Template.Branch == "" {
+		return fmt.Errorf("assignment %q has an incomplete template ref (owner=%q repo=%q branch=%q) — ask your instructor to re-run `gh teacher assignment add`",
+			assignment, entry.Template.Owner, entry.Template.Repo, entry.Template.Branch)
+	}
+
+	// 2) create the assignment repo from the entry's template. If it
+	//    already exists, short-circuit: the student accepted before;
+	//    don't touch their work.
+	htmlURL, fullName, alreadyExisted, err := createTemplatedPrivateAssignmentRepoInOrg(client, out, username, classroom, assignment, org, entry.Template)
 	if err != nil {
 		return err
 	}
@@ -161,38 +192,42 @@ func acceptAssignment(client *api.RESTClient, out io.Writer, org, classroom, ass
 		return reportAlreadyAccepted(out, fullName, htmlURL)
 	}
 
-	// 2) invite as `maintain`. PUT collaborators is upsert; this also covers
+	// 3) invite as `maintain`. PUT collaborators is upsert; covers
 	//    the spec's admin->maintain downgrade in a single call.
 	if err := inviteUserToMaintain(client, out, username, classroom, assignment, org); err != nil {
 		return err
 	}
 
-	// Deferred until past the short-circuit so a missing template doesn't
-	// break the already-accepted path (which doesn't need the branch).
-	sourceBranch, err := lookupRepoDefaultBranch(client, org, assignment)
-	if err != nil {
-		return err
-	}
-
-	// 3) write .classroom50.yml.
+	// 4) write .classroom50.yml + the autograde workflow in a single
+	//    Tree commit. waitForStableBranch (inside dropClassroomFiles)
+	//    handles GitHub's post-templated-repo replication lag.
 	repoName := assignmentRepoName(classroom, assignment, username)
 	cfg := ClassroomConfig{
 		Classroom:  classroom,
 		Assignment: assignment,
 		Source: ClassroomSource{
+			Owner:  entry.Template.Owner,
+			Repo:   entry.Template.Repo,
+			Branch: entry.Template.Branch,
+		},
+		Config: ClassroomConfigRef{
 			Owner:  org,
-			Repo:   assignment,
-			Branch: sourceBranch,
+			Repo:   configRepoName,
+			Branch: configRepoBranch,
+			Path:   classroom,
+		},
+		Autograde: AutogradeMetadata{
+			Version: autogradeVersion,
 		},
 	}
-	if err := WriteClassroomMetadata(client, org, repoName, sourceBranch, cfg); err != nil {
+	if err := dropClassroomFiles(client, org, repoName, entry.Template.Branch, cfg); err != nil {
 		return err
 	}
 	if verbose {
-		_, _ = fmt.Fprintf(out, "wrote %s in %s/%s\n", ClassroomMetadataPath, org, repoName)
+		_, _ = fmt.Fprintf(out, "wrote %s and %s in %s/%s\n", ClassroomMetadataPath, autogradeWorkflowPath, org, repoName)
 	}
 
-	// 4) report success.
+	// 5) report success.
 	return reportAccepted(out, fullName, htmlURL)
 }
 
@@ -243,23 +278,6 @@ func printCloneInstructions(out io.Writer, htmlURL string) error {
 	return nil
 }
 
-// lookupRepoDefaultBranch returns the repo's default branch (e.g. "main"),
-// recorded as source.branch in .classroom50.yml.
-func lookupRepoDefaultBranch(client *api.RESTClient, org, repo string) (string, error) {
-	path := fmt.Sprintf("repos/%s/%s", url.PathEscape(org), url.PathEscape(repo))
-	var info struct {
-		DefaultBranch string `json:"default_branch"`
-	}
-	if err := client.Get(path, &info); err != nil {
-		return "", fmt.Errorf("GET %s: %w", path, err)
-	}
-	if info.DefaultBranch == "" {
-		// defend against an empty default_branch.
-		return "main", nil
-	}
-	return info.DefaultBranch, nil
-}
-
 type AuthenticatedUser struct {
 	Login string `json:"login"`
 }
@@ -299,12 +317,18 @@ func assignmentRepoName(classroom, assignment, username string) string {
 	)
 }
 
-// createTemplatedPrivateAssignmentRepoInOrg generates a private repo named
-// <classroom>-<assignment>-<username> (lowercased) from the assignment template and
-// disables issues/projects/wiki. On 422-already-exists, returns
-// alreadyExisted=true and skips the PATCH so re-runs don't disturb an
-// existing repo. See: GitHub "Create a repository using a template" REST API.
-func createTemplatedPrivateAssignmentRepoInOrg(client *api.RESTClient, out io.Writer, username, classroom, assignment, org string) (htmlURL, fullName string, alreadyExisted bool, err error) {
+// createTemplatedPrivateAssignmentRepoInOrg generates a private repo
+// named <classroom>-<assignment>-<username> (lowercased) in <org>
+// from the entry's template and disables issues/projects/wiki.
+//
+// The template lives wherever `gh teacher assignment add` pointed
+// it — same org or a different org (so long as it's visible to the
+// student's token). A 404 on the generate call means the template
+// isn't readable by the student; surface the cross-org visibility
+// message instead of a raw "POST 404". On 422-already-exists,
+// alreadyExisted=true and the PATCH is skipped so re-runs don't
+// disturb an existing repo.
+func createTemplatedPrivateAssignmentRepoInOrg(client *api.RESTClient, out io.Writer, username, classroom, assignment, org string, tmpl templateRef) (htmlURL, fullName string, alreadyExisted bool, err error) {
 	newRepoName := assignmentRepoName(classroom, assignment, username)
 	createBody, err := json.Marshal(map[string]any{
 		"owner":   org,
@@ -315,18 +339,24 @@ func createTemplatedPrivateAssignmentRepoInOrg(client *api.RESTClient, out io.Wr
 		return "", "", false, fmt.Errorf("error encoding json for template: %w", err)
 	}
 
-	createPath := fmt.Sprintf("repos/%s/%s/generate", url.PathEscape(org), url.PathEscape(assignment))
+	createPath := fmt.Sprintf("repos/%s/%s/generate", url.PathEscape(tmpl.Owner), url.PathEscape(tmpl.Repo))
 
 	var created GeneratedRepo
 	if err := client.Post(createPath, bytes.NewReader(createBody), &created); err != nil {
-		// Only treat 422 as already-exists when the body actually says so;
-		// other 422 reasons fall through to the wrapped error.
-		if httpErr, ok := errors.AsType[*api.HTTPError](err); ok && httpErr.StatusCode == http.StatusUnprocessableEntity && is422AlreadyExists(httpErr) {
-			getPath := fmt.Sprintf("repos/%s/%s", url.PathEscape(org), url.PathEscape(newRepoName))
-			if getErr := client.Get(getPath, &created); getErr != nil {
-				return "", "", false, fmt.Errorf("POST %s returned 422 and follow-up GET %s failed: %w", createPath, getPath, getErr)
+		if httpErr, ok := errors.AsType[*api.HTTPError](err); ok {
+			switch httpErr.StatusCode {
+			case http.StatusUnprocessableEntity:
+				if is422AlreadyExists(httpErr) {
+					getPath := fmt.Sprintf("repos/%s/%s", url.PathEscape(org), url.PathEscape(newRepoName))
+					if getErr := client.Get(getPath, &created); getErr != nil {
+						return "", "", false, fmt.Errorf("POST %s returned 422 and follow-up GET %s failed: %w", createPath, getPath, getErr)
+					}
+					return created.HTMLURL, created.FullName, true, nil
+				}
+			case http.StatusNotFound:
+				return "", "", false, fmt.Errorf("template `%s/%s` is not accessible to you — ask your instructor to make it public or grant your account access",
+					tmpl.Owner, tmpl.Repo)
 			}
-			return created.HTMLURL, created.FullName, true, nil
 		}
 		return "", "", false, fmt.Errorf("POST %s: %w", createPath, err)
 	}

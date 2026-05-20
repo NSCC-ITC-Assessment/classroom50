@@ -7,12 +7,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/cli/go-gh/v2/pkg/api"
 	"github.com/spf13/cobra"
@@ -23,11 +23,17 @@ func submitCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "submit",
 		Short: "Submit the current assignment to its remote",
-		Long: "Snapshot the current branch and push it as a new commit on top of the\n" +
-			"assignment repo's `main` branch. The latest instructor `.gitignore` and\n" +
-			"`.github/` (both optional) are fetched from the template recorded in\n" +
-			"`.classroom50.yml` first, so any autograding the teacher updates flows\n" +
-			"back to existing student repos at submit time.",
+		Long: "Snapshot the current branch and push it as a new commit on top of\n" +
+			"the assignment repo's `main` branch, then push a lightweight\n" +
+			"`submit/<UTC-timestamp>` tag at the same SHA. The autograde\n" +
+			"workflow listens for that tag and publishes a GitHub Release\n" +
+			"with `autograde.json` attached and a scored body shortly after.\n\n" +
+			"Before snapshotting, the latest instructor `.gitignore` and\n" +
+			"`.github/` (both optional) are fetched from the template recorded\n" +
+			"in `.classroom50.yml`, then the embedded autograde workflow\n" +
+			"(version `" + autogradeVersion + "`) is dropped on top — that way the\n" +
+			"workflow YAML stays in lockstep with the CLI version regardless\n" +
+			"of what the template ships.",
 		Example: "  gh student submit",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cmd.SilenceUsage = true
@@ -91,6 +97,12 @@ func submitAssignment(client *api.RESTClient, out io.Writer, errOut io.Writer, o
 	}
 	remoteURL = strings.TrimSpace(remoteURL)
 
+	repoOwner, repoName, err := parseGitHubRemote(remoteURL)
+	if err != nil {
+		return fmt.Errorf("the submit-tag URL needs the GitHub owner/repo: %w", err)
+	}
+	repoHTMLURL := fmt.Sprintf("https://github.com/%s/%s", repoOwner, repoName)
+
 	tmpRoot, err := os.MkdirTemp("", "classroom50-submit-*")
 	if err != nil {
 		return fmt.Errorf("create temp submit area: %w", err)
@@ -125,21 +137,38 @@ func submitAssignment(client *api.RESTClient, out io.Writer, errOut io.Writer, o
 	}
 
 	if err := fetchRepoPath(client, workTree, config.Source.Owner, config.Source.Repo, config.Source.Branch, ".gitignore"); err != nil {
-		if !isNotFoundHTTPError(err) {
+		if !isHTTPNotFound(err) {
 			return fmt.Errorf("fetch instructor .gitignore: %w", err)
 		}
 	}
 	if err := fetchRepoPath(client, workTree, config.Source.Owner, config.Source.Repo, config.Source.Branch, ".github"); err != nil {
-		if !isNotFoundHTTPError(err) {
+		if !isHTTPNotFound(err) {
 			return fmt.Errorf("fetch instructor .github: %w", err)
 		}
+	}
+
+	// Refresh the autograde workflow with the CLI's embedded copy.
+	// The template's .github/ fetch above may have just dropped a
+	// stale autograde.yml shipped by an old template; we overwrite
+	// it so the workflow YAML is always lockstep with the CLI's
+	// version sentinel.
+	if err := refreshAutogradeWorkflow(workTree); err != nil {
+		return err
+	}
+
+	// Re-render .classroom50.yml so the recorded autograde.version
+	// tracks the CLI version on every submit. The previously-tracked
+	// fields round-trip through ClassroomConfig untouched.
+	config.Autograde.Version = autogradeVersion
+	if err := refreshClassroomMetadata(workTree, *config); err != nil {
+		return err
 	}
 
 	if verbose {
 		_, _ = fmt.Fprintf(out, "Pushing submission to %s %s\n", opts.Remote, opts.Branch)
 	}
 
-	if err := commitWorkTreeOnRemoteBranch(
+	commitSHA, err := commitWorkTreeOnRemoteBranch(
 		gitDir,
 		workTree,
 		remoteURL,
@@ -148,18 +177,28 @@ func submitAssignment(client *api.RESTClient, out io.Writer, errOut io.Writer, o
 		identity,
 		out,
 		errOut,
-	); err != nil {
+	)
+	if err != nil {
+		return err
+	}
+
+	// Push a lightweight submit tag at the same commit SHA. This is
+	// the trigger the autograde workflow listens on (`tags: ["submit/*"]`),
+	// so each submission produces its own immutable history entry plus
+	// its own Release. Tagging *after* the push avoids the
+	// workflow-fires-before-commit-lands race.
+	tagName := buildSubmitTagName(time.Now().UTC())
+	if err := pushSubmitTag(gitDir, tagName, commitSHA, out, errOut); err != nil {
 		return err
 	}
 
 	_, _ = fmt.Fprintf(out, "Submitted %s to %s\n", config.Assignment, remoteURL)
+	_, _ = fmt.Fprintf(out, "Submit tag:  %s\n", repoHTMLURL+"/tree/"+url.PathEscape(tagName))
+	_, _ = fmt.Fprintf(out, "Autograde:   %s/actions\n", repoHTMLURL)
+	_, _ = fmt.Fprintf(out, "Release:     %s — published when the autograde workflow finishes\n",
+		repoHTMLURL+"/releases/tag/"+url.PathEscape(tagName))
 
 	return nil
-}
-
-func isNotFoundHTTPError(err error) bool {
-	httpErr, ok := errors.AsType[*api.HTTPError](err)
-	return ok && httpErr.StatusCode == http.StatusNotFound
 }
 
 func gitOutput(dir string, args ...string) (string, error) {
@@ -267,9 +306,115 @@ func fetchRepoPath(
 	}
 }
 
-func commitWorkTreeOnRemoteBranch(gitDir string, workTree string, remoteURL string, branch string, message string, identity gitIdentity, out io.Writer, errOut io.Writer) error {
+// refreshAutogradeWorkflow writes the version-substituted embedded
+// autograde workflow into `workTree/.github/workflows/autograde.yml`,
+// overwriting any stale copy a template fetch may have dropped.
+// Keeps the workflow YAML in lockstep with the CLI version sentinel.
+func refreshAutogradeWorkflow(workTree string) error {
+	content, err := autogradeWorkflowContent()
+	if err != nil {
+		return err
+	}
+	dst := filepath.Join(workTree, filepath.FromSlash(autogradeWorkflowPath))
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return fmt.Errorf("create parent dir for %s: %w", dst, err)
+	}
+	if err := os.WriteFile(dst, []byte(content), 0o644); err != nil {
+		return fmt.Errorf("write %s: %w", dst, err)
+	}
+	return nil
+}
+
+// refreshClassroomMetadata re-renders .classroom50.yml in the work
+// tree from the parsed config. Called after bumping
+// `cfg.Autograde.Version` so the recorded sentinel always matches
+// the CLI's `autogradeVersion` constant on every submit. The file
+// is CLI-managed (the wiki tells students not to hand-edit), so a
+// blind re-render is safe.
+func refreshClassroomMetadata(workTree string, cfg ClassroomConfig) error {
+	yamlBytes, err := renderClassroomMetadata(cfg)
+	if err != nil {
+		return err
+	}
+	dst := filepath.Join(workTree, ClassroomMetadataPath)
+	if err := os.WriteFile(dst, yamlBytes, 0o644); err != nil {
+		return fmt.Errorf("write %s: %w", dst, err)
+	}
+	return nil
+}
+
+// buildSubmitTagName returns `submit/<UTC-timestamp>` for `t`. The
+// timestamp uses hyphens between hour/minute/second so the tag
+// round-trips cleanly through environments that treat `:` as
+// reserved. Example: `submit/2026-06-01T14-32-05Z`.
+func buildSubmitTagName(t time.Time) string {
+	utc := t.UTC()
+	return fmt.Sprintf("submit/%04d-%02d-%02dT%02d-%02d-%02dZ",
+		utc.Year(), utc.Month(), utc.Day(),
+		utc.Hour(), utc.Minute(), utc.Second())
+}
+
+// pushSubmitTag creates and pushes a lightweight tag at `commitSHA`
+// against `origin`. Run after the main-branch push has already
+// succeeded so the autograde workflow (which triggers on `submit/*`
+// tags) can resolve the tag's commit immediately.
+func pushSubmitTag(gitDir, tagName, commitSHA string, out, errOut io.Writer) error {
+	tag := func(args ...string) error {
+		return runGitWithDirAndTree(gitDir, "", out, errOut, args...)
+	}
+	if err := tag("tag", tagName, commitSHA); err != nil {
+		return fmt.Errorf("create submit tag: %w", err)
+	}
+	if err := tag("push", "origin", "refs/tags/"+tagName); err != nil {
+		return fmt.Errorf("push submit tag: %w", err)
+	}
+	return nil
+}
+
+// parseGitHubRemote extracts owner and repo from a GitHub remote
+// URL. Accepts both SSH (`git@github.com:owner/repo[.git]`) and
+// HTTPS (`https://github.com/owner/repo[.git]`) shapes. Used by
+// submit to build human-readable result URLs (the submit tag's
+// browse URL, the actions page, the eventual release URL).
+func parseGitHubRemote(remoteURL string) (owner, repo string, err error) {
+	remoteURL = strings.TrimSpace(remoteURL)
+	remoteURL = strings.TrimSuffix(remoteURL, ".git")
+	switch {
+	case strings.HasPrefix(remoteURL, "git@github.com:"):
+		rest := strings.TrimPrefix(remoteURL, "git@github.com:")
+		owner, repo = splitOwnerRepo(rest)
+	case strings.HasPrefix(remoteURL, "https://github.com/"):
+		rest := strings.TrimPrefix(remoteURL, "https://github.com/")
+		owner, repo = splitOwnerRepo(rest)
+	case strings.HasPrefix(remoteURL, "ssh://git@github.com/"):
+		rest := strings.TrimPrefix(remoteURL, "ssh://git@github.com/")
+		owner, repo = splitOwnerRepo(rest)
+	default:
+		return "", "", fmt.Errorf("unrecognized GitHub remote shape %q (expected git@github.com:owner/repo or https://github.com/owner/repo)", remoteURL)
+	}
+	if owner == "" || repo == "" {
+		return "", "", fmt.Errorf("malformed GitHub remote %q: missing owner or repo", remoteURL)
+	}
+	return owner, repo, nil
+}
+
+// splitOwnerRepo splits "owner/repo" or "owner/repo/extra" on the
+// first slash, returning ("", "") if either side is empty.
+func splitOwnerRepo(s string) (owner, repo string) {
+	parts := strings.SplitN(s, "/", 3)
+	if len(parts) < 2 {
+		return "", ""
+	}
+	return parts[0], parts[1]
+}
+
+// commitWorkTreeOnRemoteBranch clones origin into a temporary bare
+// repo, stages workTree on top of `branch`, commits with `identity`,
+// and pushes. Returns the SHA of the new commit so the caller can
+// tag it.
+func commitWorkTreeOnRemoteBranch(gitDir string, workTree string, remoteURL string, branch string, message string, identity gitIdentity, out io.Writer, errOut io.Writer) (string, error) {
 	if err := runCmd(out, errOut, "", "git", "clone", "--bare", remoteURL, gitDir); err != nil {
-		return fmt.Errorf("clone remote history: %w", err)
+		return "", fmt.Errorf("clone remote history: %w", err)
 	}
 
 	git := func(args ...string) error {
@@ -279,11 +424,11 @@ func commitWorkTreeOnRemoteBranch(gitDir string, workTree string, remoteURL stri
 	ref := "refs/heads/" + branch
 
 	if err := git("symbolic-ref", "HEAD", ref); err != nil {
-		return fmt.Errorf("set HEAD to %s: %w", ref, err)
+		return "", fmt.Errorf("set HEAD to %s: %w", ref, err)
 	}
 
 	if err := git("add", "--all"); err != nil {
-		return fmt.Errorf("stage work tree: %w", err)
+		return "", fmt.Errorf("stage work tree: %w", err)
 	}
 
 	// `-c` scopes identity to this commit; env vars (GIT_AUTHOR_*, GIT_COMMITTER_*) still win.
@@ -292,14 +437,36 @@ func commitWorkTreeOnRemoteBranch(gitDir string, workTree string, remoteURL stri
 		"-c", "user.email="+identity.Email,
 		"commit", "--allow-empty", "-m", message,
 	); err != nil {
-		return fmt.Errorf("commit submission: %w", err)
+		return "", fmt.Errorf("commit submission: %w", err)
 	}
 
 	if err := git("push", "origin", "HEAD:"+ref); err != nil {
-		return fmt.Errorf("push submission: %w", err)
+		return "", fmt.Errorf("push submission: %w", err)
 	}
 
-	return nil
+	// Capture the SHA we just pushed; the submit tag will point at it.
+	sha, err := gitOutputWithGitDir(gitDir, "rev-parse", "HEAD")
+	if err != nil {
+		return "", fmt.Errorf("resolve submission SHA: %w", err)
+	}
+	return strings.TrimSpace(sha), nil
+}
+
+// gitOutputWithGitDir runs `git --git-dir=<gitDir> <args>` and
+// captures stdout. Separate from `gitOutput` (which expects a work
+// tree) because rev-parsing the submitted commit runs against the
+// bare clone, which has no work tree.
+func gitOutputWithGitDir(gitDir string, args ...string) (string, error) {
+	fullArgs := append([]string{"--git-dir", gitDir}, args...)
+	cmd := exec.Command("git", fullArgs...)
+	out, err := cmd.Output()
+	if err != nil {
+		if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {
+			return "", fmt.Errorf("git %v: %s", fullArgs, strings.TrimSpace(string(exitErr.Stderr)))
+		}
+		return "", fmt.Errorf("git %v: %w", fullArgs, err)
+	}
+	return string(out), nil
 }
 
 func runGitWithDirAndTree(
@@ -309,10 +476,11 @@ func runGitWithDirAndTree(
 	errOut io.Writer,
 	args ...string,
 ) error {
-	fullArgs := append([]string{
-		"--git-dir", gitDir,
-		"--work-tree", workTree,
-	}, args...)
+	fullArgs := []string{"--git-dir", gitDir}
+	if workTree != "" {
+		fullArgs = append(fullArgs, "--work-tree", workTree)
+	}
+	fullArgs = append(fullArgs, args...)
 
 	cmd := exec.Command("git", fullArgs...)
 	cmd.Stdout = out
