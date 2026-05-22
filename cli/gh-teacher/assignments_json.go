@@ -73,13 +73,13 @@ type templateRef struct {
 // bar so a hand-edited or web-UI-inserted entry can't re-bless
 // itself on the next CLI write.
 //
-// No hard size cap is enforced — the cap was pulled in the autograder
-// refactor per teacher instruction (with per-assignment `tests`
-// inlined gone, realistic manifests stay tiny). `runAssignmentAdd`
-// in assignment.go emits a stderr warning when the encoded file
+// No hard size cap is enforced — per-assignment tests live as files
+// in the config repo rather than being inlined, so realistic
+// manifests stay well under the ~1 MiB contents-API threshold.
+// `runAssignmentAdd` emits a stderr warning when the encoded file
 // crosses `largeAssignmentsWarnBytes` so operators get visibility
-// before hitting GitHub's ~1 MiB contents-API behavior change
-// (encoding flips to "none" past that, wedging future reads).
+// before the API behavior change (encoding flips to "none" past
+// ~1 MiB, wedging future reads).
 func parseAssignments(data []byte) (assignmentsJSON, error) {
 	if len(bytes.TrimSpace(data)) == 0 {
 		return assignmentsJSON{}, errors.New("assignments.json is empty")

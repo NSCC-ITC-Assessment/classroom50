@@ -53,8 +53,8 @@ RESULT_SCHEMA_V1 = "classroom50/result/v1"
 # submissions (mirrors `gh student submit`).
 SUBMIT_TAG_PREFIX = "submit/"
 
-# Release asset name written by the autograde library. Cross-binary
-# contract — keep aligned with autograde-library.yaml.
+# Release asset name written by the autograde runner. Cross-binary
+# contract — keep aligned with autograde-runner.yaml and download.go.
 RESULT_ASSET_NAME = "result.json"
 
 # Hard cap on result.json size. Real payloads sit well under 1 MiB;

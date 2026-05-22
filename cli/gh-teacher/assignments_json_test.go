@@ -102,11 +102,9 @@ func TestParseAssignments_RejectsInvalidAutograder(t *testing.T) {
 }
 
 func TestParseAssignments_RejectsTestsField(t *testing.T) {
-	// The `tests:` field was removed in the autograder refactor.
-	// Hand-edited / migration-stale files carrying it must surface a
-	// clear decode error instead of silently dropping the data on
-	// the next re-encode. DisallowUnknownFields gives us this for
-	// free.
+	// A hand-edited file carrying an unknown `tests:` field must
+	// surface a decode error rather than silently dropping the data
+	// on the next re-encode. DisallowUnknownFields gives us this.
 	in := []byte(`{
   "schema": "classroom50/assignments/v1",
   "assignments": [

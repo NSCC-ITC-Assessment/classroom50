@@ -39,9 +39,10 @@ func classroomCmd() *cobra.Command {
 		Long: "Manage classrooms within an org's classroom50 config repo.\n\n" +
 			"A classroom is a directory at the root of <org>/classroom50,\n" +
 			"named by its short-name (e.g., cs-principles). Each classroom\n" +
-			"holds four files: classroom.json (metadata), assignments.json\n" +
-			"(assignment manifest), students.csv (roster), and scores.json\n" +
-			"(collected submission scores).",
+			"holds six files: classroom.json (metadata), assignments.json\n" +
+			"(assignment manifest), students.csv (roster), scores.json\n" +
+			"(collected scores), autograders/default.yaml (shim workflow),\n" +
+			"and autograders/autograde.py (orchestrator).",
 	}
 	cmd.AddCommand(classroomAddCmd())
 	return cmd
@@ -57,8 +58,9 @@ func classroomAddCmd() *cobra.Command {
 		Use:   "add <org> <short-name>",
 		Short: "Add a new classroom directory inside the config repo",
 		Long: "Create the directory <short-name>/ inside <org>/classroom50\n" +
-			"and populate it with the canonical four-file scaffold:\n" +
-			"classroom.json, assignments.json, students.csv, scores.json.\n\n" +
+			"and populate it with a six-file scaffold: classroom.json,\n" +
+			"assignments.json, students.csv, scores.json,\n" +
+			"autograders/default.yaml, and autograders/autograde.py.\n\n" +
 			"Short-name rules (must match ^[a-z0-9][a-z0-9-]{1,38}$):\n" +
 			"  - 2-39 characters total\n" +
 			"  - lowercase letters, digits, or hyphens\n" +
@@ -103,7 +105,7 @@ func classroomAddCmd() *cobra.Command {
 	return cmd
 }
 
-// addClassroom writes the four-file scaffold in one Tree commit
+// addClassroom writes the six-file scaffold in one Tree commit
 // through commitTree so concurrent writers don't lose each other's
 // work. The existence probe runs inside the build callback so a
 // same-classroom race surfaces as "already exists" rather than
