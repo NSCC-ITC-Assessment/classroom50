@@ -25,12 +25,12 @@ import (
 var skeletonFS embed.FS
 
 // skeletonProbePath detects "already committed" on re-runs.
-// publish-pages.yml is unique to the config repo; README.md isn't
+// publish-pages.yaml is unique to the config repo; README.md isn't
 // reliable because auto_init creates one.
-const skeletonProbePath = ".github/workflows/publish-pages.yml"
+const skeletonProbePath = ".github/workflows/publish-pages.yaml"
 
 // defaultBranchPlaceholder is substituted at commit time so
-// publish-pages.yml listens on the org's actual default branch.
+// publish-pages.yaml listens on the org's actual default branch.
 const defaultBranchPlaceholder = "{{DEFAULT_BRANCH}}"
 
 // skeletonFiles returns destination-path → content. Strips the

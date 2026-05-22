@@ -1,72 +1,89 @@
 package main
 
 import (
-	"bufio"
+	_ "embed"
 	"fmt"
 	"strings"
 
 	"github.com/cli/go-gh/v2/pkg/api"
 )
 
-// autogradeLibraryRef: the public reusable workflow baked into the
-// scaffolded default autograder. Lives in the public
-// `foundation50/classroom50` repo (mirrored from this one) so
-// cross-org `uses:` resolves. Teachers can hand-edit; the CLI never
-// rewrites this ref.
-const autogradeLibraryRef = "foundation50/classroom50/.github/workflows/autograde-library.yml@main"
-
-// autogradeLibraryVersion is the semver sentinel emitted as the
-// `# classroom50-autograde-version:` header; `gh student submit`
-// records it in `.classroom50.yml` for diagnostics only — fetch on
-// every submit means there's no active drift check.
-const autogradeLibraryVersion = "0.2.0"
-
 // defaultAutograderName: written into `assignments.json`'s
-// `autograder` field whenever `--autograder` is omitted.
+// `autograder` field whenever `--autograder` is omitted, and the
+// filename `<classroom>/autograders/<name>.yaml` the scaffolded
+// workflow shim lands at.
 const defaultAutograderName = "default"
 
-// autograderFilePath: in-repo path for a classroom's autograder
-// (e.g. "default" → "cs-principles/autograders/default.yml"). Kept
-// in one place so scaffold, assignment-add validator, and the
-// student-side Pages fetch URL stay aligned.
-func autograderFilePath(classroom, name string) string {
-	return classroom + "/autograders/" + name + ".yml"
-}
+// orchestratorFilename: the per-classroom Python orchestrator the
+// runner fetches at workflow runtime. One per classroom; teachers
+// edit this file to change grading logic. Per-assignment dispatch
+// happens inside the file by reading the CLASSROOM50_ASSIGNMENT
+// env var.
+const orchestratorFilename = "autograde.py"
+
+// orgPlaceholder: substituted in defaultAutograderYAMLContent at
+// scaffold time so each classroom's shim references its own org's
+// reusable workflow (`<org>/classroom50/.github/workflows/autograde-runner.yaml@main`).
+const orgPlaceholder = "{{ORG}}"
+
+// defaultAutograderYAMLContent is the scaffolded shim workflow.
+// Embedded from cli/gh-teacher/autograders/default.yaml so the
+// source-of-truth is a real, lintable YAML file rather than an
+// inline Go string literal. Contains `{{ORG}}` placeholders
+// substituted by defaultAutograderYAML at scaffold time.
+//
+//go:embed autograders/default.yaml
+var defaultAutograderYAMLContent string
+
+// defaultAutogradePyContent is the scaffolded orchestrator. Embedded
+// from cli/gh-teacher/autograders/autograde.py for the same reason —
+// the Python file is testable in isolation under autograders_tests/.
+//
+//go:embed autograders/autograde.py
+var defaultAutogradePyContent string
 
 // defaultAutograderYAML returns the scaffolded
-// `<classroom>/autograders/default.yml`: a thin wrapper around the
-// reusable library that publishes a submit-tag release with
-// `result.json`. Hand-editable; replace the `uses:` job with custom
-// steps, or drop sibling `<name>.yml` files for per-assignment
-// graders.
-func defaultAutograderYAML() string {
-	return "# classroom50-autograde-version: " + autogradeLibraryVersion + "\n" +
-		"#\n" +
-		"# Default classroom50 autograder. Scaffolded by\n" +
-		"# `gh teacher classroom add`; hand-editable.\n" +
-		"#\n" +
-		"# Delegates to the public reusable library: load tests from\n" +
-		"# Pages, run the matrix through the GitHub Classroom\n" +
-		"# autograding actions, publish a submit-tag release carrying\n" +
-		"# result.json.\n" +
-		"\n" +
-		"name: Autograde\n" +
-		"\n" +
-		"on:\n" +
-		"  push:\n" +
-		"    tags: [\"submit/*\"]\n" +
-		"\n" +
-		"permissions:\n" +
-		"  contents: write\n" +
-		"  statuses: write\n" +
-		"\n" +
-		"jobs:\n" +
-		"  grade:\n" +
-		"    uses: " + autogradeLibraryRef + "\n"
+// `<classroom>/autograders/default.yaml` content: a thin shim that
+// delegates to the reusable autograde-runner workflow in the
+// teacher's config repo. `{{ORG}}` is substituted at scaffold time
+// so the `uses:` line resolves to the correct org's runner.
+//
+// Hand-editable by teachers (e.g. to pin a specific tag/SHA of
+// the runner, or to swap the runner entirely); the CLI never
+// rewrites it on subsequent classroom commands.
+func defaultAutograderYAML(org string) string {
+	return strings.ReplaceAll(defaultAutograderYAMLContent, orgPlaceholder, org)
+}
+
+// defaultAutogradePyScript returns the scaffolded
+// `<classroom>/autograders/autograde.py` content: the runtime
+// orchestrator that downloads the per-assignment test tarball,
+// runs pytest, and emits `result.json` matching the
+// `classroom50/result/v1` schema.
+//
+// Hand-editable by teachers; the CLI never rewrites it after the
+// initial scaffold.
+func defaultAutogradePyScript() string {
+	return defaultAutogradePyContent
+}
+
+// autograderFilePath: in-repo path for a classroom's autograder
+// workflow (e.g. "default" → "cs-principles/autograders/default.yaml").
+// Kept in one place so scaffold, assignment-add validator, and the
+// student-side Pages fetch URL stay aligned.
+func autograderFilePath(classroom, name string) string {
+	return classroom + "/autograders/" + name + ".yaml"
+}
+
+// orchestratorFilePath: in-repo path for the per-classroom Python
+// orchestrator (`<classroom>/autograders/autograde.py`). One per
+// classroom.
+func orchestratorFilePath(classroom string) string {
+	return classroom + "/autograders/" + orchestratorFilename
 }
 
 // validateAutograderName enforces `shortNamePattern` on the value
-// that becomes `<classroom>/autograders/<name>.yml` — same regex as
+// that becomes `<classroom>/autograders/<name>.yaml` — same regex as
 // classroom short-names and slugs, blocking traversal-style inputs
 // from reaching the contents API or the Pages URL.
 func validateAutograderName(name string) error {
@@ -84,26 +101,3 @@ func validateAutograderName(name string) error {
 func autograderExists(client *api.RESTClient, owner, repo, classroom, name, ref string) (bool, error) {
 	return contentsExists(client, owner, repo, autograderFilePath(classroom, name), ref)
 }
-
-// stripAutogradeVersion parses the
-// `# classroom50-autograde-version: <semver>` header from a fetched
-// autograder YAML; "" if absent. Stays in lockstep with gh-student's
-// `parseAutogradeVersionSentinel` — changes here MUST be mirrored
-// to `cli/gh-student/assignments.go` (separate Go modules, no
-// shared package). Scans only the first `autogradeVersionScanLines`
-// to avoid matching unrelated `version:` keys deeper in the file.
-func stripAutogradeVersion(content string) string {
-	const marker = "# classroom50-autograde-version:"
-	scanner := bufio.NewScanner(strings.NewReader(content))
-	for i := 0; i < autogradeVersionScanLines && scanner.Scan(); i++ {
-		trimmed := strings.TrimSpace(scanner.Text())
-		if strings.HasPrefix(trimmed, marker) {
-			return strings.TrimSpace(strings.TrimPrefix(trimmed, marker))
-		}
-	}
-	return ""
-}
-
-// autogradeVersionScanLines caps the header-scan window; the marker
-// belongs in the top of the file.
-const autogradeVersionScanLines = 16

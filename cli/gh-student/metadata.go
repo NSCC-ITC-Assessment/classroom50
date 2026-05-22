@@ -15,9 +15,9 @@ import (
 
 // ClassroomMetadataPath: in-repo path read by both the student CLI
 // and the autograde workflow's load job.
-const ClassroomMetadataPath = ".classroom50.yml"
+const ClassroomMetadataPath = ".classroom50.yaml"
 
-// ClassroomConfig is the on-disk shape of `.classroom50.yml`.
+// ClassroomConfig is the on-disk shape of `.classroom50.yaml`.
 // source.* = the template repo. config.* = the per-org config repo
 // (authoritative assignments.json/scores.json source for the
 // autograde workflow). autograde.* = diagnostics for the last
@@ -49,15 +49,14 @@ type ClassroomConfigRef struct {
 }
 
 // AutogradeMetadata: autograde.* block. Source is the
-// classroom-relative path of the carried autograder (e.g.
-// `autograders/default.yml`). FetchedAt is the last Pages refresh
-// (UTC). Version mirrors the workflow's
-// `# classroom50-autograde-version:` sentinel. All three are
-// diagnostic only — the autograde workflow doesn't read them.
+// classroom-relative path of the carried workflow shim (e.g.
+// `autograders/default.yaml`). FetchedAt is the last Pages refresh
+// (UTC). Both are diagnostic only — the autograde workflow itself
+// doesn't read them; they exist so a teacher debugging "which shim
+// is in this student's repo right now?" has the answer on disk.
 type AutogradeMetadata struct {
 	Source    string `yaml:"source,omitempty"`
 	FetchedAt string `yaml:"fetched_at,omitempty"`
-	Version   string `yaml:"version,omitempty"`
 }
 
 // renderClassroomMetadata serializes cfg as double-quoted YAML.
@@ -70,7 +69,7 @@ func renderClassroomMetadata(cfg ClassroomConfig) ([]byte, error) {
 	return yamlBytes, nil
 }
 
-// dropClassroomFiles commits `.classroom50.yml` + the autograde
+// dropClassroomFiles commits `.classroom50.yaml` + the autograde
 // workflow in one Tree commit so the repo's initial shape lands
 // atomically. waitForStableBranch polls first because GitHub
 // doesn't propagate the post-templated-repo commit ref
@@ -91,7 +90,7 @@ func dropClassroomFiles(client *api.RESTClient, owner, repo, branch string, cfg 
 		autogradeWorkflowPath: workflowContent,
 	}
 	return commitFiles(client, owner, repo, branch,
-		"Initialize .classroom50.yml and autograde workflow (gh student accept)",
+		"Initialize .classroom50.yaml and autograde workflow (gh student accept)",
 		files)
 }
 

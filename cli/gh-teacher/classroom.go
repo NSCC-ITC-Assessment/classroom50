@@ -159,7 +159,7 @@ type classroomJSON struct {
 }
 
 // scoresJSON: one entry per (assignment, student) pair, written by
-// `collect-scores.yml`'s collect_scores.py. The slice is `[]` (not
+// `collect-scores.yaml`'s collect_scores.py. The slice is `[]` (not
 // null) at scaffold time so the collect script sees a well-formed
 // file on first run.
 type scoresJSON struct {
@@ -206,10 +206,24 @@ func classroomScaffold(org, shortName, name, term string) (map[string]string, er
 		shortName + "/assignments.json": string(assignmentsBytes),
 		shortName + "/students.csv":     studentsCSVHeader,
 		shortName + "/scores.json":      string(scoresBytes),
-		// Default autograder workflow students fetch from Pages on
-		// accept/submit. Hand-editable; the CLI never rewrites it
-		// on subsequent classroom commands.
-		autograderFilePath(shortName, defaultAutograderName): defaultAutograderYAML(),
+		// Default autograder workflow shim that students fetch from
+		// Pages on accept/submit. Hand-editable; the CLI never
+		// rewrites it on subsequent classroom commands. Designed to
+		// rarely change — teachers iterate on grading logic in the
+		// orchestrator (below) or in test files, not here.
+		autograderFilePath(shortName, defaultAutograderName): defaultAutograderYAML(org),
+		// Orchestrator the autograde-runner reusable workflow
+		// fetches at runtime. Owns dependency installation, test
+		// discovery, scoring, and result.json emission. One per
+		// classroom — the runner always fetches this fixed
+		// `autograde.py` path regardless of the assignment's
+		// `autograder` field. Per-assignment dispatch happens
+		// inside the file by reading the `CLASSROOM50_ASSIGNMENT`
+		// env var. Teachers wanting a fundamentally different
+		// runner write a custom shim `<name>.yaml` that `uses:` a
+		// different reusable workflow entirely; see the
+		// Autograders wiki page for the multi-step pattern.
+		orchestratorFilePath(shortName): defaultAutogradePyScript(),
 	}, nil
 }
 

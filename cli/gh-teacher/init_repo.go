@@ -39,7 +39,7 @@ func checkOrgPlan(client *api.RESTClient, errOut io.Writer, org string) error {
 		return nil
 	}
 	if !plansThatSupportPrivatePages[resp.Plan.Name] {
-		_, _ = fmt.Fprintf(errOut, "Warning: %s is on plan %q; GitHub Pages from a private repo requires GitHub Team or Enterprise Cloud. The repo will be created, but `publish-pages.yml` may fail to deploy.\n",
+		_, _ = fmt.Fprintf(errOut, "Warning: %s is on plan %q; GitHub Pages from a private repo requires GitHub Team or Enterprise Cloud. The repo will be created, but `publish-pages.yaml` may fail to deploy.\n",
 			org, resp.Plan.Name)
 	}
 	return nil
@@ -142,7 +142,7 @@ func setPagesPublic(client *api.RESTClient, out, errOut io.Writer, owner, repo s
 
 // applyBranchProtection sets minimal protection on the default
 // branch: no force-pushes, no deletions. PR-required is deliberately
-// off — collect-scores.yml and the CLI Tree-API writes both target
+// off — collect-scores.yaml and the CLI Tree-API writes both target
 // the default branch directly, and a PR requirement would block
 // both. Force-push + delete blocking bounds the blast radius of an
 // account compromise.
@@ -228,5 +228,48 @@ func reportOrgWorkflowPermissions(client *api.RESTClient, out io.Writer, owner, 
 	}
 	_, _ = fmt.Fprintf(out, "%s/%s: org default workflow permissions are %q; skeleton workflows grant workflow-level write where needed. To raise the org default: gh api -X PUT /orgs/%s/actions/permissions/workflow -F default_workflow_permissions=write\n",
 		owner, repo, resp.DefaultWorkflowPermissions, owner)
+	return nil
+}
+
+// enableReusableWorkflowAccess opens this private repo's workflows
+// to other repos in the same organization. The per-classroom
+// autograder shim that lands in every student repo references the
+// `autograde-runner.yaml` reusable workflow via
+// `uses: <org>/classroom50/.github/workflows/autograde-runner.yaml@main`;
+// without this access toggle, the student repo's GitHub Token gets
+// a 403 trying to resolve that `uses:` line.
+//
+// PUT /repos/{owner}/{repo}/actions/permissions/access with
+// `access_level: organization` is the per-repo lever; idempotent —
+// safe to re-run. 403/409 (org-enforced policy) is treated as a
+// warning to errOut, since some orgs lock this at the enterprise
+// layer and the teacher's recourse is a settings change rather
+// than a CLI fix.
+func enableReusableWorkflowAccess(client *api.RESTClient, out, errOut io.Writer, owner, repo string) error {
+	body, err := json.Marshal(struct {
+		AccessLevel string `json:"access_level"`
+	}{AccessLevel: "organization"})
+	if err != nil {
+		return fmt.Errorf("encode body: %w", err)
+	}
+	path := fmt.Sprintf("repos/%s/%s/actions/permissions/access",
+		url.PathEscape(owner), url.PathEscape(repo))
+	resp, err := client.Request(http.MethodPut, path, bytes.NewReader(body))
+	if err != nil {
+		if isHTTPStatus(err, http.StatusForbidden) || isHTTPStatus(err, http.StatusConflict) {
+			_, _ = fmt.Fprintf(errOut, "Warning: %s/%s: couldn't enable reusable-workflow access for the org (%v); student-repo autograde workflows may 403 on `uses:`. Retry with an org-admin token: gh api -X PUT /repos/%s/%s/actions/permissions/access -f access_level=organization — or toggle manually at https://github.com/%s/%s/settings/actions → Access if students see workflow-resolution errors.\n",
+				owner, repo, err, owner, repo, owner, repo)
+			return nil
+		}
+		return fmt.Errorf("PUT %s: %w", path, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	_, _ = io.Copy(io.Discard, resp.Body)
+	if resp.StatusCode != http.StatusNoContent {
+		_, _ = fmt.Fprintf(errOut, "Warning: %s/%s: PUT /actions/permissions/access returned HTTP %d while enabling reusable-workflow access; retry with an org-admin token: gh api -X PUT /repos/%s/%s/actions/permissions/access -f access_level=organization — or toggle manually at https://github.com/%s/%s/settings/actions → Access if students see `uses:` errors.\n",
+			owner, repo, resp.StatusCode, owner, repo, owner, repo)
+		return nil
+	}
+	_, _ = fmt.Fprintf(out, "%s/%s: reusable-workflow access enabled (organization)\n", owner, repo)
 	return nil
 }

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -9,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -20,7 +18,7 @@ import (
 // aligned with the teacher CLI.
 const configRepoName = "classroom50"
 
-// configRepoBranch is recorded in `.classroom50.yml`'s `config:`
+// configRepoBranch is recorded in `.classroom50.yaml`'s `config:`
 // block. The Pages URL doesn't include a branch component, so this
 // value is informational; "main" is fine even if the teacher's
 // classroom50 repo uses a different default branch.
@@ -58,7 +56,7 @@ func (e assignmentEntry) ResolveAutograder() string {
 // autogradeWorkflowPath: in-repo destination for the fetched
 // autograder. Public contract — the workflow's `on: push.tags`
 // trigger only fires when GitHub finds a workflow at this path.
-const autogradeWorkflowPath = ".github/workflows/autograde.yml"
+const autogradeWorkflowPath = ".github/workflows/autograde.yaml"
 
 // templateRef: assignment starter-code source. All three fields
 // are always populated by `gh teacher assignment add` (which fills
@@ -83,15 +81,15 @@ const assignmentsSchemaV1 = "classroom50/assignments/v1"
 
 // pagesAssignmentsURL: Pages URL for a classroom's assignments.json.
 // Pages on `<org>/classroom50` serves under
-// `<org>.github.io/classroom50/` per publish-pages.yml.
+// `<org>.github.io/classroom50/` per publish-pages.yaml.
 func pagesAssignmentsURL(org, classroom string) string {
 	return fmt.Sprintf("https://%s.github.io/%s/%s/assignments.json", org, configRepoName, classroom)
 }
 
 // pagesAutograderURL: Pages URL for a classroom's autograder
-// workflow. Mirrors publish-pages.yml's allow-list pattern.
+// workflow. Mirrors publish-pages.yaml's allow-list pattern.
 func pagesAutograderURL(org, classroom, name string) string {
-	return fmt.Sprintf("https://%s.github.io/%s/%s/autograders/%s.yml", org, configRepoName, classroom, name)
+	return fmt.Sprintf("https://%s.github.io/%s/%s/autograders/%s.yaml", org, configRepoName, classroom, name)
 }
 
 // fetchAssignmentEntry: find the entry by slug from the Pages
@@ -126,12 +124,12 @@ func fetchAssignmentEntryFromURL(ctx context.Context, rawURL, assignment string)
 	client := &http.Client{Timeout: pagesFetchTimeout}
 	resp, err := client.Do(req)
 	if err != nil {
-		return assignmentEntry{}, fmt.Errorf("GET %s: %w (the classroom50 Pages site may not be deployed yet — ask your instructor to verify `publish-pages.yml` has run successfully)", rawURL, err)
+		return assignmentEntry{}, fmt.Errorf("GET %s: %w (the classroom50 Pages site may not be deployed yet — ask your instructor to verify `publish-pages.yaml` has run successfully)", rawURL, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode == http.StatusNotFound {
-		return assignmentEntry{}, fmt.Errorf("%s returned 404 — the classroom may not exist yet, or `publish-pages.yml` may not have run; ask your instructor to confirm the Pages site has deployed", rawURL)
+		return assignmentEntry{}, fmt.Errorf("%s returned 404 — the classroom may not exist yet, or `publish-pages.yaml` may not have run; ask your instructor to confirm the Pages site has deployed", rawURL)
 	}
 	if resp.StatusCode != http.StatusOK {
 		return assignmentEntry{}, fmt.Errorf("GET %s: unexpected status %d", rawURL, resp.StatusCode)
@@ -189,17 +187,17 @@ func IsAssignmentNotFound(err error) bool {
 }
 
 // AutogradeWorkflow is the result of a Pages autograder fetch.
-// Content is the raw workflow body dropped at
-// `.github/workflows/autograde.yml`; Version is the parsed
-// `# classroom50-autograde-version:` sentinel (empty when absent),
-// recorded in `.classroom50.yml` for diagnostics only.
+// Content is the raw workflow shim body dropped at
+// `.github/workflows/autograde.yaml`. The shim is intentionally
+// stable — it fetches the actual orchestrator from Pages at runtime
+// on every workflow execution, so a stale shim still grades against
+// the latest teacher-side logic.
 type AutogradeWorkflow struct {
 	Content string
-	Version string
 }
 
 // fetchAutograderWorkflow fetches
-// `<classroom>/autograders/<name>.yml` from Pages. Unauth — the
+// `<classroom>/autograders/<name>.yaml` from Pages. Unauth — the
 // publish-pages allow-list keeps the directory public. Thin wrapper
 // around fetchAutograderWorkflowFromURL for testability.
 func fetchAutograderWorkflow(ctx context.Context, org, classroom, name string) (AutogradeWorkflow, error) {
@@ -221,12 +219,12 @@ func fetchAutograderWorkflowFromURL(ctx context.Context, rawURL, name string) (A
 	client := &http.Client{Timeout: pagesFetchTimeout}
 	resp, err := client.Do(req)
 	if err != nil {
-		return AutogradeWorkflow{}, fmt.Errorf("GET %s: %w (the classroom50 Pages site may not be deployed yet — ask your instructor to verify `publish-pages.yml` has run successfully)", rawURL, err)
+		return AutogradeWorkflow{}, fmt.Errorf("GET %s: %w (the classroom50 Pages site may not be deployed yet — ask your instructor to verify `publish-pages.yaml` has run successfully)", rawURL, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode == http.StatusNotFound {
-		return AutogradeWorkflow{}, fmt.Errorf("autograder %q not published yet (%s returned 404) — ask your instructor to confirm that file exists in the config repo and that `publish-pages.yml` has run", name, rawURL)
+		return AutogradeWorkflow{}, fmt.Errorf("autograder %q not published yet (%s returned 404) — ask your instructor to confirm that file exists in the config repo and that `publish-pages.yaml` has run", name, rawURL)
 	}
 	if resp.StatusCode != http.StatusOK {
 		return AutogradeWorkflow{}, fmt.Errorf("GET %s: unexpected status %d", rawURL, resp.StatusCode)
@@ -250,31 +248,5 @@ func fetchAutograderWorkflowFromURL(ctx context.Context, rawURL, name string) (A
 		return AutogradeWorkflow{}, fmt.Errorf("autograder %q is malformed YAML (parsed from %s) — ask your instructor to check the file in the config repo: %w", name, rawURL, err)
 	}
 
-	return AutogradeWorkflow{
-		Content: string(body),
-		Version: parseAutogradeVersionSentinel(string(body)),
-	}, nil
+	return AutogradeWorkflow{Content: string(body)}, nil
 }
-
-// parseAutogradeVersionSentinel reads the
-// `# classroom50-autograde-version:` header. In lockstep with
-// gh-teacher's `stripAutogradeVersion` — changes here MUST be
-// mirrored to cli/gh-teacher/autograder.go (separate Go modules,
-// no shared package). Scans only the first
-// `autogradeVersionScanLines` to avoid matching unrelated `version:`
-// keys deeper in the file.
-func parseAutogradeVersionSentinel(content string) string {
-	const marker = "# classroom50-autograde-version:"
-	scanner := bufio.NewScanner(strings.NewReader(content))
-	for i := 0; i < autogradeVersionScanLines && scanner.Scan(); i++ {
-		trimmed := strings.TrimSpace(scanner.Text())
-		if strings.HasPrefix(trimmed, marker) {
-			return strings.TrimSpace(strings.TrimPrefix(trimmed, marker))
-		}
-	}
-	return ""
-}
-
-// autogradeVersionScanLines caps the header scan. Mirrors the
-// gh-teacher constant.
-const autogradeVersionScanLines = 16

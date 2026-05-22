@@ -37,12 +37,36 @@ jobs:
             mkdir -p "_site/$(dirname "$f")"
             cp "$f" "_site/$f"
           done
-          # Autograder workflows are semi-public: gh student accept
-          # fetches and gh student submit refreshes from this
-          # directory on every submission.
-          for f in */autograders/*.yml; do
+          # Autograder workflow shims (.yaml) are fetched by gh
+          # student accept on first run and refreshed by gh student
+          # submit thereafter. Orchestrator scripts (.py) are
+          # fetched by the autograde-runner reusable workflow at
+          # workflow runtime on every submission (NOT by the shim
+          # directly — the shim only `uses:` the runner) — that's
+          # where teacher edits to grading logic propagate from.
+          for f in */autograders/*.yaml */autograders/*.py; do
             mkdir -p "_site/$(dirname "$f")"
             cp "$f" "_site/$f"
+          done
+
+      - name: Bundle per-assignment tests
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          # Per-assignment pytest directories live at
+          # <classroom>/autograders/tests/<slug>/. Bundle each into
+          # a single <slug>.tar.gz so the autograde workflow fetches
+          # one file at runtime (instead of walking a directory
+          # listing Pages doesn't serve).
+          for testdir in */autograders/tests/*/; do
+            classroom=$(echo "$testdir" | cut -d/ -f1)
+            slug=$(basename "$testdir")
+            outdir="_site/$classroom/autograders/tests"
+            mkdir -p "$outdir"
+            # `-C parent slug` so the tarball's internal layout is
+            # `<slug>/test_*.py`, matching the runtime extraction
+            # path the orchestrator builds.
+            tar -czf "$outdir/$slug.tar.gz" -C "$(dirname "$testdir")" "$slug"
           done
 
       - name: Build classrooms index

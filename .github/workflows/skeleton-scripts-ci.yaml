@@ -1,24 +1,35 @@
-name: skeleton-scripts CI
+name: embedded-python CI
 
-# Runs pytest against the Python scripts embedded under
-# cli/gh-teacher/skeleton/dotgithub/scripts/. Tests live alongside
-# the script (cli/gh-teacher/skeleton_tests/) but are NOT embedded
-# into the teacher's classroom50 repo — they only exist to gate
-# changes to the collect-scores logic.
+# Runs pytest against the Python files embedded into gh-teacher and
+# scaffolded into each teacher's classroom50 config repo:
+#
+#   - cli/gh-teacher/skeleton/dotgithub/scripts/collect_scores.py
+#     (the score collector that runs inside collect-scores.yaml)
+#   - cli/gh-teacher/autograders/autograde.py
+#     (the autograder orchestrator that runs inside the student-repo
+#     autograde workflow shim)
+#
+# Tests live alongside each script (skeleton_tests/, autograders_tests/)
+# but are NOT embedded into the teacher's classroom50 repo — they
+# only exist to gate changes here.
 
 on:
   push:
     branches: [main, v1]
     paths:
       - 'cli/gh-teacher/skeleton/dotgithub/scripts/**'
-      - 'cli/gh-teacher/skeleton/dotgithub/workflows/collect-scores.yml'
+      - 'cli/gh-teacher/skeleton/dotgithub/workflows/collect-scores.yaml'
       - 'cli/gh-teacher/skeleton_tests/**'
+      - 'cli/gh-teacher/autograders/**'
+      - 'cli/gh-teacher/autograders_tests/**'
       - '.github/workflows/skeleton-scripts-ci.yaml'
   pull_request:
     paths:
       - 'cli/gh-teacher/skeleton/dotgithub/scripts/**'
-      - 'cli/gh-teacher/skeleton/dotgithub/workflows/collect-scores.yml'
+      - 'cli/gh-teacher/skeleton/dotgithub/workflows/collect-scores.yaml'
       - 'cli/gh-teacher/skeleton_tests/**'
+      - 'cli/gh-teacher/autograders/**'
+      - 'cli/gh-teacher/autograders_tests/**'
       - '.github/workflows/skeleton-scripts-ci.yaml'
 
 jobs:
@@ -35,5 +46,8 @@ jobs:
       - name: Install test deps
         run: python -m pip install --quiet pytest
 
-      - name: Run pytest
+      - name: Run collect_scores tests
         run: python -m pytest cli/gh-teacher/skeleton_tests/ -v
+
+      - name: Run autograde tests
+        run: python -m pytest cli/gh-teacher/autograders_tests/ -v

@@ -31,15 +31,14 @@ func submitCmd() *cobra.Command {
 			"with `result.json` attached and a scored body shortly after.\n\n" +
 			"Before snapshotting, the latest instructor `.gitignore` and\n" +
 			"`.github/` (both optional) are fetched from the template recorded\n" +
-			"in `.classroom50.yml`. Then the autograder workflow is\n" +
+			"in `.classroom50.yaml`. Then the autograder workflow shim is\n" +
 			"re-fetched from the teacher's Pages site\n" +
-			"(`<org>.github.io/classroom50/<classroom>/autograders/<name>.yml`)\n" +
-			"and overwrites `.github/workflows/autograde.yml`, so teacher\n" +
-			"edits to the source workflow (or autograder reference changes in\n" +
-			"`assignments.json`) propagate without per-student-repo\n" +
-			"maintenance. The recorded `# classroom50-autograde-version:`\n" +
-			"sentinel is captured in `.classroom50.yml`'s `autograde.version`\n" +
-			"for diagnostics.",
+			"(`<org>.github.io/classroom50/<classroom>/autograders/<name>.yaml`)\n" +
+			"and overwrites `.github/workflows/autograde.yaml`. The shim is\n" +
+			"intentionally minimal — it fetches the actual orchestrator from\n" +
+			"the config repo at workflow runtime — so teacher edits to the\n" +
+			"orchestrator or per-assignment tests propagate without ever\n" +
+			"touching student repos.",
 		Example: "  gh student submit",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cmd.SilenceUsage = true
@@ -146,25 +145,24 @@ func submitAssignment(ctx context.Context, client *api.RESTClient, out io.Writer
 	// (to the workflow body or the autograder reference in
 	// assignments.json) propagate without per-repo maintenance.
 	// `repoOwner` from the remote is a fallback when
-	// `.classroom50.yml` is missing the `config:` block.
+	// `.classroom50.yaml` is missing the `config:` block.
 	autograderName, workflow, err := refetchAutograderWorkflow(ctx, config, repoOwner)
 	if err != nil {
 		return err
 	}
 
-	// Drop the fetched workflow over any stale autograde.yml that
+	// Drop the fetched workflow over any stale autograde.yaml that
 	// the template's .github/ fetch may have brought along.
 	if err := writeAutogradeWorkflow(workTree, workflow.Content); err != nil {
 		return err
 	}
 
-	// Re-render .classroom50.yml so autograde source/fetched_at/version
-	// track the just-fetched workflow; classroom/assignment/source/
-	// config round-trip untouched.
+	// Re-render .classroom50.yaml so autograde source/fetched_at
+	// track the just-fetched workflow shim; classroom/assignment/
+	// source/config round-trip untouched.
 	config.Autograde = AutogradeMetadata{
-		Source:    "autograders/" + autograderName + ".yml",
+		Source:    "autograders/" + autograderName + ".yaml",
 		FetchedAt: time.Now().UTC().Format(time.RFC3339),
-		Version:   workflow.Version,
 	}
 	if err := refreshClassroomMetadata(workTree, *config); err != nil {
 		return err
@@ -343,7 +341,7 @@ func refetchAutograderWorkflow(ctx context.Context, config *ClassroomConfig, fal
 // resolveSubmitOwner picks the org to fetch the assignment manifest
 // from: config.Config.Owner first, else the org parsed from the git
 // remote. Returns an error when both are empty — submit can't
-// repair a hand-mangled `.classroom50.yml` or a remoteless clone.
+// repair a hand-mangled `.classroom50.yaml` or a remoteless clone.
 func resolveSubmitOwner(config *ClassroomConfig, fallbackOwner string) (string, error) {
 	if config.Config.Owner != "" {
 		return config.Config.Owner, nil
@@ -370,7 +368,7 @@ func writeAutogradeWorkflow(workTree, content string) error {
 	return nil
 }
 
-// refreshClassroomMetadata re-renders .classroom50.yml from the
+// refreshClassroomMetadata re-renders .classroom50.yaml from the
 // parsed config so cfg.Autograde tracks the latest Pages fetch. The
 // file is CLI-managed (students are told not to hand-edit) so a
 // blind re-render is safe.

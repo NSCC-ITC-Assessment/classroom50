@@ -28,7 +28,7 @@ func readHiddenLine(f *os.File) (string, error) {
 }
 
 // collectSecretName: the repo-level Actions secret
-// collect-scores.yml consumes. Hardcoded because it appears verbatim
+// collect-scores.yaml consumes. Hardcoded because it appears verbatim
 // in the workflow YAML.
 const collectSecretName = "CLASSROOM50_COLLECT_TOKEN"
 

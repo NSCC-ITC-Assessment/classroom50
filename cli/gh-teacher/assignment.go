@@ -1,15 +1,11 @@
 package main
 
 import (
-	"bytes"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
-	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -23,7 +19,7 @@ func assignmentCmd() *cobra.Command {
 		Short: "Manage assignments inside the config repo",
 		Long: "Manage assignment entries in <org>/classroom50/<classroom>/assignments.json.\n\n" +
 			"Subcommands:\n" +
-			"  add     register or upsert an assignment (template + autograding tests)\n" +
+			"  add     register or upsert an assignment\n" +
 			"  remove  drop an assignment entry (does not touch existing student repos)\n" +
 			"  list    print every assignment slug registered in a classroom\n\n" +
 			"Writes use a single Tree commit on <org>/classroom50's default\n" +
@@ -31,9 +27,12 @@ func assignmentCmd() *cobra.Command {
 			"commands use, so concurrent edits don't silently lose each other's\n" +
 			"work. Each entry carries an immutable `slug` (the same name used in\n" +
 			"student repo names like `<classroom>-<slug>-<username>`), a\n" +
-			"template ref pointing at the starter-code repo, an optional due\n" +
-			"date, and a `tests` array validated against the autograding-tests\n" +
-			"schema.",
+			"template ref pointing at the starter-code repo, and the autograder\n" +
+			"name that picks which shim YAML (`<classroom>/autograders/<name>.yaml`)\n" +
+			"— and thus which reusable runner — handles submissions for this\n" +
+			"assignment. Per-assignment tests live separately in the config\n" +
+			"repo at `<classroom>/autograders/tests/<slug>/` as ordinary pytest\n" +
+			"files (see the Autograders wiki page).",
 	}
 	cmd.AddCommand(assignmentAddCmd())
 	cmd.AddCommand(assignmentRemoveCmd())
@@ -50,15 +49,14 @@ func assignmentAddCmd() *cobra.Command {
 		description string
 		due         string
 		mode        string
-		testsPath   string
 		autograder  string
 	)
 
 	cmd := &cobra.Command{
 		Use:   "add <org> <classroom> <slug>",
 		Short: "Add or upsert an assignment in assignments.json",
-		Long: "Register an assignment — its template repo plus optional\n" +
-			"autograding tests — in <org>/classroom50/<classroom>/assignments.json.\n\n" +
+		Long: "Register an assignment — its template repo and the autograder it\n" +
+			"runs against — in <org>/classroom50/<classroom>/assignments.json.\n\n" +
 			"`<slug>` must match ^[a-z0-9][a-z0-9-]{1,38}$ (the same shape as\n" +
 			"classroom short-names) because student repos are named\n" +
 			"`<classroom>-<slug>-<username>`. Required flags: --name and\n" +
@@ -70,22 +68,29 @@ func assignmentAddCmd() *cobra.Command {
 			"used. The template repo must be marked `is_template: true` (set\n" +
 			"in Settings → \"Template repository\"); if your account can't see\n" +
 			"the repo, the CLI returns the cross-org visibility message.\n\n" +
-			"--autograder selects which workflow students fetch on accept and\n" +
-			"refresh on every submit; the name resolves to\n" +
-			"<classroom>/autograders/<name>.yml in the config repo. The default\n" +
+			"--autograder selects which workflow shim students fetch on accept\n" +
+			"and refresh on every submit; the name resolves to\n" +
+			"<classroom>/autograders/<name>.yaml in the config repo. The default\n" +
 			"is `default` (scaffolded by `gh teacher classroom add`). The\n" +
 			"referenced file must exist at write time — a typo'd name is\n" +
 			"rejected before the assignment lands.\n\n" +
-			"--tests, if set, reads a local JSON file whose top-level value is\n" +
-			"a JSON array of test entries (test-name, test-type ∈\n" +
-			"{input_output, run_command}, command, timeout, max-score, plus\n" +
-			"per-test-type field rules). The array merges into the\n" +
-			"assignment's `tests` field replacing any previous tests for that\n" +
-			"slug. A schema violation hard-fails the whole command — no\n" +
-			"partial-write shows up on the repo.",
+			"The shim itself is a thin `uses:` reference to a reusable runner\n" +
+			"workflow. Most teachers won't need to vary --autograder — branching\n" +
+			"on the assignment slug inside autograde.py covers per-assignment\n" +
+			"grading-logic differences. Reach for --autograder only when an\n" +
+			"assignment needs a different *runtime environment* (e.g., a C\n" +
+			"assignment needs gcc + make, the others don't); that requires a\n" +
+			"sibling runner workflow plus a sibling shim that `uses:` it. The\n" +
+			"Autograders wiki page walks through all four steps.\n\n" +
+			"Per-assignment tests are NOT registered here — they live as\n" +
+			"ordinary pytest files in the config repo at\n" +
+			"<classroom>/autograders/tests/<slug>/ and are downloaded at\n" +
+			"workflow runtime by the orchestrator. See the Autograders wiki\n" +
+			"page for the test-authoring workflow and the @pytest.mark.score\n" +
+			"convention for per-test weighting.",
 		Example: "  gh teacher assignment add cs50-fall-2026 cs-principles hello \\\n" +
 			"      --name \"Hello\" --template cs50/hello-template \\\n" +
-			"      --due 2026-09-15T23:59:00-04:00 --tests ./hello-tests.json\n" +
+			"      --due 2026-09-15T23:59:00-04:00\n" +
 			"  gh teacher assignment add cs50-fall-2026 cs-principles intro \\\n" +
 			"      --name \"Intro\" --template cs50/intro-template@main",
 		Args: cobra.ExactArgs(3),
@@ -134,10 +139,6 @@ func assignmentAddCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			tests, err := loadTestsFile(strings.TrimSpace(testsPath))
-			if err != nil {
-				return err
-			}
 
 			client, err := requireAuthClient(cmd)
 			if err != nil {
@@ -145,7 +146,7 @@ func assignmentAddCmd() *cobra.Command {
 			}
 			return runAssignmentAdd(client, cmd.OutOrStdout(), cmd.ErrOrStderr(),
 				org, classroom, slug, nameVal, strings.TrimSpace(description),
-				tmplArg, dueVal, modeVal, autograderVal, tests)
+				tmplArg, dueVal, modeVal, autograderVal)
 		},
 	}
 
@@ -154,8 +155,7 @@ func assignmentAddCmd() *cobra.Command {
 	cmd.Flags().StringVar(&description, "description", "", "Optional one-line description")
 	cmd.Flags().StringVar(&due, "due", "", "Optional ISO-8601 due date (e.g. 2026-09-15T23:59:00-04:00)")
 	cmd.Flags().StringVar(&mode, "mode", assignmentModeIndividual, "Assignment mode: only `individual` is supported (group assignments are planned for a future release)")
-	cmd.Flags().StringVar(&testsPath, "tests", "", "Path to a local JSON file containing a tests array (validated against the autograding-tests schema before write)")
-	cmd.Flags().StringVar(&autograder, "autograder", defaultAutograderName, "Autograder workflow this assignment opts into; resolves to <classroom>/autograders/<name>.yml in the config repo")
+	cmd.Flags().StringVar(&autograder, "autograder", defaultAutograderName, "Autograder workflow shim this assignment opts into; resolves to <classroom>/autograders/<name>.yaml in the config repo")
 	return cmd
 }
 
@@ -285,17 +285,14 @@ func runAssignmentList(client *api.RESTClient, out, errOut io.Writer, org, class
 
 // formatAssignmentListJSON marshals the bare entries array (no
 // `{schema, assignments}` envelope) with on-disk pretty-print +
-// trailing newline so terminal output and `jq` pipes match. Nil
-// slices and empty Autograder are normalized so consumers can
-// index without nil guards.
+// trailing newline so terminal output and `jq` pipes match. Empty
+// Autograder normalizes to "default" so consumers can index
+// without nil guards.
 func formatAssignmentListJSON(entries []assignmentEntry) ([]byte, error) {
 	if entries == nil {
 		entries = []assignmentEntry{}
 	}
 	for i := range entries {
-		if entries[i].Tests == nil {
-			entries[i].Tests = []assignmentTest{}
-		}
 		if entries[i].Autograder == "" {
 			entries[i].Autograder = defaultAutograderName
 		}
@@ -330,7 +327,7 @@ func assignmentsFilePath(classroom string) string {
 // delete of the referenced autograder loses cleanly on retry rather
 // than landing a dangling reference. Same-slug races are
 // last-writer-wins; both commits stay in history for `git revert`.
-func runAssignmentAdd(client *api.RESTClient, out, errOut io.Writer, org, classroom, slug, name, description string, tmpl templateArg, due, mode, autograder string, tests []assignmentTest) error {
+func runAssignmentAdd(client *api.RESTClient, out, errOut io.Writer, org, classroom, slug, name, description string, tmpl templateArg, due, mode, autograder string) error {
 	branch, err := resolveConfigRepoBranch(client, org)
 	if err != nil {
 		return err
@@ -349,16 +346,15 @@ func runAssignmentAdd(client *api.RESTClient, out, errOut io.Writer, org, classr
 		Due:         due,
 		Mode:        mode,
 		Autograder:  autograder,
-		Tests:       tests,
-	}
-	if entry.Tests == nil {
-		entry.Tests = []assignmentTest{}
 	}
 	if err := validateAssignmentEntry(entry); err != nil {
 		return err
 	}
 
-	var action string
+	var (
+		action          string
+		lastEncodedSize int
+	)
 	build := func(parentSHA string) (map[string]string, error) {
 		// Verify the autograder file exists at parent SHA before
 		// writing — otherwise the assignment lands successfully and
@@ -388,6 +384,10 @@ func runAssignmentAdd(client *api.RESTClient, out, errOut io.Writer, org, classr
 		if err != nil {
 			return nil, err
 		}
+		// Captured by the closure so the post-commit warning can
+		// see the final size that actually landed (after any
+		// rebase retries).
+		lastEncodedSize = len(data)
 		return map[string]string{assignmentsFilePath(classroom): string(data)}, nil
 	}
 
@@ -396,9 +396,19 @@ func runAssignmentAdd(client *api.RESTClient, out, errOut io.Writer, org, classr
 		return err
 	}
 
-	_, _ = fmt.Fprintf(out, "%s/%s/%s: %s %s (template %s/%s@%s, autograder %s, %d test(s))\n",
+	_, _ = fmt.Fprintf(out, "%s/%s/%s: %s %s (template %s/%s@%s, autograder %s)\n",
 		org, configRepoName, assignmentsFilePath(classroom), action, slug,
-		resolved.Owner, resolved.Repo, resolved.Branch, entry.Autograder, len(entry.Tests))
+		resolved.Owner, resolved.Repo, resolved.Branch, entry.Autograder)
+	// Heads-up if the encoded file is approaching the GitHub
+	// contents-API behavior change (~1 MiB encoded → encoding:"none",
+	// which would wedge future reads/writes). Diagnostic only;
+	// no behavioral effect. See largeAssignmentsWarnBytes in
+	// assignments_json.go for the rationale.
+	if lastEncodedSize > largeAssignmentsWarnBytes {
+		_, _ = fmt.Fprintf(errOut,
+			"Warning: %s/%s/%s is %d bytes — approaching GitHub's ~1 MiB contents-API ceiling. Past that, the API returns encoding:\"none\" and future `gh teacher assignment add/remove` calls will fail to read the file. Consider splitting the classroom or shrinking per-entry fields.\n",
+			org, configRepoName, assignmentsFilePath(classroom), lastEncodedSize)
+	}
 	_, _ = fmt.Fprintf(errOut, "Students can now run: gh student accept %s %s %s\n", org, classroom, slug)
 	return nil
 }
@@ -511,41 +521,6 @@ func normalizeDueDate(raw string) (string, error) {
 		return "", fmt.Errorf("invalid --due %q: expected ISO-8601 / RFC 3339 (e.g. 2026-09-15T23:59:00-04:00): %w", raw, err)
 	}
 	return raw, nil
-}
-
-// loadTestsFile reads --tests if set. Top-level must be a JSON
-// array. Returns nil when the flag is absent (distinct from an
-// explicit empty array, though both render as `[]` on disk).
-// Three shape guards reject bare `null`, unknown fields (typos like
-// `compairson-method`), and trailing content after the first value.
-func loadTestsFile(path string) ([]assignmentTest, error) {
-	if path == "" {
-		return nil, nil
-	}
-	abs, err := filepath.Abs(path)
-	if err != nil {
-		return nil, fmt.Errorf("resolve --tests path: %w", err)
-	}
-	data, err := os.ReadFile(abs)
-	if err != nil {
-		return nil, fmt.Errorf("read %s: %w", abs, err)
-	}
-	if bytes.Equal(bytes.TrimSpace(data), []byte("null")) {
-		return nil, fmt.Errorf("parse %s: top-level value must be a JSON array of test entries (got `null`)", abs)
-	}
-	var tests []assignmentTest
-	dec := json.NewDecoder(bytes.NewReader(data))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&tests); err != nil {
-		return nil, fmt.Errorf("parse %s: top-level value must be a JSON array of test entries: %w", abs, err)
-	}
-	if err := expectEOF(dec); err != nil {
-		return nil, fmt.Errorf("parse %s: %w", abs, err)
-	}
-	if err := validateAssignmentTests(tests); err != nil {
-		return nil, fmt.Errorf("%s: %w", abs, err)
-	}
-	return tests, nil
 }
 
 // validateTemplateRepo checks <owner>/<repo> exists and is a

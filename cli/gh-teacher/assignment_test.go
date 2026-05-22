@@ -1,9 +1,6 @@
 package main
 
 import (
-	"os"
-	"path/filepath"
-	"reflect"
 	"strings"
 	"testing"
 )
@@ -104,144 +101,6 @@ func TestNormalizeDueDate(t *testing.T) {
 	}
 }
 
-func TestLoadTestsFile_Empty(t *testing.T) {
-	// Empty --tests path → nil slice (lets the caller distinguish
-	// "no flag" from "explicit empty array").
-	tests, err := loadTestsFile("")
-	if err != nil {
-		t.Fatalf("loadTestsFile(\"\"): %v", err)
-	}
-	if tests != nil {
-		t.Errorf("expected nil for empty path, got %#v", tests)
-	}
-}
-
-func TestLoadTestsFile_HappyPath(t *testing.T) {
-	// Fixture exercises every JSON tag on assignmentTest so a typo
-	// on a kebab-case key (e.g. `comparison_method` vs
-	// `comparison-method`) surfaces as a decode mismatch. Use
-	// reflect.DeepEqual against the full slice — partial asserts
-	// would leave `omitempty` fields silently unverified.
-	dir := t.TempDir()
-	path := filepath.Join(dir, "tests.json")
-	contents := `[
-  { "test-name": "compiles", "test-description": "must build cleanly", "test-type": "run_command", "setup-command": "make clean", "command": "make", "timeout": 1, "max-score": 10 },
-  { "test-name": "greets", "test-description": "stdin/stdout smoke", "test-type": "input_output", "command": "./hello", "input": "World\n", "expected-output": "Hello, World!", "comparison-method": "exact", "timeout": 2, "max-score": 20 }
-]`
-	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
-		t.Fatalf("write temp file: %v", err)
-	}
-	want := []assignmentTest{
-		{
-			TestName:        "compiles",
-			TestDescription: "must build cleanly",
-			TestType:        "run_command",
-			SetupCommand:    "make clean",
-			Command:         "make",
-			Timeout:         1,
-			MaxScore:        10,
-		},
-		{
-			TestName:         "greets",
-			TestDescription:  "stdin/stdout smoke",
-			TestType:         "input_output",
-			Command:          "./hello",
-			Input:            "World\n",
-			ExpectedOutput:   "Hello, World!",
-			ComparisonMethod: "exact",
-			Timeout:          2,
-			MaxScore:         20,
-		},
-	}
-	got, err := loadTestsFile(path)
-	if err != nil {
-		t.Fatalf("loadTestsFile: %v", err)
-	}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("loadTestsFile decode mismatch:\n got: %#v\nwant: %#v", got, want)
-	}
-}
-
-func TestLoadTestsFile_RejectsInvalid(t *testing.T) {
-	cases := []struct {
-		name        string
-		contents    string
-		wantErrPart string
-	}{
-		{
-			name:        "not a JSON array",
-			contents:    `{"tests":[]}`,
-			wantErrPart: "JSON array",
-		},
-		{
-			// Bare `null` would decode to a nil slice and round-trip
-			// back as `[]` on re-encode — a typo'd tests file
-			// silently becoming a no-tests assignment.
-			name:        "null top-level value",
-			contents:    `null`,
-			wantErrPart: "null",
-		},
-		{
-			name:        "malformed JSON",
-			contents:    `[{`,
-			wantErrPart: "parse",
-		},
-		{
-			// Trailing content (e.g. a botched merge-conflict
-			// resolution) must not be silently truncated.
-			name:        "trailing array after valid body",
-			contents:    `[{"test-name":"x","test-type":"run_command","command":"make","timeout":1,"max-score":1}][{"test-name":"y","test-type":"run_command","command":"ls","timeout":1,"max-score":1}]`,
-			wantErrPart: "trailing",
-		},
-		{
-			name:        "trailing garbage after valid body",
-			contents:    `[{"test-name":"x","test-type":"run_command","command":"make","timeout":1,"max-score":1}]garbage`,
-			wantErrPart: "trailing",
-		},
-		{
-			name:        "schema violation (duplicate test-name)",
-			contents:    `[{"test-name":"x","test-type":"run_command","command":"make","timeout":1,"max-score":1},{"test-name":"x","test-type":"run_command","command":"ls","timeout":1,"max-score":1}]`,
-			wantErrPart: "duplicate test-name",
-		},
-		{
-			name:        "schema violation (unknown test-type)",
-			contents:    `[{"test-name":"x","test-type":"check50","command":"make","timeout":1,"max-score":1}]`,
-			wantErrPart: "invalid test-type",
-		},
-		{
-			name:        "unknown field",
-			contents:    `[{"test-name":"x","test-type":"run_command","command":"make","timeout":1,"max-score":1,"unknown":true}]`,
-			wantErrPart: "parse",
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			dir := t.TempDir()
-			path := filepath.Join(dir, "tests.json")
-			if err := os.WriteFile(path, []byte(tc.contents), 0o644); err != nil {
-				t.Fatalf("write temp file: %v", err)
-			}
-			_, err := loadTestsFile(path)
-			if err == nil {
-				t.Fatalf("expected error containing %q, got nil", tc.wantErrPart)
-			}
-			if !strings.Contains(err.Error(), tc.wantErrPart) {
-				t.Fatalf("err = %q, want substring %q", err.Error(), tc.wantErrPart)
-			}
-		})
-	}
-}
-
-func TestLoadTestsFile_MissingFile(t *testing.T) {
-	_, err := loadTestsFile(filepath.Join(t.TempDir(), "nonexistent.json"))
-	if err == nil {
-		t.Fatalf("expected error for missing file, got nil")
-	}
-	if !strings.Contains(err.Error(), "read") {
-		t.Errorf("err = %q, want substring 'read'", err.Error())
-	}
-}
-
 func TestResolveTemplateBranch(t *testing.T) {
 	// Each row covers one branch of the post-HTTP decision tree so a
 	// change to validateTemplateRepo's response handling can't
@@ -337,9 +196,7 @@ func TestFormatAssignmentListJSON(t *testing.T) {
 				Template:    templateRef{Owner: "cs50", Repo: "hello-template", Branch: "main"},
 				Due:         "2026-09-15T23:59:00-04:00",
 				Mode:        "individual",
-				Tests: []assignmentTest{
-					{TestName: "compiles", TestType: "run_command", Command: "make", Timeout: 1, MaxScore: 10},
-				},
+				Autograder:  "default",
 			},
 		}
 		got, err := formatAssignmentListJSON(entries)
@@ -350,7 +207,13 @@ func TestFormatAssignmentListJSON(t *testing.T) {
 		// TestEncodeAssignments_RoundTrip. Here we just confirm the
 		// bare-array shape and on-disk indent.
 		str := string(got)
-		for _, want := range []string{`"slug": "hello"`, `"name": "Hello"`, `"description": "First assignment"`, `"branch": "main"`, `"test-name": "compiles"`} {
+		for _, want := range []string{
+			`"slug": "hello"`,
+			`"name": "Hello"`,
+			`"description": "First assignment"`,
+			`"branch": "main"`,
+			`"autograder": "default"`,
+		} {
 			if !strings.Contains(str, want) {
 				t.Errorf("output missing %q\nfull output:\n%s", want, str)
 			}
@@ -360,26 +223,29 @@ func TestFormatAssignmentListJSON(t *testing.T) {
 		if strings.Contains(str, `"schema"`) || strings.Contains(str, `"assignments"`) {
 			t.Errorf("output should be the bare entries array, not the file envelope:\n%s", str)
 		}
+		// Tests field should be gone from the on-disk shape.
+		if strings.Contains(str, `"tests"`) {
+			t.Errorf("output should NOT contain the legacy `tests` field:\n%s", str)
+		}
 	})
 
-	t.Run("entry with nil tests slice serializes as `\"tests\": []`", func(t *testing.T) {
-		// Matches encodeAssignments's on-disk shape so consumers can
-		// index into tests[] without a nil guard.
+	t.Run("empty autograder normalizes to \"default\"", func(t *testing.T) {
+		// Matches encodeAssignments's on-disk shape so consumers see
+		// the uniform default.
 		entries := []assignmentEntry{
 			{
 				Slug:     "intro",
 				Name:     "Intro",
 				Template: templateRef{Owner: "cs50", Repo: "intro-template", Branch: "main"},
 				Mode:     "individual",
-				Tests:    nil,
 			},
 		}
 		got, err := formatAssignmentListJSON(entries)
 		if err != nil {
 			t.Fatalf("formatAssignmentListJSON: %v", err)
 		}
-		if !strings.Contains(string(got), `"tests": []`) {
-			t.Errorf("expected `\"tests\": []`, got:\n%s", got)
+		if !strings.Contains(string(got), `"autograder": "default"`) {
+			t.Errorf("expected `\"autograder\": \"default\"`, got:\n%s", got)
 		}
 	})
 }

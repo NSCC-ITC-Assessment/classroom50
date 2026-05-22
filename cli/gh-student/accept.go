@@ -26,13 +26,13 @@ func acceptCmd() *cobra.Command {
 			"autograding tests are looked up in the published assignments.json\n" +
 			"on the classroom's GitHub Pages site (no token required).\n\n" +
 			"The assignment's autograder workflow is fetched from the same\n" +
-			"Pages site (`<org>.github.io/classroom50/<classroom>/autograders/<name>.yml`)\n" +
-			"and dropped at `.github/workflows/autograde.yml` in the new\n" +
+			"Pages site (`<org>.github.io/classroom50/<classroom>/autograders/<name>.yaml`)\n" +
+			"and dropped at `.github/workflows/autograde.yaml` in the new\n" +
 			"repo. Teacher edits to the source workflow propagate on the\n" +
 			"student's next `gh student submit`.\n\n" +
 			"If the student has a pending org invite it is auto-accepted first.\n" +
 			"After creating the repo, the student is added as a `maintain`\n" +
-			"collaborator, and `.classroom50.yml` and the fetched autograde\n" +
+			"collaborator, and `.classroom50.yaml` and the fetched autograde\n" +
 			"workflow are written in a single Tree commit. Re-running on an\n" +
 			"already-accepted assignment short-circuits without touching the\n" +
 			"existing repo.",
@@ -200,7 +200,7 @@ func acceptAssignment(cmd *cobra.Command, client *api.RESTClient, out io.Writer,
 		return err
 	}
 
-	// 5) Write .classroom50.yml + the autograde workflow in one
+	// 5) Write .classroom50.yaml + the autograde workflow in one
 	//    Tree commit. dropClassroomFiles waits out GitHub's
 	//    post-template-generation replication lag.
 	repoName := assignmentRepoName(classroom, assignment, username)
@@ -219,9 +219,8 @@ func acceptAssignment(cmd *cobra.Command, client *api.RESTClient, out io.Writer,
 			Path:   classroom,
 		},
 		Autograde: AutogradeMetadata{
-			Source:    "autograders/" + autograderName + ".yml",
+			Source:    "autograders/" + autograderName + ".yaml",
 			FetchedAt: time.Now().UTC().Format(time.RFC3339),
-			Version:   workflow.Version,
 		},
 	}
 	if err := dropClassroomFiles(client, org, repoName, entry.Template.Branch, cfg, workflow.Content); err != nil {
@@ -310,8 +309,10 @@ type GeneratedRepo struct {
 // assignmentRepoName: canonical lowercased
 // <classroom>-<assignment>-<username> repo name. Cross-binary
 // contract — cli/gh-teacher/download.go rebuilds the prefix by hand
-// (separate go.mod, no shared symbol). Changing the shape here
-// silently makes `gh teacher download` return zero repos.
+// (separate go.mod, no shared symbol) and autograde.py::username_from_repo
+// mirrors the same formula. Changing the shape here silently makes
+// `gh teacher download` return zero repos and misidentifies every
+// submission in scores.json.
 func assignmentRepoName(classroom, assignment, username string) string {
 	return fmt.Sprintf("%s-%s-%s",
 		strings.ToLower(classroom),

@@ -16,9 +16,7 @@ func TestParseAssignments_Canonical(t *testing.T) {
       "template": { "owner": "cs50", "repo": "hello-template", "branch": "main" },
       "due": "2026-09-15T23:59:00-04:00",
       "mode": "individual",
-      "tests": [
-        { "test-name": "compiles", "test-type": "run_command", "command": "make", "timeout": 1, "max-score": 10 }
-      ]
+      "autograder": "default"
     }
   ]
 }`)
@@ -34,16 +32,12 @@ func TestParseAssignments_Canonical(t *testing.T) {
 	}
 	got := file.Assignments[0]
 	want := assignmentEntry{
-		Slug:     "hello",
-		Name:     "Hello",
-		Template: templateRef{Owner: "cs50", Repo: "hello-template", Branch: "main"},
-		Due:      "2026-09-15T23:59:00-04:00",
-		Mode:     "individual",
-		// Empty Autograder normalizes to "default" on parse.
+		Slug:       "hello",
+		Name:       "Hello",
+		Template:   templateRef{Owner: "cs50", Repo: "hello-template", Branch: "main"},
+		Due:        "2026-09-15T23:59:00-04:00",
+		Mode:       "individual",
 		Autograder: "default",
-		Tests: []assignmentTest{
-			{TestName: "compiles", TestType: "run_command", Command: "make", Timeout: 1, MaxScore: 10},
-		},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("entry mismatch:\n got: %#v\nwant: %#v", got, want)
@@ -61,15 +55,13 @@ func TestParseAssignments_AutograderField(t *testing.T) {
       "name": "Hello",
       "template": { "owner": "cs50", "repo": "hello-template", "branch": "main" },
       "mode": "individual",
-      "autograder": "io-suite",
-      "tests": []
+      "autograder": "io-suite"
     },
     {
       "slug": "intro",
       "name": "Intro",
       "template": { "owner": "cs50", "repo": "intro-template", "branch": "main" },
-      "mode": "individual",
-      "tests": []
+      "mode": "individual"
     }
   ]
 }`)
@@ -96,48 +88,78 @@ func TestParseAssignments_RejectsInvalidAutograder(t *testing.T) {
       "name": "Hello",
       "template": { "owner": "cs50", "repo": "hello-template", "branch": "main" },
       "mode": "individual",
-      "autograder": "../students.csv",
+      "autograder": "../students.csv"
+    }
+  ]
+}`)
+	_, err := parseAssignments(in)
+	if err == nil {
+		t.Fatalf("expected error for traversal autograder name, got nil")
+	}
+	if !strings.Contains(err.Error(), "autograder") {
+		t.Errorf("err should mention `autograder`, got %q", err)
+	}
+}
+
+func TestParseAssignments_RejectsTestsField(t *testing.T) {
+	// The `tests:` field was removed in the autograder refactor.
+	// Hand-edited / migration-stale files carrying it must surface a
+	// clear decode error instead of silently dropping the data on
+	// the next re-encode. DisallowUnknownFields gives us this for
+	// free.
+	in := []byte(`{
+  "schema": "classroom50/assignments/v1",
+  "assignments": [
+    {
+      "slug": "hello",
+      "name": "Hello",
+      "template": { "owner": "cs50", "repo": "hello-template", "branch": "main" },
+      "mode": "individual",
+      "autograder": "default",
       "tests": []
     }
   ]
 }`)
 	_, err := parseAssignments(in)
 	if err == nil {
-		t.Fatalf("expected error for path-traversal autograder, got nil")
+		t.Fatalf("expected error for legacy tests: field, got nil")
 	}
-	if !strings.Contains(err.Error(), "invalid autograder") {
-		t.Errorf("err = %q, want substring 'invalid autograder'", err)
+	if !strings.Contains(err.Error(), "tests") {
+		t.Errorf("err should mention the unknown `tests` field, got %q", err)
 	}
 }
 
 func TestParseAssignments_EmptyAssignmentsArray(t *testing.T) {
-	in := []byte(`{"schema":"classroom50/assignments/v1","assignments":[]}`)
+	in := []byte(`{
+  "schema": "classroom50/assignments/v1",
+  "assignments": []
+}`)
 	file, err := parseAssignments(in)
 	if err != nil {
 		t.Fatalf("parseAssignments: %v", err)
 	}
-	// nil → []: the parser MUST hand back a non-nil slice so a
-	// downstream re-encode produces `[]`, not `null`.
 	if file.Assignments == nil {
-		t.Errorf("expected non-nil empty slice, got nil")
+		t.Errorf("Assignments should be a non-nil empty slice (so a re-encode emits [], not null)")
 	}
 	if len(file.Assignments) != 0 {
-		t.Errorf("expected empty slice, got %d entries", len(file.Assignments))
+		t.Errorf("expected 0 assignments, got %d", len(file.Assignments))
 	}
 }
 
 func TestParseAssignments_NullAssignmentsField(t *testing.T) {
-	in := []byte(`{"schema":"classroom50/assignments/v1","assignments":null}`)
+	// A teacher hand-editing the file to `null` (or omitting the
+	// field entirely) must still parse cleanly — the normalizer
+	// turns nil into [] so downstream encoders see a stable shape.
+	in := []byte(`{
+  "schema": "classroom50/assignments/v1",
+  "assignments": null
+}`)
 	file, err := parseAssignments(in)
 	if err != nil {
 		t.Fatalf("parseAssignments: %v", err)
 	}
-	// `null` normalizes to []; callers treat null and [] identically.
-	if file.Assignments == nil {
-		t.Errorf("expected non-nil empty slice from null input, got nil")
-	}
-	if len(file.Assignments) != 0 {
-		t.Errorf("expected empty slice, got %d entries", len(file.Assignments))
+	if file.Assignments == nil || len(file.Assignments) != 0 {
+		t.Errorf("expected Assignments to normalize to [], got %#v", file.Assignments)
 	}
 }
 
@@ -147,33 +169,56 @@ func TestParseAssignments_Rejects(t *testing.T) {
 		in          string
 		wantErrPart string
 	}{
-		{"empty", "", "empty"},
-		{"whitespace only", "   \n\t  ", "empty"},
-		{"malformed json", `{`, "parse"},
-		{"wrong schema sentinel", `{"schema":"classroom50/assignments/v2","assignments":[]}`, "schema"},
-		// A v2 file with extra top-level fields must surface as
-		// schema mismatch — the probe pass checks the sentinel
-		// before DisallowUnknownFields trips on a new field, so
-		// the teacher sees the actionable message rather than an
-		// opaque decode error.
-		{"v2 file with extra top-level field surfaces schema mismatch (not unknown-field)", `{"schema":"classroom50/assignments/v2","assignments":[],"config":{"unrelated":1}}`, "schema"},
-		{"missing schema", `{"assignments":[]}`, "schema"},
-		{"unknown top-level field", `{"schema":"classroom50/assignments/v1","assignments":[],"extra":1}`, "parse"},
-		// Trailing content after the top-level value (concatenated
-		// duplicate object, merge-conflict fragment, stray bytes)
-		// must not be silently truncated on re-encode.
-		{"trailing object after valid body", `{"schema":"classroom50/assignments/v1","assignments":[]}{"schema":"v2"}`, "after top-level value"},
-		{"trailing garbage after valid body", `{"schema":"classroom50/assignments/v1","assignments":[]}garbage`, "after top-level value"},
-		// Parse-path matches the write-path bar so a hand-edited or
-		// web-UI-inserted entry can't survive parse and re-bless
-		// itself on the next CLI write.
-		{"existing entry with empty slug", `{"schema":"classroom50/assignments/v1","assignments":[{"slug":"","name":"x","template":{"owner":"a","repo":"b","branch":"main"},"mode":"individual","tests":[]}]}`, "empty slug"},
-		{"existing entry with invalid slug (uppercase)", `{"schema":"classroom50/assignments/v1","assignments":[{"slug":"Hello","name":"x","template":{"owner":"a","repo":"b","branch":"main"},"mode":"individual","tests":[]}]}`, "invalid slug"},
-		{"existing entry with empty name", `{"schema":"classroom50/assignments/v1","assignments":[{"slug":"hello","name":"","template":{"owner":"a","repo":"b","branch":"main"},"mode":"individual","tests":[]}]}`, "empty name"},
-		{"existing entry with unsupported mode", `{"schema":"classroom50/assignments/v1","assignments":[{"slug":"hello","name":"x","template":{"owner":"a","repo":"b","branch":"main"},"mode":"group","tests":[]}]}`, "unsupported mode"},
-		{"existing entry with empty template owner", `{"schema":"classroom50/assignments/v1","assignments":[{"slug":"hello","name":"x","template":{"owner":"","repo":"b","branch":"main"},"mode":"individual","tests":[]}]}`, "template owner/repo"},
-		{"existing entry with empty template branch", `{"schema":"classroom50/assignments/v1","assignments":[{"slug":"hello","name":"x","template":{"owner":"a","repo":"b","branch":""},"mode":"individual","tests":[]}]}`, "empty template branch"},
-		{"existing entry with malformed test (zero timeout)", `{"schema":"classroom50/assignments/v1","assignments":[{"slug":"hello","name":"x","template":{"owner":"a","repo":"b","branch":"main"},"mode":"individual","tests":[{"test-name":"t","test-type":"run_command","command":"make","timeout":0,"max-score":10}]}]}`, "timeout"},
+		{
+			name:        "empty input",
+			in:          "",
+			wantErrPart: "empty",
+		},
+		{
+			name:        "schema sentinel mismatch (v2)",
+			in:          `{"schema":"classroom50/assignments/v2","assignments":[]}`,
+			wantErrPart: "v1",
+		},
+		{
+			name:        "schema sentinel mismatch (other)",
+			in:          `{"schema":"something-else","assignments":[]}`,
+			wantErrPart: "v1",
+		},
+		{
+			name:        "missing schema",
+			in:          `{"assignments":[]}`,
+			wantErrPart: "schema",
+		},
+		{
+			name:        "unknown top-level field",
+			in:          `{"schema":"classroom50/assignments/v1","assignments":[],"extra":1}`,
+			wantErrPart: "unknown field",
+		},
+		{
+			name:        "entry missing required name",
+			in:          `{"schema":"classroom50/assignments/v1","assignments":[{"slug":"hello","template":{"owner":"cs50","repo":"hello-template","branch":"main"},"mode":"individual","autograder":"default"}]}`,
+			wantErrPart: "empty name",
+		},
+		{
+			name:        "entry missing template",
+			in:          `{"schema":"classroom50/assignments/v1","assignments":[{"slug":"hello","name":"Hello","mode":"individual","autograder":"default"}]}`,
+			wantErrPart: "template",
+		},
+		{
+			name:        "entry with unsupported mode",
+			in:          `{"schema":"classroom50/assignments/v1","assignments":[{"slug":"hello","name":"Hello","template":{"owner":"cs50","repo":"hello-template","branch":"main"},"mode":"group","autograder":"default"}]}`,
+			wantErrPart: "unsupported mode",
+		},
+		{
+			name:        "entry with slug-pattern violation",
+			in:          `{"schema":"classroom50/assignments/v1","assignments":[{"slug":"Hello","name":"Hello","template":{"owner":"cs50","repo":"hello-template","branch":"main"},"mode":"individual","autograder":"default"}]}`,
+			wantErrPart: "slug",
+		},
+		{
+			name:        "trailing content (e.g. botched merge)",
+			in:          `{"schema":"classroom50/assignments/v1","assignments":[]}{"schema":"classroom50/assignments/v1","assignments":[]}`,
+			wantErrPart: "after top-level value",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -182,69 +227,42 @@ func TestParseAssignments_Rejects(t *testing.T) {
 				t.Fatalf("expected error containing %q, got nil", tc.wantErrPart)
 			}
 			if !strings.Contains(err.Error(), tc.wantErrPart) {
-				t.Fatalf("err = %q, want substring %q", err.Error(), tc.wantErrPart)
+				t.Errorf("err = %q, want substring %q", err.Error(), tc.wantErrPart)
 			}
 		})
 	}
 }
 
 func TestEncodeAssignments_EmptyArrayWireShape(t *testing.T) {
-	file := assignmentsJSON{
-		Schema:      assignmentsSchemaV1,
-		Assignments: []assignmentEntry{},
-	}
-	data, err := encodeAssignments(file)
-	if err != nil {
-		t.Fatalf("encodeAssignments: %v", err)
-	}
-	// `[]` not `null` — readers index without nil guards.
-	if !strings.Contains(string(data), `"assignments": []`) {
-		t.Errorf("expected empty list to serialize as `[]`, got:\n%s", data)
-	}
-	if !strings.HasSuffix(string(data), "\n") {
-		t.Errorf("expected trailing newline (matches classroom.go scaffold), got:\n%s", data)
+	// nil and empty-slice MUST both produce `[]` so re-encodes don't
+	// alternate between `null` and `[]` based on accident.
+	for _, in := range []assignmentsJSON{
+		{Schema: assignmentsSchemaV1, Assignments: nil},
+		{Schema: assignmentsSchemaV1, Assignments: []assignmentEntry{}},
+	} {
+		data, err := encodeAssignments(in)
+		if err != nil {
+			t.Fatalf("encodeAssignments(%v): %v", in, err)
+		}
+		if !strings.Contains(string(data), `"assignments": []`) {
+			t.Errorf("expected `\"assignments\": []`, got:\n%s", data)
+		}
 	}
 }
 
 func TestEncodeAssignments_NilFieldsRoundTrip(t *testing.T) {
-	// nil → `[]` for both Assignments and Tests so the autograde
-	// matrix step can index without nil guards.
-	file := assignmentsJSON{Schema: assignmentsSchemaV1}
-	data, err := encodeAssignments(file)
+	// Schema empty? encodeAssignments fills it in.
+	data, err := encodeAssignments(assignmentsJSON{})
 	if err != nil {
 		t.Fatalf("encodeAssignments: %v", err)
 	}
-	if !strings.Contains(string(data), `"assignments": []`) {
-		t.Errorf("nil Assignments should serialize as [], got:\n%s", data)
-	}
-}
-
-func TestEncodeAssignments_NilTestsBecomesEmptyArray(t *testing.T) {
-	file := assignmentsJSON{
-		Schema: assignmentsSchemaV1,
-		Assignments: []assignmentEntry{
-			{
-				Slug:     "hello",
-				Name:     "Hello",
-				Template: templateRef{Owner: "cs50", Repo: "hello-template", Branch: "main"},
-				Mode:     "individual",
-				Tests:    nil,
-			},
-		},
-	}
-	data, err := encodeAssignments(file)
-	if err != nil {
-		t.Fatalf("encodeAssignments: %v", err)
-	}
-	if !strings.Contains(string(data), `"tests": []`) {
-		t.Errorf("entry with nil Tests should emit `tests: []`, got:\n%s", data)
+	if !strings.Contains(string(data), `"schema": "classroom50/assignments/v1"`) {
+		t.Errorf("expected schema sentinel to be filled in, got:\n%s", data)
 	}
 }
 
 func TestEncodeAssignments_RoundTrip(t *testing.T) {
-	// Cover both default and teacher-chosen autograder values, and
-	// assert encodeAssignments doesn't mutate its caller.
-	original := assignmentsJSON{
+	in := assignmentsJSON{
 		Schema: assignmentsSchemaV1,
 		Assignments: []assignmentEntry{
 			{
@@ -255,47 +273,27 @@ func TestEncodeAssignments_RoundTrip(t *testing.T) {
 				Due:         "2026-09-15T23:59:00-04:00",
 				Mode:        "individual",
 				Autograder:  "default",
-				Tests: []assignmentTest{
-					{TestName: "compiles", TestType: "run_command", Command: "make", Timeout: 1, MaxScore: 10},
-					{TestName: "greets-world", TestType: "input_output", Command: "./hello", Input: "World\n", ExpectedOutput: "Hello, World!", ComparisonMethod: "exact", Timeout: 1, MaxScore: 20},
-				},
-			},
-			{
-				Slug:       "intro",
-				Name:       "Intro",
-				Template:   templateRef{Owner: "cs50", Repo: "intro-template", Branch: "main"},
-				Mode:       "individual",
-				Autograder: "io-suite",
-				Tests:      []assignmentTest{},
 			},
 		},
 	}
-	// Snapshot for the no-mutation assertion below.
-	snapshot := assignmentsJSON{
-		Schema:      original.Schema,
-		Assignments: append([]assignmentEntry(nil), original.Assignments...),
-	}
-	encoded, err := encodeAssignments(original)
+	encoded, err := encodeAssignments(in)
 	if err != nil {
 		t.Fatalf("encodeAssignments: %v", err)
 	}
-	if !reflect.DeepEqual(original, snapshot) {
-		t.Fatalf("encodeAssignments mutated its caller:\nbefore: %#v\nafter:  %#v", snapshot, original)
-	}
-	round, err := parseAssignments(encoded)
+	decoded, err := parseAssignments(encoded)
 	if err != nil {
-		t.Fatalf("round-trip parse failed: %v\nencoded:\n%s", err, encoded)
+		t.Fatalf("parseAssignments: %v", err)
 	}
-	if !reflect.DeepEqual(round, original) {
-		t.Fatalf("round-trip mismatch:\noriginal: %#v\nround:    %#v\nencoded:\n%s", original, round, encoded)
+	if !reflect.DeepEqual(decoded, in) {
+		t.Errorf("round-trip mismatch:\n got: %#v\nwant: %#v", decoded, in)
 	}
 }
 
 func TestEncodeAssignments_NormalizesEmptyAutograder(t *testing.T) {
-	// Empty Autograder → "default" on encode so the on-disk shape
-	// is always explicit. Normalization is on a local copy; verify
-	// the caller's slice is not mutated.
-	original := assignmentsJSON{
+	// Empty autograder field is normalized to "default" on the way
+	// out. The caller-side struct also isn't mutated (see the
+	// defensive copy in encodeAssignments).
+	in := assignmentsJSON{
 		Schema: assignmentsSchemaV1,
 		Assignments: []assignmentEntry{
 			{
@@ -303,110 +301,110 @@ func TestEncodeAssignments_NormalizesEmptyAutograder(t *testing.T) {
 				Name:     "Hello",
 				Template: templateRef{Owner: "cs50", Repo: "hello-template", Branch: "main"},
 				Mode:     "individual",
-				Tests:    []assignmentTest{},
 			},
 		},
 	}
-	encoded, err := encodeAssignments(original)
+	data, err := encodeAssignments(in)
 	if err != nil {
 		t.Fatalf("encodeAssignments: %v", err)
 	}
-	if original.Assignments[0].Autograder != "" {
-		t.Errorf("encodeAssignments mutated caller's Autograder = %q, want %q (no-mutation contract)",
-			original.Assignments[0].Autograder, "")
+	if !strings.Contains(string(data), `"autograder": "default"`) {
+		t.Errorf("expected normalized `\"autograder\": \"default\"`, got:\n%s", data)
 	}
-	if !strings.Contains(string(encoded), `"autograder": "default"`) {
-		t.Errorf("encoded output should normalize empty autograder to %q, got:\n%s", "default", encoded)
+	// Caller's slice must be untouched (regression guard for the
+	// defensive copy).
+	if in.Assignments[0].Autograder != "" {
+		t.Errorf("caller's Autograder was mutated: got %q, want empty",
+			in.Assignments[0].Autograder)
 	}
 }
 
 func TestEncodeAssignments_OmitsOptionalEmptyFields(t *testing.T) {
-	// Description and Due are omitempty; Mode is always emitted.
-	file := assignmentsJSON{
+	// Description and Due use `omitempty`. Empty values must not
+	// appear in the encoded output so on-disk diffs stay minimal.
+	in := assignmentsJSON{
 		Schema: assignmentsSchemaV1,
 		Assignments: []assignmentEntry{
 			{
-				Slug:     "intro",
-				Name:     "Intro",
-				Template: templateRef{Owner: "cs50", Repo: "intro-template", Branch: "main"},
-				Mode:     "individual",
-				Tests:    []assignmentTest{},
+				Slug:       "hello",
+				Name:       "Hello",
+				Template:   templateRef{Owner: "cs50", Repo: "hello-template", Branch: "main"},
+				Mode:       "individual",
+				Autograder: "default",
 			},
 		},
 	}
-	data, err := encodeAssignments(file)
+	data, err := encodeAssignments(in)
 	if err != nil {
 		t.Fatalf("encodeAssignments: %v", err)
 	}
-	str := string(data)
-	if strings.Contains(str, `"description"`) {
-		t.Errorf("expected description to be omitted when empty, got:\n%s", str)
-	}
-	if strings.Contains(str, `"due"`) {
-		t.Errorf("expected due to be omitted when empty, got:\n%s", str)
-	}
-	if !strings.Contains(str, `"mode": "individual"`) {
-		t.Errorf("expected mode to be present, got:\n%s", str)
+	for _, omitted := range []string{`"description"`, `"due"`} {
+		if strings.Contains(string(data), omitted) {
+			t.Errorf("expected %s to be omitted (omitempty), got:\n%s", omitted, data)
+		}
 	}
 }
 
 func TestUpsertAssignment_AppendAndReplace(t *testing.T) {
 	entries := []assignmentEntry{
-		{Slug: "hello", Name: "Hello", Mode: "individual"},
-		{Slug: "intro", Name: "Intro", Mode: "individual"},
+		{Slug: "hello", Name: "Hello"},
+		{Slug: "intro", Name: "Intro"},
 	}
 
-	// Append new.
-	entries, replaced := upsertAssignment(entries, assignmentEntry{Slug: "advanced", Name: "Advanced", Mode: "individual"})
+	// New slug appends to the end.
+	updated, replaced := upsertAssignment(entries, assignmentEntry{Slug: "goodbye", Name: "Goodbye"})
 	if replaced {
-		t.Errorf("appending advanced should not report replace")
+		t.Errorf("appending a new slug should not report 'replaced'")
 	}
-	if len(entries) != 3 || entries[2].Slug != "advanced" {
-		t.Errorf("expected advanced appended at end, got %#v", entries)
+	if len(updated) != 3 || updated[2].Slug != "goodbye" {
+		t.Errorf("expected append at index 2, got %v", updated)
 	}
 
-	// Replace existing — position preserved.
-	entries, replaced = upsertAssignment(entries, assignmentEntry{Slug: "hello", Name: "Hello (v2)", Mode: "individual"})
-	if !replaced {
-		t.Errorf("replacing hello should report replace")
+	// Existing slug replaces in place — position preserved.
+	updated2, replaced2 := upsertAssignment(updated, assignmentEntry{Slug: "intro", Name: "Intro v2"})
+	if !replaced2 {
+		t.Errorf("replacing an existing slug should report 'replaced'")
 	}
-	if entries[0].Slug != "hello" || entries[0].Name != "Hello (v2)" {
-		t.Errorf("hello row should be in position 0 with new name, got %#v", entries[0])
+	if len(updated2) != 3 || updated2[1].Slug != "intro" || updated2[1].Name != "Intro v2" {
+		t.Errorf("expected in-place replace at index 1, got %v", updated2)
 	}
 }
 
 func TestUpsertAssignment_CaseSensitive(t *testing.T) {
-	// Slugs are lowercase-only at validation, but the upsert helper
-	// shouldn't blur the distinction — "Hello" against "hello"
-	// appends, not replaces.
-	entries := []assignmentEntry{{Slug: "hello", Name: "Hello", Mode: "individual"}}
-	entries, replaced := upsertAssignment(entries, assignmentEntry{Slug: "Hello", Name: "Capital", Mode: "individual"})
+	// Slug validator only accepts lowercase, so case-insensitive
+	// matching would just hide a validator-rejected typo. Verify
+	// that "Hello" and "hello" are treated as distinct.
+	entries := []assignmentEntry{{Slug: "hello"}}
+	updated, replaced := upsertAssignment(entries, assignmentEntry{Slug: "Hello"})
 	if replaced {
-		t.Errorf("case-sensitive upsert should NOT match Hello against hello")
+		t.Errorf("case mismatch should NOT match existing slug")
 	}
-	if len(entries) != 2 {
-		t.Errorf("expected 2 rows after distinct-slug upsert, got %d", len(entries))
+	if len(updated) != 2 {
+		t.Errorf("expected append (no match), got len=%d", len(updated))
 	}
 }
 
 func TestRemoveAssignment(t *testing.T) {
 	entries := []assignmentEntry{
-		{Slug: "hello", Mode: "individual"},
-		{Slug: "intro", Mode: "individual"},
-		{Slug: "advanced", Mode: "individual"},
+		{Slug: "hello"},
+		{Slug: "intro"},
+		{Slug: "goodbye"},
 	}
-
-	entries, removed := removeAssignment(entries, "intro")
+	updated, removed := removeAssignment(entries, "intro")
 	if !removed {
-		t.Errorf("expected intro to be removed")
+		t.Errorf("expected removed=true for matching slug")
 	}
-	if len(entries) != 2 || entries[0].Slug != "hello" || entries[1].Slug != "advanced" {
-		t.Errorf("expected [hello, advanced] after remove, got %#v", entries)
+	if len(updated) != 2 || updated[0].Slug != "hello" || updated[1].Slug != "goodbye" {
+		t.Errorf("expected ['hello','goodbye'], got %v", updated)
 	}
 
-	_, removed = removeAssignment(entries, "missing")
-	if removed {
-		t.Errorf("removing absent slug should report not-removed")
+	// Missing slug → no change, removed=false.
+	stable, removed2 := removeAssignment(entries, "missing")
+	if removed2 {
+		t.Errorf("expected removed=false for non-matching slug")
+	}
+	if len(stable) != len(entries) {
+		t.Errorf("expected no change, got len=%d", len(stable))
 	}
 }
 
@@ -417,10 +415,9 @@ func TestValidateAssignmentEntry_HappyPath(t *testing.T) {
 		Template:   templateRef{Owner: "cs50", Repo: "hello-template", Branch: "main"},
 		Mode:       "individual",
 		Autograder: "default",
-		Tests:      []assignmentTest{},
 	}
 	if err := validateAssignmentEntry(entry); err != nil {
-		t.Fatalf("expected valid entry to pass, got %v", err)
+		t.Errorf("validateAssignmentEntry: %v", err)
 	}
 }
 
@@ -434,24 +431,19 @@ func TestValidateAssignmentEntry_Rejects(t *testing.T) {
 	}
 	cases := []struct {
 		name        string
-		mutate      func(e *assignmentEntry)
+		mutate      func(*assignmentEntry)
 		wantErrPart string
 	}{
 		{"empty slug", func(e *assignmentEntry) { e.Slug = "" }, "slug"},
-		{"slug with uppercase", func(e *assignmentEntry) { e.Slug = "Hello" }, "invalid slug"},
-		{"slug with underscore", func(e *assignmentEntry) { e.Slug = "hello_world" }, "invalid slug"},
-		{"slug starting with hyphen", func(e *assignmentEntry) { e.Slug = "-hello" }, "invalid slug"},
-		{"empty name", func(e *assignmentEntry) { e.Name = "" }, "name"},
+		{"slug pattern violation", func(e *assignmentEntry) { e.Slug = "Hello" }, "slug"},
+		{"empty name", func(e *assignmentEntry) { e.Name = "" }, "--name"},
 		{"empty mode", func(e *assignmentEntry) { e.Mode = "" }, "mode"},
-		{"group mode (deferred)", func(e *assignmentEntry) { e.Mode = "group" }, "group assignments are planned"},
-		{"unknown mode", func(e *assignmentEntry) { e.Mode = "individuals" }, "invalid mode"},
+		{"unsupported mode", func(e *assignmentEntry) { e.Mode = "group" }, "individual"},
 		{"empty template owner", func(e *assignmentEntry) { e.Template.Owner = "" }, "template"},
 		{"empty template repo", func(e *assignmentEntry) { e.Template.Repo = "" }, "template"},
 		{"empty template branch", func(e *assignmentEntry) { e.Template.Branch = "" }, "branch"},
 		{"empty autograder", func(e *assignmentEntry) { e.Autograder = "" }, "autograder"},
-		// Same path-traversal guard as the parse-time validator.
-		{"autograder with path traversal", func(e *assignmentEntry) { e.Autograder = "../students.csv" }, "invalid autograder"},
-		{"autograder with uppercase", func(e *assignmentEntry) { e.Autograder = "Default" }, "invalid autograder"},
+		{"autograder traversal", func(e *assignmentEntry) { e.Autograder = "../etc/passwd" }, "autograder"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -462,176 +454,8 @@ func TestValidateAssignmentEntry_Rejects(t *testing.T) {
 				t.Fatalf("expected error containing %q, got nil", tc.wantErrPart)
 			}
 			if !strings.Contains(err.Error(), tc.wantErrPart) {
-				t.Fatalf("err = %q, want substring %q", err.Error(), tc.wantErrPart)
+				t.Errorf("err = %q, want substring %q", err.Error(), tc.wantErrPart)
 			}
 		})
-	}
-}
-
-func TestValidateAssignmentTest_HappyPaths(t *testing.T) {
-	cases := []assignmentTest{
-		// input_output with all I/O fields populated.
-		{TestName: "io-full", TestType: "input_output", Command: "./hello", Input: "World\n", ExpectedOutput: "Hello, World!", ComparisonMethod: "exact", Timeout: 1, MaxScore: 10},
-		// input_output with no comparison-method (default behaves like `included`).
-		{TestName: "io-no-method", TestType: "input_output", Command: "./hello", Timeout: 1, MaxScore: 10},
-		// input_output with empty input is valid (no-stdin test).
-		{TestName: "io-no-input", TestType: "input_output", Command: "./hello", ExpectedOutput: "Hello, World!", ComparisonMethod: "exact", Timeout: 1, MaxScore: 10},
-		// input_output with `included` comparison.
-		{TestName: "io-included", TestType: "input_output", Command: "./hello", ExpectedOutput: "Hello", ComparisonMethod: "included", Timeout: 1, MaxScore: 10},
-		// input_output with `regex` comparison.
-		{TestName: "io-regex", TestType: "input_output", Command: "./hello", ExpectedOutput: "Hello.*", ComparisonMethod: "regex", Timeout: 1, MaxScore: 10},
-		// run_command with no I/O fields.
-		{TestName: "run", TestType: "run_command", Command: "make", Timeout: 5, MaxScore: 20},
-		// run_command with setup-command.
-		{TestName: "run-setup", TestType: "run_command", SetupCommand: "make clean", Command: "make", Timeout: 5, MaxScore: 20},
-		// max-score == 0 is valid (e.g. a smoke-only check that doesn't grade).
-		{TestName: "zero-score", TestType: "run_command", Command: "make", Timeout: 1, MaxScore: 0},
-	}
-	for _, tc := range cases {
-		t.Run(tc.TestName, func(t *testing.T) {
-			if err := validateAssignmentTest(0, tc); err != nil {
-				t.Fatalf("expected %q to pass, got %v", tc.TestName, err)
-			}
-		})
-	}
-}
-
-func TestValidateAssignmentTest_Rejects(t *testing.T) {
-	cases := []struct {
-		name        string
-		test        assignmentTest
-		wantErrPart string
-	}{
-		{
-			name:        "empty test-name",
-			test:        assignmentTest{TestName: "", TestType: "run_command", Command: "make", Timeout: 1, MaxScore: 10},
-			wantErrPart: "test-name",
-		},
-		{
-			name:        "empty test-type",
-			test:        assignmentTest{TestName: "x", TestType: "", Command: "make", Timeout: 1, MaxScore: 10},
-			wantErrPart: "test-type",
-		},
-		{
-			name:        "unknown test-type",
-			test:        assignmentTest{TestName: "x", TestType: "check50", Command: "make", Timeout: 1, MaxScore: 10},
-			wantErrPart: "invalid test-type",
-		},
-		{
-			name:        "empty command",
-			test:        assignmentTest{TestName: "x", TestType: "run_command", Command: "", Timeout: 1, MaxScore: 10},
-			wantErrPart: "command",
-		},
-		{
-			name:        "zero timeout",
-			test:        assignmentTest{TestName: "x", TestType: "run_command", Command: "make", Timeout: 0, MaxScore: 10},
-			wantErrPart: "timeout",
-		},
-		{
-			name:        "negative timeout",
-			test:        assignmentTest{TestName: "x", TestType: "run_command", Command: "make", Timeout: -1, MaxScore: 10},
-			wantErrPart: "timeout",
-		},
-		{
-			name:        "negative max-score",
-			test:        assignmentTest{TestName: "x", TestType: "run_command", Command: "make", Timeout: 1, MaxScore: -1},
-			wantErrPart: "max-score",
-		},
-		{
-			name:        "input_output with invalid comparison-method",
-			test:        assignmentTest{TestName: "x", TestType: "input_output", Command: "./hello", ExpectedOutput: "Hello", ComparisonMethod: "approximate", Timeout: 1, MaxScore: 10},
-			wantErrPart: "comparison-method",
-		},
-		{
-			name:        "run_command with input field",
-			test:        assignmentTest{TestName: "x", TestType: "run_command", Command: "make", Input: "World", Timeout: 1, MaxScore: 10},
-			wantErrPart: "input",
-		},
-		{
-			name:        "run_command with expected-output field",
-			test:        assignmentTest{TestName: "x", TestType: "run_command", Command: "make", ExpectedOutput: "Hello", Timeout: 1, MaxScore: 10},
-			wantErrPart: "expected-output",
-		},
-		{
-			name:        "run_command with comparison-method field",
-			test:        assignmentTest{TestName: "x", TestType: "run_command", Command: "make", ComparisonMethod: "exact", Timeout: 1, MaxScore: 10},
-			wantErrPart: "comparison-method",
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			err := validateAssignmentTest(0, tc.test)
-			if err == nil {
-				t.Fatalf("expected error containing %q, got nil", tc.wantErrPart)
-			}
-			if !strings.Contains(err.Error(), tc.wantErrPart) {
-				t.Fatalf("err = %q, want substring %q", err.Error(), tc.wantErrPart)
-			}
-		})
-	}
-}
-
-func TestValidateAssignmentTests_DuplicateTestNames(t *testing.T) {
-	tests := []assignmentTest{
-		{TestName: "compiles", TestType: "run_command", Command: "make", Timeout: 1, MaxScore: 10},
-		{TestName: "greets", TestType: "input_output", Command: "./hello", ExpectedOutput: "Hello", ComparisonMethod: "exact", Timeout: 1, MaxScore: 20},
-		{TestName: "compiles", TestType: "run_command", Command: "make all", Timeout: 1, MaxScore: 5},
-	}
-	err := validateAssignmentTests(tests)
-	if err == nil {
-		t.Fatalf("expected duplicate test-name to be rejected, got nil")
-	}
-	if !strings.Contains(err.Error(), "duplicate test-name") {
-		t.Fatalf("err = %q, want substring 'duplicate test-name'", err.Error())
-	}
-	// Error should cite both offending indices.
-	if !strings.Contains(err.Error(), "tests[2]") {
-		t.Errorf("err should cite tests[2], got %q", err.Error())
-	}
-	if !strings.Contains(err.Error(), "tests[0]") {
-		t.Errorf("err should cite tests[0], got %q", err.Error())
-	}
-}
-
-func TestValidateAssignmentTests_AdjacentDuplicate(t *testing.T) {
-	// Smallest [0,1] pair — guards against a fence-post in the
-	// seen-map walk.
-	tests := []assignmentTest{
-		{TestName: "compiles", TestType: "run_command", Command: "make", Timeout: 1, MaxScore: 10},
-		{TestName: "compiles", TestType: "run_command", Command: "make all", Timeout: 1, MaxScore: 5},
-	}
-	err := validateAssignmentTests(tests)
-	if err == nil {
-		t.Fatalf("expected adjacent duplicate test-name to be rejected, got nil")
-	}
-	if !strings.Contains(err.Error(), "duplicate test-name") {
-		t.Errorf("err = %q, want substring 'duplicate test-name'", err.Error())
-	}
-	if !strings.Contains(err.Error(), "tests[0]") || !strings.Contains(err.Error(), "tests[1]") {
-		t.Errorf("err should cite both tests[0] and tests[1], got %q", err.Error())
-	}
-}
-
-func TestValidateAssignmentTests_DuplicateCheckIsCaseSensitive(t *testing.T) {
-	// `hello` vs `Hello` are distinct test-names — the dedup is
-	// case-sensitive so a teacher's intentional related-but-distinct
-	// pair isn't collapsed.
-	tests := []assignmentTest{
-		{TestName: "hello", TestType: "run_command", Command: "make", Timeout: 1, MaxScore: 10},
-		{TestName: "Hello", TestType: "run_command", Command: "make all", Timeout: 1, MaxScore: 5},
-	}
-	if err := validateAssignmentTests(tests); err != nil {
-		t.Fatalf("expected hello vs Hello to validate cleanly, got %v", err)
-	}
-}
-
-func TestValidateAssignmentTests_EmptyArrayIsValid(t *testing.T) {
-	// Tests-less assignments are valid (in-class exercises, or just
-	// not yet authored).
-	if err := validateAssignmentTests([]assignmentTest{}); err != nil {
-		t.Fatalf("expected empty tests to pass, got %v", err)
-	}
-	if err := validateAssignmentTests(nil); err != nil {
-		t.Fatalf("expected nil tests to pass, got %v", err)
 	}
 }

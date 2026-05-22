@@ -1,0 +1,300 @@
+name: Classroom50 Autograde Runner
+
+# Reusable workflow called by each student repo's autograde shim
+# (gh teacher classroom add scaffolds the shim into every
+# <classroom>/autograders/<name>.yaml; gh student accept fetches it
+# into .github/workflows/autograde.yaml on the student repo).
+#
+# Centralizing the bootstrap + orchestration here means every
+# student's repo carries only an ~20-line shim. Teacher edits to
+# grading logic propagate to all student repos on their next
+# submission since `@main` (the default ref in the shim's `uses:`
+# line) resolves at workflow-call time.
+#
+# Contract: this workflow is invoked from a student repo (the
+# caller). `github.token` here is the caller's GITHUB_TOKEN —
+# scoped to the student repo, with the permissions the caller's
+# `permissions:` block grants. The caller's job-level permissions
+# must include `contents: write` (publish release) and
+# `statuses: write` (post commit status); otherwise the relevant
+# steps below will 403.
+#
+# Edit this file in the config repo when you need to change the
+# *runtime* environment (Python version, additional language
+# runtimes, system packages) — those changes propagate to every
+# student's next submission. Per-classroom grading logic lives in
+# <classroom>/autograders/autograde.py (fetched at runtime, per the
+# bootstrap step below). Per-assignment test files live in
+# <classroom>/autograders/tests/<slug>/.
+
+on:
+  workflow_call:
+    outputs:
+      status:
+        description: Commit status state emitted by the orchestrator (success, failure, or error)
+        value: ${{ jobs.autograde.outputs.status }}
+      summary:
+        description: Commit status summary line for the submission
+        value: ${{ jobs.autograde.outputs.summary }}
+
+permissions:
+  contents: write
+  statuses: write
+
+jobs:
+  autograde:
+    runs-on: ubuntu-latest
+    outputs:
+      status: ${{ steps.autograde.outputs.status }}
+      summary: ${{ steps.autograde.outputs.summary }}
+    # Bounds the worst-case runtime so a hanging test (or an
+    # infinite loop in student code — pytest itself has no default
+    # per-test timeout) can't pin a runner for the GitHub Actions
+    # default of 6 hours. 15 min covers bootstrap + pip install +
+    # pytest + status/release publish for any realistic suite; bump
+    # locally if you have legitimately slow grading. For per-test
+    # timeouts (e.g. catch one runaway test without killing the
+    # whole run), add `pytest-timeout` to autograde.py's pip_install
+    # and pass `--timeout=N` to pytest.
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+
+      # === Runtime setup (edit to add languages, system packages, etc.) ===
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Ensure PyYAML
+        run: python3 -m pip install --quiet --user pyyaml
+
+      # === Bootstrap: read metadata, fetch autograder from Pages ===
+      - id: bootstrap
+        name: Fetch autograder from config repo
+        shell: python3 {0}
+        run: |
+          # Self-contained inline shim. Keep this step small and
+          # logic-free; the orchestrator (autograde.py, fetched
+          # below) owns everything substantive.
+          import json
+          import os
+          import re
+          import sys
+          import time
+          import urllib.error
+          import urllib.request
+
+          import yaml
+
+          # `.classroom50.yaml` is in the student repo (untrusted).
+          # Every value pulled out of it eventually flows into
+          # GITHUB_ENV (which is line-oriented: a newline turns
+          # `key=value` into `key=val1\nINJECTED=...`) or into a
+          # URL/path. Validate up front so a hand-crafted YAML
+          # can't inject env vars for later steps or escape into
+          # the shell.
+          _SLUG = re.compile(r"^[a-z0-9][a-z0-9-]{1,38}$")
+          _NAME = re.compile(r"^[A-Za-z0-9._-]+$")
+
+          def _safe(value, label, pattern):
+              if not isinstance(value, str) or not pattern.match(value):
+                  print(f"::error::.classroom50.yaml field {label!r} has invalid value {value!r} (must match {pattern.pattern!r}) — re-run `gh student accept` to refresh metadata or check the file for hand-edits", file=sys.stderr)
+                  sys.exit(1)
+              return value
+
+          try:
+              with open(".classroom50.yaml") as fh:
+                  cfg = yaml.safe_load(fh) or {}
+          except FileNotFoundError:
+              print("::error::.classroom50.yaml not found — was this repo created by `gh student accept`?", file=sys.stderr)
+              sys.exit(1)
+          except yaml.YAMLError as exc:
+              print(f"::error::.classroom50.yaml is malformed YAML: {exc}", file=sys.stderr)
+              sys.exit(1)
+
+          classroom = _safe((cfg.get("classroom") or "").strip(), "classroom", _SLUG)
+          assignment = _safe((cfg.get("assignment") or "").strip(), "assignment", _SLUG)
+
+          conf = cfg.get("config") or {}
+          owner = _safe((conf.get("owner") or "").strip(), "config.owner", _NAME)
+          repo = _safe((conf.get("repo") or "classroom50").strip(), "config.repo", _NAME)
+          # config.path defaults to the classroom slug; when explicitly
+          # set, must still pass the same slug shape.
+          path = _safe((conf.get("path") or classroom).strip(), "config.path", _SLUG)
+
+          # Pin Pages fetches to this repo's org and the canonical
+          # config repo name. Students control .classroom50.yaml and
+          # could otherwise redirect grading to an attacker-hosted
+          # Pages site.
+          repo_owner = (os.environ.get("GITHUB_REPOSITORY") or "").split("/", 1)[0]
+          if not repo_owner:
+              print("::error::GITHUB_REPOSITORY is unset — cannot validate config.owner", file=sys.stderr)
+              sys.exit(1)
+          if owner != repo_owner:
+              print(f"::error::.classroom50.yaml config.owner = {owner!r}, want {repo_owner!r} — re-run `gh student accept` to refresh metadata or check the file for hand-edits", file=sys.stderr)
+              sys.exit(1)
+          if repo != "classroom50":
+              print(f"::error::.classroom50.yaml config.repo = {repo!r}, want 'classroom50' — re-run `gh student accept` to refresh metadata or check the file for hand-edits", file=sys.stderr)
+              sys.exit(1)
+          if path != classroom:
+              print(f"::error::.classroom50.yaml config.path = {path!r}, want {classroom!r} — re-run `gh student accept` to refresh metadata or check the file for hand-edits", file=sys.stderr)
+              sys.exit(1)
+
+          base_url = f"https://{owner}.github.io/{repo}/{path}"
+
+          MAX_ORCHESTRATOR_BYTES = 1024 * 1024  # 1 MiB — mirrors tarball cap discipline
+
+          def _get(url):
+              last_exc = None
+              for attempt in range(3):
+                  try:
+                      req = urllib.request.Request(url, headers={"User-Agent": "classroom50-autograde-runner"})
+                      return urllib.request.urlopen(req, timeout=30)
+                  except urllib.error.HTTPError as exc:
+                      if exc.code >= 500 and attempt < 2:
+                          time.sleep(2 ** attempt)
+                          last_exc = exc
+                          continue
+                      raise
+                  except urllib.error.URLError as exc:
+                      if attempt < 2:
+                          time.sleep(2 ** attempt)
+                          last_exc = exc
+                          continue
+                      raise
+              if last_exc:
+                  raise last_exc
+              raise RuntimeError(f"GET {url} failed after retries")
+
+          # Resolve which autograder name was registered for this
+          # assignment (becomes an env var the orchestrator can
+          # branch on; the orchestrator URL itself is fixed below).
+          manifest_url = f"{base_url}/assignments.json"
+          try:
+              with _get(manifest_url) as resp:
+                  manifest = json.load(resp)
+          except urllib.error.HTTPError as exc:
+              print(f"::error::GET {manifest_url}: HTTP {exc.code} — ask your instructor to confirm publish-pages.yaml has run", file=sys.stderr)
+              sys.exit(1)
+          except urllib.error.URLError as exc:
+              print(f"::error::GET {manifest_url}: {exc.reason} — the Pages site may not be deployed yet", file=sys.stderr)
+              sys.exit(1)
+
+          # Schema sentinel check — without this, a future v2 file
+          # (or a hand-edited corrupt one) would silently fall
+          # through to the "assignment not registered" branch with
+          # a misleading message.
+          schema = manifest.get("schema") if isinstance(manifest, dict) else None
+          if schema != "classroom50/assignments/v1":
+              print(f"::error::{manifest_url}: schema = {schema!r}, want 'classroom50/assignments/v1' — update your gh-teacher CLI and re-publish, or check the file for hand-edits", file=sys.stderr)
+              sys.exit(1)
+
+          entry = next(
+              (e for e in (manifest.get("assignments") or []) if e.get("slug") == assignment),
+              None,
+          )
+          if entry is None:
+              print(f"::error::assignment {assignment!r} not registered in {manifest_url} — ask your instructor to run `gh teacher assignment add {owner} {classroom} {assignment}`", file=sys.stderr)
+              sys.exit(1)
+          # `autograder_name` is a diagnostic hint passed to the
+          # orchestrator; the orchestrator file itself is fixed
+          # at <classroom>/autograders/autograde.py. Defense in
+          # depth: even though gh teacher assignment add validates
+          # the value on the write side, re-validate here because
+          # the manifest could be hand-edited (or served from a
+          # compromised Pages deploy).
+          autograder_name = _safe(entry.get("autograder") or "default", "assignments[].autograder", _SLUG)
+
+          # Fetch the orchestrator (fixed name; one per classroom).
+          autograder_url = f"{base_url}/autograders/autograde.py"
+          try:
+              with _get(autograder_url) as resp:
+                  body = resp.read(MAX_ORCHESTRATOR_BYTES + 1)
+          except urllib.error.HTTPError as exc:
+              print(f"::error::GET {autograder_url}: HTTP {exc.code} — orchestrator not published yet? ask your instructor to confirm <classroom>/autograders/autograde.py exists in the config repo and that publish-pages has run", file=sys.stderr)
+              sys.exit(1)
+          except urllib.error.URLError as exc:
+              print(f"::error::GET {autograder_url}: {exc.reason}", file=sys.stderr)
+              sys.exit(1)
+          if len(body) > MAX_ORCHESTRATOR_BYTES:
+              print(f"::error::GET {autograder_url}: orchestrator exceeds {MAX_ORCHESTRATOR_BYTES} bytes", file=sys.stderr)
+              sys.exit(1)
+
+          dest = "/tmp/classroom50-autograde.py"
+          with open(dest, "wb") as fh:
+              fh.write(body)
+
+          # Hand context to autograde.py via env vars (NOT GitHub
+          # template interpolation) so a teacher-controlled value
+          # can't escape shell quoting.
+          with open(os.environ["GITHUB_ENV"], "a") as fh:
+              fh.write(f"CLASSROOM50_BASE_URL={base_url}\n")
+              fh.write(f"CLASSROOM50_CLASSROOM={classroom}\n")
+              fh.write(f"CLASSROOM50_ASSIGNMENT={assignment}\n")
+              fh.write(f"CLASSROOM50_AUTOGRADER_NAME={autograder_name}\n")
+              fh.write(f"CLASSROOM50_AUTOGRADER_PATH={dest}\n")
+
+      # === Run the autograder ===
+      # Explicit `if: success()` so a bootstrap failure cleanly
+      # skips this step (rather than relying on Actions' implicit
+      # skip-on-prior-failure).
+      - id: autograde
+        if: success()
+        name: Run autograder
+        run: python3 "$CLASSROOM50_AUTOGRADER_PATH"
+
+      # === Post commit status ===
+      # Always runs so a bootstrap/autograde failure still posts an
+      # `error` status the student can see on the commit.
+      - name: Post commit status
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OWNER_REPO: ${{ github.repository }}
+          COMMIT_SHA: ${{ github.sha }}
+          STATUS_STATE: ${{ steps.autograde.outputs.status || 'error' }}
+          STATUS_SUMMARY: ${{ steps.autograde.outputs.summary || 'Autograde did not complete' }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          gh api "repos/${OWNER_REPO}/statuses/${COMMIT_SHA}" \
+            -f "state=${STATUS_STATE}" \
+            -f "context=classroom50/autograde" \
+            -f "description=${STATUS_SUMMARY}" \
+            -f "target_url=${RUN_URL}"
+
+      # === Publish submit-tag release ===
+      # Only publishes when the autograder produced a result.json.
+      # Bootstrap / autograde failures skip this step; the failure
+      # signal lives in the commit status + Actions UI instead.
+      - name: Publish submit-tag release
+        if: success() && steps.autograde.outputs.status != 'error' && startsWith(github.ref, 'refs/tags/submit/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OWNER_REPO: ${{ github.repository }}
+          SUBMISSION_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          upload_release() {
+            if gh release view "${SUBMISSION_TAG}" --repo "${OWNER_REPO}" >/dev/null 2>&1; then
+              gh release edit "${SUBMISSION_TAG}" --repo "${OWNER_REPO}" \
+                --title "Submission ${SUBMISSION_TAG}" \
+                --notes-file release-body.md
+              gh release upload "${SUBMISSION_TAG}" result.json \
+                --repo "${OWNER_REPO}" --clobber
+            else
+              gh release create "${SUBMISSION_TAG}" result.json \
+                --repo "${OWNER_REPO}" \
+                --title "Submission ${SUBMISSION_TAG}" \
+                --notes-file release-body.md
+            fi
+          }
+          for attempt in 1 2 3; do
+            if upload_release; then
+              break
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              echo "::error::gh release upload failed after 3 attempts" >&2
+              exit 1
+            fi
+            sleep $((attempt * 2))
+          done

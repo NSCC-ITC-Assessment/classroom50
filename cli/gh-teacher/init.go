@@ -85,6 +85,9 @@ func initCmd() *cobra.Command {
 			if err := setWorkflowPermissions(client, out, org, configRepoName); err != nil {
 				return err
 			}
+			if err := enableReusableWorkflowAccess(client, out, errOut, org, configRepoName); err != nil {
+				return err
+			}
 
 			printServiceAccountReminder(errOut, confirmSvc)
 			token, err := readCollectToken(cmd)

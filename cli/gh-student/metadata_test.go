@@ -12,7 +12,7 @@ import (
 )
 
 func TestRenderClassroomMetadata_FullShape(t *testing.T) {
-	// `.classroom50.yml` carries four blocks: identity (classroom +
+	// `.classroom50.yaml` carries four blocks: identity (classroom +
 	// assignment), source (template), config (config repo), and
 	// autograde (version sentinel). The round-trip pins the on-disk
 	// shape so a reader branching on schema knows the current keys.
@@ -31,7 +31,8 @@ func TestRenderClassroomMetadata_FullShape(t *testing.T) {
 			Path:   "cs-principles",
 		},
 		Autograde: AutogradeMetadata{
-			Version: "0.2.0",
+			Source:    "autograders/default.yaml",
+			FetchedAt: "2026-06-01T14:30:00Z",
 		},
 	}
 	out, err := renderClassroomMetadata(cfg)
@@ -50,7 +51,8 @@ func TestRenderClassroomMetadata_FullShape(t *testing.T) {
 		`owner: "cs50-fall-2026"`,
 		`repo: "classroom50"`,
 		`path: "cs-principles"`,
-		`version: "0.2.0"`,
+		`source: "autograders/default.yaml"`,
+		`fetched_at: "2026-06-01T14:30:00Z"`,
 	}
 	for _, s := range wantSubs {
 		if !strings.Contains(string(out), s) {

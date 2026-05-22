@@ -14,7 +14,7 @@ Per-classroom writes are atomic via tmp + os.replace. A missing
 release is not an error (student hasn't accepted/submitted yet);
 the per-assignment "X of Y submitted" log shows roster coverage.
 
-Environment (set by `collect-scores.yml`):
+Environment (set by `collect-scores.yaml`):
   CLASSROOM50_COLLECT_TOKEN — fine-grained PAT, Contents: read.
   CLASSROOM_FILTER          — optional single-classroom limit.
   GITHUB_REPOSITORY_OWNER   — org name (auto-set by Actions).
@@ -54,7 +54,7 @@ RESULT_SCHEMA_V1 = "classroom50/result/v1"
 SUBMIT_TAG_PREFIX = "submit/"
 
 # Release asset name written by the autograde library. Cross-binary
-# contract — keep aligned with autograde-library.yml.
+# contract — keep aligned with autograde-library.yaml.
 RESULT_ASSET_NAME = "result.json"
 
 # Hard cap on result.json size. Real payloads sit well under 1 MiB;

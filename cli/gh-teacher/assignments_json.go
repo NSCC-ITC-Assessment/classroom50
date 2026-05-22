@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"strings"
 )
 
 // assignmentModeIndividual is the only mode currently supported.
@@ -14,24 +13,15 @@ import (
 // workflow and `gh student accept` both branch on this field.
 const assignmentModeIndividual = "individual"
 
-// Test-type sentinels mirror the autograde workflow's matrix-step
-// `if:` filters; adding a new value here requires a coordinated
-// workflow update.
-const (
-	testTypeInputOutput = "input_output"
-	testTypeRunCommand  = "run_command"
-)
-
-// allowedComparisonMethods mirrors what
-// `classroom-resources/autograding-io-grader@v1` accepts.
-var allowedComparisonMethods = []string{"included", "exact", "regex"}
-
-// maxAssignmentsBytes caps encoded assignments.json. GitHub's
-// contents API returns `encoding:"none"` past ~1 MiB, which would
-// wedge every future assignment add/remove on the classroom. The
-// 900 KiB ceiling fires *before* the write lands, leaving headroom
-// for git metadata and base64 padding.
-const maxAssignmentsBytes = 900 * 1024
+// largeAssignmentsWarnBytes is the encoded-size threshold above
+// which `gh teacher assignment add` emits a stderr warning. Set
+// generously below GitHub's contents-API behavior change (~1 MiB
+// encoded → `encoding:"none"`, which would wedge every future
+// read/write on the file). Diagnostic only — no hard cap; teachers
+// hitting this should consider splitting the classroom or
+// shrinking per-entry fields before the file actually crosses the
+// API threshold.
+const largeAssignmentsWarnBytes = 700 * 1024
 
 // assignmentsJSON is the typed on-disk shape of assignments.json.
 // Schema sentinel comes first so readers can branch before touching
@@ -44,20 +34,24 @@ type assignmentsJSON struct {
 
 // assignmentEntry is one row in assignments.json. Field order reads
 // top-to-bottom for a teacher inspecting the file: identity →
-// template → schedule/mode → autograder → tests. Mode and Autograder
-// always serialize (no omitempty) so consumers don't have to
-// disambiguate "absent → default" from "explicit default". Tests
-// always serializes so the autograde matrix step can index without
-// nil guards.
+// template → schedule/mode → autograder. Mode and Autograder always
+// serialize (no omitempty) so consumers don't have to disambiguate
+// "absent → default" from "explicit default".
+//
+// No `Tests` field — per-assignment tests live in the config repo at
+// `<classroom>/autograders/tests/<slug>/` as ordinary pytest files
+// and are downloaded at workflow runtime by the autograder
+// orchestrator (`<classroom>/autograders/autograde.py`). See
+// the Autograders wiki page (wiki/Autograders.md) for the full
+// architecture + test-authoring contract.
 type assignmentEntry struct {
-	Slug        string           `json:"slug"`
-	Name        string           `json:"name"`
-	Description string           `json:"description,omitempty"`
-	Template    templateRef      `json:"template"`
-	Due         string           `json:"due,omitempty"`
-	Mode        string           `json:"mode"`
-	Autograder  string           `json:"autograder"`
-	Tests       []assignmentTest `json:"tests"`
+	Slug        string      `json:"slug"`
+	Name        string      `json:"name"`
+	Description string      `json:"description,omitempty"`
+	Template    templateRef `json:"template"`
+	Due         string      `json:"due,omitempty"`
+	Mode        string      `json:"mode"`
+	Autograder  string      `json:"autograder"`
 }
 
 // templateRef is the assignment's starter-code source. Three
@@ -70,24 +64,6 @@ type templateRef struct {
 	Branch string `json:"branch"`
 }
 
-// assignmentTest is one entry in an assignment's `tests` array.
-// JSON tags use the kebab-case names the autograde matrix step
-// indexes against, so the payload round-trips without per-key
-// translation. I/O fields are omitempty so a run_command test
-// doesn't carry empty strings the workflow would filter.
-type assignmentTest struct {
-	TestName         string `json:"test-name"`
-	TestDescription  string `json:"test-description,omitempty"`
-	TestType         string `json:"test-type"`
-	SetupCommand     string `json:"setup-command,omitempty"`
-	Command          string `json:"command"`
-	Input            string `json:"input,omitempty"`
-	ExpectedOutput   string `json:"expected-output,omitempty"`
-	ComparisonMethod string `json:"comparison-method,omitempty"`
-	Timeout          int    `json:"timeout"`
-	MaxScore         int    `json:"max-score"`
-}
-
 // parseAssignments decodes assignments.json with a two-pass scheme:
 // a lenient first pass reads only the schema sentinel so a future v2
 // file surfaces "this CLI handles only v1" instead of
@@ -96,6 +72,14 @@ type assignmentTest struct {
 // Per-entry validation (validateExistingEntry) matches the write-path
 // bar so a hand-edited or web-UI-inserted entry can't re-bless
 // itself on the next CLI write.
+//
+// No hard size cap is enforced — the cap was pulled in the autograder
+// refactor per teacher instruction (with per-assignment `tests`
+// inlined gone, realistic manifests stay tiny). `runAssignmentAdd`
+// in assignment.go emits a stderr warning when the encoded file
+// crosses `largeAssignmentsWarnBytes` so operators get visibility
+// before hitting GitHub's ~1 MiB contents-API behavior change
+// (encoding flips to "none" past that, wedging future reads).
 func parseAssignments(data []byte) (assignmentsJSON, error) {
 	if len(bytes.TrimSpace(data)) == 0 {
 		return assignmentsJSON{}, errors.New("assignments.json is empty")
@@ -121,8 +105,8 @@ func parseAssignments(data []byte) (assignmentsJSON, error) {
 	if err := expectEOF(dec); err != nil {
 		return assignmentsJSON{}, fmt.Errorf("parse assignments.json: %w", err)
 	}
-	// Callers depend on Assignments / Tests marshaling as `[]`, not
-	// `null`. Empty Autograder normalizes to "default" so downstream
+	// Callers depend on Assignments marshaling as `[]`, not `null`.
+	// Empty Autograder normalizes to "default" so downstream
 	// consumers see a uniform shape.
 	if file.Assignments == nil {
 		file.Assignments = []assignmentEntry{}
@@ -131,9 +115,6 @@ func parseAssignments(data []byte) (assignmentsJSON, error) {
 		if err := validateExistingEntry(entry); err != nil {
 			return assignmentsJSON{}, fmt.Errorf("assignments[%d]: %w", i, err)
 		}
-		if file.Assignments[i].Tests == nil {
-			file.Assignments[i].Tests = []assignmentTest{}
-		}
 		if file.Assignments[i].Autograder == "" {
 			file.Assignments[i].Autograder = defaultAutograderName
 		}
@@ -141,13 +122,12 @@ func parseAssignments(data []byte) (assignmentsJSON, error) {
 	return file, nil
 }
 
-// encodeAssignments serializes via encodeJSONPretty (2-space
-// indent, trailing newline) so on-disk diffs stay stable. Normalizes
-// nil → [] for Assignments and per-entry Tests and empty Autograder
-// → defaultAutograderName so the wire shape is uniform. Per-entry
-// validation is the caller's job; only the size cap
-// (maxAssignmentsBytes) fires here. Normalization runs on a local
-// copy so callers never observe silent slice mutation.
+// encodeAssignments serializes via encodeJSONPretty (2-space indent,
+// trailing newline) so on-disk diffs stay stable. Normalizes nil →
+// [] for Assignments and empty Autograder → defaultAutograderName so
+// the wire shape is uniform. Per-entry validation is the caller's
+// job. Normalization runs on a local copy so callers never observe
+// silent slice mutation.
 func encodeAssignments(file assignmentsJSON) ([]byte, error) {
 	out := file
 	if out.Schema == "" {
@@ -162,22 +142,12 @@ func encodeAssignments(file assignmentsJSON) ([]byte, error) {
 		copy(copied, out.Assignments)
 		out.Assignments = copied
 		for i := range out.Assignments {
-			if out.Assignments[i].Tests == nil {
-				out.Assignments[i].Tests = []assignmentTest{}
-			}
 			if out.Assignments[i].Autograder == "" {
 				out.Assignments[i].Autograder = defaultAutograderName
 			}
 		}
 	}
-	data, err := encodeJSONPretty(out)
-	if err != nil {
-		return nil, err
-	}
-	if len(data) > maxAssignmentsBytes {
-		return nil, fmt.Errorf("encoded assignments.json would be %d bytes, exceeding the %d-byte safety ceiling: GitHub's contents API rejects files over ~1 MiB by returning encoding:\"none\", which would wedge every future `gh teacher assignment add/remove` on this classroom — split the classroom or shrink per-test payloads (setup-command, command, input, expected-output) and retry", len(data), maxAssignmentsBytes)
-	}
-	return data, nil
+	return encodeJSONPretty(out)
 }
 
 // upsertAssignment replaces by Slug (case-sensitive; the slug
@@ -239,9 +209,6 @@ func validateAssignmentEntry(entry assignmentEntry) error {
 	if err := validateAutograderName(entry.Autograder); err != nil {
 		return err
 	}
-	if err := validateAssignmentTests(entry.Tests); err != nil {
-		return err
-	}
 	return nil
 }
 
@@ -280,92 +247,13 @@ func validateExistingEntry(entry assignmentEntry) error {
 	if err := validateShortName(entry.Autograder, "autograder"); err != nil {
 		return fmt.Errorf("entry %q: %w", entry.Slug, err)
 	}
-	if err := validateAssignmentTests(entry.Tests); err != nil {
-		return fmt.Errorf("entry %q: %w", entry.Slug, err)
-	}
 	return nil
-}
-
-// validateAssignmentTests checks per-test constraints plus unique
-// test-names. Empty array is valid (an assignment can ship without
-// autograding). Errors cite tests[N] + test-name.
-func validateAssignmentTests(tests []assignmentTest) error {
-	seen := make(map[string]int, len(tests))
-	for i, t := range tests {
-		if err := validateAssignmentTest(i, t); err != nil {
-			return err
-		}
-		if prev, ok := seen[t.TestName]; ok {
-			return fmt.Errorf("tests[%d] (%q): duplicate test-name (also at tests[%d])", i, t.TestName, prev)
-		}
-		seen[t.TestName] = i
-	}
-	return nil
-}
-
-// validateAssignmentTest enforces the autograding-tests schema on
-// one entry. Required: test-name, test-type, command, timeout,
-// max-score. For input_output, comparison-method (if present) must
-// be in the allowed set. For run_command, input / expected-output /
-// comparison-method must be absent — the upstream action silently
-// ignores them, so we hard-fail rather than lose teacher intent.
-func validateAssignmentTest(index int, t assignmentTest) error {
-	label := fmt.Sprintf("tests[%d]", index)
-	if t.TestName != "" {
-		label = fmt.Sprintf("tests[%d] (%q)", index, t.TestName)
-	}
-
-	if t.TestName == "" {
-		return fmt.Errorf("%s: test-name must not be empty", label)
-	}
-	if t.Command == "" {
-		return fmt.Errorf("%s: command must not be empty", label)
-	}
-	if t.Timeout <= 0 {
-		return fmt.Errorf("%s: timeout must be > 0 minutes (got %d)", label, t.Timeout)
-	}
-	if t.MaxScore < 0 {
-		return fmt.Errorf("%s: max-score must be >= 0 (got %d)", label, t.MaxScore)
-	}
-
-	switch t.TestType {
-	case testTypeInputOutput:
-		if t.ComparisonMethod != "" && !stringInSlice(t.ComparisonMethod, allowedComparisonMethods) {
-			return fmt.Errorf("%s: invalid comparison-method %q: must be one of %s",
-				label, t.ComparisonMethod, strings.Join(allowedComparisonMethods, ", "))
-		}
-	case testTypeRunCommand:
-		if t.Input != "" {
-			return fmt.Errorf("%s: input is only valid for test-type %q (got test-type %q)", label, testTypeInputOutput, t.TestType)
-		}
-		if t.ExpectedOutput != "" {
-			return fmt.Errorf("%s: expected-output is only valid for test-type %q (got test-type %q)", label, testTypeInputOutput, t.TestType)
-		}
-		if t.ComparisonMethod != "" {
-			return fmt.Errorf("%s: comparison-method is only valid for test-type %q (got test-type %q)", label, testTypeInputOutput, t.TestType)
-		}
-	case "":
-		return fmt.Errorf("%s: test-type must not be empty (allowed: %s, %s)", label, testTypeInputOutput, testTypeRunCommand)
-	default:
-		return fmt.Errorf("%s: invalid test-type %q (allowed: %s, %s)", label, t.TestType, testTypeInputOutput, testTypeRunCommand)
-	}
-	return nil
-}
-
-func stringInSlice(s string, set []string) bool {
-	for _, v := range set {
-		if v == s {
-			return true
-		}
-	}
-	return false
 }
 
 // expectEOF rejects trailing content after the top-level Decode. A
 // second Decode returning io.EOF confirms exactly one JSON value;
 // anything else (trailing object, stray text, duplicate body) would
-// be silently dropped on re-encode. Shared between parseAssignments
-// and loadTestsFile.
+// be silently dropped on re-encode.
 func expectEOF(dec *json.Decoder) error {
 	var rest json.RawMessage
 	err := dec.Decode(&rest)
