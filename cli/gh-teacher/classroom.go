@@ -39,15 +39,10 @@ func classroomCmd() *cobra.Command {
 		Long: "Manage classrooms within an org's classroom50 config repo.\n\n" +
 			"A classroom is a directory at the root of <org>/classroom50,\n" +
 			"named by its short-name (e.g., cs-principles). Each classroom\n" +
-			"holds four files: classroom.json (metadata), assignments.json\n" +
-			"(assignment manifest), students.csv (roster), and scores.json\n" +
-			"(collected scores). The runner-side bootstrap (runner.py) and\n" +
-			"the org-level default autograder (autograder.py) both live at\n" +
-			"the org level under .github/scripts/ and are shared across all\n" +
-			"classrooms; the student-repo shim is embedded in gh-student.\n" +
-			"Per-assignment autograder overrides (autograder.py + sibling\n" +
-			"fixtures) go under <classroom>/autograders/<slug>/ once the\n" +
-			"classroom is in place.",
+			"holds six files: classroom.json (metadata), assignments.json\n" +
+			"(assignment manifest), students.csv (roster), scores.json\n" +
+			"(collected scores), autograders/default.yaml (shim workflow),\n" +
+			"and autograders/autograde.py (orchestrator).",
 	}
 	cmd.AddCommand(classroomAddCmd())
 	return cmd
@@ -63,8 +58,9 @@ func classroomAddCmd() *cobra.Command {
 		Use:   "add <org> <short-name>",
 		Short: "Add a new classroom directory inside the config repo",
 		Long: "Create the directory <short-name>/ inside <org>/classroom50\n" +
-			"and populate it with a four-file scaffold: classroom.json,\n" +
-			"assignments.json, students.csv, and scores.json.\n\n" +
+			"and populate it with a six-file scaffold: classroom.json,\n" +
+			"assignments.json, students.csv, scores.json,\n" +
+			"autograders/default.yaml, and autograders/autograde.py.\n\n" +
 			"Short-name rules (must match ^[a-z0-9][a-z0-9-]{1,38}$):\n" +
 			"  - 2-39 characters total\n" +
 			"  - lowercase letters, digits, or hyphens\n" +
@@ -109,7 +105,7 @@ func classroomAddCmd() *cobra.Command {
 	return cmd
 }
 
-// addClassroom writes the four-file scaffold in one Tree commit
+// addClassroom writes the six-file scaffold in one Tree commit
 // through commitTree so concurrent writers don't lose each other's
 // work. The existence probe runs inside the build callback so a
 // same-classroom race surfaces as "already exists" rather than
@@ -212,6 +208,24 @@ func classroomScaffold(org, shortName, name, term string) (map[string]string, er
 		shortName + "/assignments.json": string(assignmentsBytes),
 		shortName + "/students.csv":     studentsCSVHeader,
 		shortName + "/scores.json":      string(scoresBytes),
+		// Default autograder workflow shim that students fetch from
+		// Pages on accept/submit. Hand-editable; the CLI never
+		// rewrites it on subsequent classroom commands. Designed to
+		// rarely change — teachers iterate on grading logic in the
+		// orchestrator (below) or in test files, not here.
+		autograderFilePath(shortName, defaultAutograderName): defaultAutograderYAML(org),
+		// Orchestrator the autograde-runner reusable workflow
+		// fetches at runtime. Owns dependency installation, test
+		// discovery, scoring, and result.json emission. One per
+		// classroom — the runner always fetches this fixed
+		// `autograde.py` path regardless of the assignment's
+		// `autograder` field. Per-assignment dispatch happens
+		// inside the file by reading the `CLASSROOM50_ASSIGNMENT`
+		// env var. Teachers wanting a fundamentally different
+		// runner write a custom shim `<name>.yaml` that `uses:` a
+		// different reusable workflow entirely; see the
+		// Autograders wiki page for the multi-step pattern.
+		orchestratorFilePath(shortName): defaultAutogradePyScript(),
 	}, nil
 }
 

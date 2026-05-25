@@ -1,16 +1,12 @@
-"""Loads the embedded autograder scripts for the test suite.
+"""Loads the embedded `autograde.py` for the test suite.
 
-All three scripts live under `cli/gh-teacher/skeleton/dotgithub/scripts/`
-because `gh teacher init` lands them at `.github/scripts/` in each
-org's `classroom50` repo:
-  - runner.py        — runner-side bootstrap (loaded as a module so
-                       its pure helpers are unit-testable)
-  - collect_scores.py — score collector (loaded so cross-binary
-                       constants like RESULT_SCHEMA_V1 can be
-                       compared, not just pinned to literals)
-  - autograder.py    — org-level default entrypoint (NOT imported here;
-                       test_default_autograder.py runs it as a subprocess
-                       because it does its work at module-execution time)
+The orchestrator lives under `cli/gh-teacher/autograders/` because
+`gh teacher classroom add` scaffolds it into each classroom's
+`autograders/` directory in the config repo. Importing via
+`importlib` keeps that embedded path canonical — no second copy to
+keep in sync.
+
+Mirror of `skeleton_tests/conftest.py`.
 """
 
 from __future__ import annotations
@@ -20,19 +16,10 @@ import pathlib
 import sys
 
 _HERE = pathlib.Path(__file__).resolve().parent
-_SCRIPTS_DIR = _HERE.parent / "skeleton" / "dotgithub" / "scripts"
+_SCRIPT = _HERE.parent / "autograders" / "autograde.py"
 
-DEFAULT_AUTOGRADER_PATH = _SCRIPTS_DIR / "autograder.py"
-
-
-def _load_module(name: str, path: pathlib.Path):
-    spec = importlib.util.spec_from_file_location(name, path)
-    assert spec is not None and spec.loader is not None, f"could not load {path}"
-    module = importlib.util.module_from_spec(spec)
-    sys.modules.setdefault(name, module)
-    spec.loader.exec_module(module)
-    return module
-
-
-runner = _load_module("runner", _SCRIPTS_DIR / "runner.py")
-collect_scores = _load_module("collect_scores", _SCRIPTS_DIR / "collect_scores.py")
+_spec = importlib.util.spec_from_file_location("autograde", _SCRIPT)
+assert _spec is not None and _spec.loader is not None, f"could not load {_SCRIPT}"
+autograde = importlib.util.module_from_spec(_spec)
+sys.modules.setdefault("autograde", autograde)
+_spec.loader.exec_module(autograde)

@@ -85,9 +85,8 @@ func ensureConfigRepo(client *api.RESTClient, org string) (repo configRepo, crea
 
 // enablePages turns on Actions-built Pages and sets the site
 // visibility to public — the student CLIs fetch `assignments.json`
-// unauthenticated (plus a non-default `--autograder` shim YAML when
-// one is registered); the runner workflow fetches `assignments.json`,
-// `runner.py`, `autograder.py`, and per-assignment bundles.
+// and autograder YAML shims unauthenticated; the runner workflow
+// fetches `assignments.json`, `autograde.py`, and test tarballs.
 // 409 on create → "already enabled";
 // visibility PUT fires either way so re-runs reconcile a
 // previously-private site. Success lines land on `out`; the

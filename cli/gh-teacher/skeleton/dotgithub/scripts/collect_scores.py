@@ -50,7 +50,7 @@ SCORES_SCHEMA_V1 = "classroom50/scores/v1"
 RESULT_SCHEMA_V1 = "classroom50/result/v1"
 
 # Trigger contract: only `submit/*` tag releases count as
-# submissions (created by autograde-runner.yaml on push to `main`).
+# submissions (mirrors `gh student submit`).
 SUBMIT_TAG_PREFIX = "submit/"
 
 # Release asset name written by the autograde runner. Cross-binary

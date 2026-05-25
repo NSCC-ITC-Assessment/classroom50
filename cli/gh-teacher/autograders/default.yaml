@@ -1,0 +1,34 @@
+# Classroom50 autograder shim.
+#
+# Intentionally minimal — delegates to the reusable autograde-runner
+# workflow in your teacher's config repo
+# ({{ORG}}/classroom50/.github/workflows/autograde-runner.yaml). All
+# the bootstrap, orchestration, status posting, and release
+# publishing logic lives there. Teacher edits to the runner
+# propagate to all student repos on their next submission since
+# `@main` resolves at workflow-call time.
+#
+# Edit this file only when you need to change which reusable
+# workflow is called (e.g., pin a specific tag/SHA, or use a
+# completely different runner). Once edited in the config repo at
+# <classroom>/autograders/<name>.yaml, the new shim propagates to
+# every student repo on their next `gh student submit`.
+
+name: Autograde
+
+on:
+  push:
+    tags: ["submit/*"]
+
+jobs:
+  grade:
+    # `uses:` quoted so the unsubstituted {{ORG}} placeholder
+    # parses as a plain string rather than a YAML flow mapping —
+    # actionlint and any other YAML pre-flight tool can validate
+    # the embed before substitution. After substitution at scaffold
+    # time, the quoted literal is still a valid reusable-workflow
+    # reference.
+    uses: "{{ORG}}/classroom50/.github/workflows/autograde-runner.yaml@main"
+    permissions:
+      contents: write
+      statuses: write
