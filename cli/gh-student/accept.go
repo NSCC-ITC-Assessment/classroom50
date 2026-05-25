@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	_ "embed"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,11 +11,37 @@ import (
 	"net/url"
 	"os/exec"
 	"strings"
-	"time"
 
 	"github.com/cli/go-gh/v2/pkg/api"
 	"github.com/spf13/cobra"
 )
+
+// embeddedShimContent is the universal autograder shim — the same
+// body for every student repo across every classroom and org. The
+// `{{ORG}}` placeholder is substituted at accept time so the
+// reusable-workflow `uses:` line points at the calling org's
+// classroom50 repo.
+//
+// Source-of-truth lives at cli/gh-student/embed/autograde-shim.yaml
+// so it's a real, lintable YAML file rather than a Go string
+// literal.
+//
+//go:embed embed/autograde-shim.yaml
+var embeddedShimContent string
+
+// shimOrgPlaceholder: substituted in embeddedShimContent at accept
+// time so each student repo's shim references the correct org's
+// reusable autograde-runner workflow.
+const shimOrgPlaceholder = "{{ORG}}"
+
+// renderEmbeddedShim returns the embedded shim with the org
+// placeholder substituted. The shim never changes after accept —
+// runtime customization, runner edits, and teacher overrides all
+// flow through the runner workflow + assignments.json on the
+// teacher's side.
+func renderEmbeddedShim(org string) string {
+	return strings.ReplaceAll(embeddedShimContent, shimOrgPlaceholder, org)
+}
 
 func acceptCmd() *cobra.Command {
 	cmd := &cobra.Command{
@@ -22,17 +49,24 @@ func acceptCmd() *cobra.Command {
 		Short: "Accept an assignment from an organization's classroom",
 		Long: "Accept an assignment by creating a private copy of the template\n" +
 			"repo at <org>/<classroom>-<assignment>-<username> (lowercased).\n" +
-			"The template repo (which may live outside <org>), due date, and\n" +
-			"autograding tests are looked up in the published assignments.json\n" +
-			"on the classroom's GitHub Pages site (no token required).\n\n" +
-			"The assignment's autograder workflow is fetched from the same\n" +
-			"Pages site (`<org>.github.io/classroom50/<classroom>/autograders/<name>.yaml`)\n" +
-			"and dropped at `.github/workflows/autograde.yaml` in the new\n" +
-			"repo. Teacher edits to the source workflow propagate on the\n" +
-			"student's next `gh student submit`.\n\n" +
+			"The template repo (which may live outside <org>) is looked up in\n" +
+			"the published assignments.json on the classroom's GitHub Pages\n" +
+			"site (no token required).\n\n" +
+			"The autograder workflow shim is dropped at\n" +
+			"`.github/workflows/autograde.yaml` in the new repo. For the\n" +
+			"default autograder it's the universal shim embedded in this\n" +
+			"CLI; for a non-default `--autograder <name>` (registered via\n" +
+			"`gh teacher assignment add --autograder <name>`) the shim is\n" +
+			"fetched from Pages instead. The shim is intentionally inert —\n" +
+			"it `uses:` the reusable autograde-runner workflow in the\n" +
+			"teacher's config repo, and that workflow fetches the\n" +
+			"runner-side bootstrap and the autograder at workflow runtime.\n" +
+			"Teacher edits to runtime, dependencies, or grading logic\n" +
+			"propagate on the next submission without ever touching the\n" +
+			"student repo.\n\n" +
 			"If the student has a pending org invite it is auto-accepted first.\n" +
 			"After creating the repo, the student is added as a `maintain`\n" +
-			"collaborator, and `.classroom50.yaml` and the fetched autograde\n" +
+			"collaborator, and `.classroom50.yaml` and the autograde\n" +
 			"workflow are written in a single Tree commit. Re-running on an\n" +
 			"already-accepted assignment short-circuits without touching the\n" +
 			"existing repo.",
@@ -175,13 +209,21 @@ func acceptAssignment(cmd *cobra.Command, client *api.RESTClient, out io.Writer,
 			assignment, entry.Template.Owner, entry.Template.Repo, entry.Template.Branch)
 	}
 
-	// 2) Fetch the autograder workflow from Pages *before* creating
-	//    the assignment repo, so a 404 or malformed-YAML failure
-	//    doesn't leave a half-baked repo on the teacher's org.
+	// 2) Resolve the autograder shim *before* creating the
+	//    assignment repo so a non-default-autograder fetch failure
+	//    doesn't leave a half-baked repo on the teacher's org. The
+	//    default autograder uses the embedded shim (no Pages
+	//    fetch); other names fetch from Pages.
 	autograderName := entry.ResolveAutograder()
-	workflow, err := fetchAutograderWorkflow(cmd.Context(), org, classroom, autograderName)
-	if err != nil {
-		return err
+	var shim string
+	if autograderName == defaultAutograderName {
+		shim = renderEmbeddedShim(org)
+	} else {
+		workflow, err := fetchAutograderWorkflow(cmd.Context(), org, classroom, autograderName)
+		if err != nil {
+			return err
+		}
+		shim = workflow.Content
 	}
 
 	// 3) Create the assignment repo. Already-exists → short-circuit
@@ -212,18 +254,8 @@ func acceptAssignment(cmd *cobra.Command, client *api.RESTClient, out io.Writer,
 			Repo:   entry.Template.Repo,
 			Branch: entry.Template.Branch,
 		},
-		Config: ClassroomConfigRef{
-			Owner:  org,
-			Repo:   configRepoName,
-			Branch: configRepoBranch,
-			Path:   classroom,
-		},
-		Autograde: AutogradeMetadata{
-			Source:    "autograders/" + autograderName + ".yaml",
-			FetchedAt: time.Now().UTC().Format(time.RFC3339),
-		},
 	}
-	if err := dropClassroomFiles(client, org, repoName, entry.Template.Branch, cfg, workflow.Content); err != nil {
+	if err := dropClassroomFiles(client, org, repoName, entry.Template.Branch, cfg, shim); err != nil {
 		return err
 	}
 	if verbose {
@@ -309,7 +341,7 @@ type GeneratedRepo struct {
 // assignmentRepoName: canonical lowercased
 // <classroom>-<assignment>-<username> repo name. Cross-binary
 // contract — cli/gh-teacher/download.go rebuilds the prefix by hand
-// (separate go.mod, no shared symbol) and autograde.py::username_from_repo
+// (separate go.mod, no shared symbol) and runner.py::username_from_repo
 // mirrors the same formula. Changing the shape here silently makes
 // `gh teacher download` return zero repos and misidentifies every
 // submission in scores.json.

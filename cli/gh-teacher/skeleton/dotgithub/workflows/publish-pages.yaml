@@ -33,40 +33,53 @@ jobs:
           set -euo pipefail
           mkdir -p _site
           shopt -s nullglob
+          # runner.py (org-level bootstrap) published at the site root
+          # so the autograde-runner workflow can fetch it from
+          #   https://<org>.github.io/classroom50/runner.py
+          # regardless of which classroom triggered the run.
+          if [ -f .github/scripts/runner.py ]; then
+            cp .github/scripts/runner.py _site/runner.py
+          fi
+          # Per-classroom config files. classroom default autograder
+          # (`<classroom>/autograder.py`) is published only when the
+          # classroom has run `gh teacher autograder set-default` —
+          # absence is fine, the runner falls back to a vacuous-pass
+          # result when neither per-assignment nor classroom default
+          # is published.
           for f in */classroom.json */assignments.json; do
             mkdir -p "_site/$(dirname "$f")"
             cp "$f" "_site/$f"
           done
-          # Autograder workflow shims (.yaml) are fetched by gh
-          # student accept on first run and refreshed by gh student
-          # submit thereafter. Orchestrator scripts (.py) are
-          # fetched by the autograde-runner reusable workflow at
-          # workflow runtime on every submission (NOT by the shim
-          # directly — the shim only `uses:` the runner) — that's
-          # where teacher edits to grading logic propagate from.
-          for f in */autograders/*.yaml */autograders/*.py; do
+          for f in */autograder.py; do
+            mkdir -p "_site/$(dirname "$f")"
+            cp "$f" "_site/$f"
+          done
+          # Non-default autograder workflow shims (the rare
+          # swap-the-runner-entirely case).
+          for f in */autograders/*.yaml; do
             mkdir -p "_site/$(dirname "$f")"
             cp "$f" "_site/$f"
           done
 
-      - name: Bundle per-assignment tests
+      - name: Bundle per-assignment autograders
         run: |
           set -euo pipefail
           shopt -s nullglob
-          # Per-assignment pytest directories live at
-          # <classroom>/autograders/tests/<slug>/. Bundle each into
-          # a single <slug>.tar.gz so the autograde workflow fetches
-          # one file at runtime (instead of walking a directory
-          # listing Pages doesn't serve).
-          for testdir in */autograders/tests/*/; do
-            classroom=$(echo "$testdir" | cut -d/ -f1)
-            slug=$(basename "$testdir")
-            outdir="_site/$classroom/autograders/tests"
+          # Per-assignment override directories live at
+          # <classroom>/autograders/<slug>/ (autograder.py + any
+          # ancillary files: fixtures, helpers, framework configs).
+          # Bundle each into <classroom>/autograders/<slug>.tar.gz so
+          # runner.py fetches one tarball at runtime (instead of
+          # walking a directory listing Pages doesn't serve).
+          for slugdir in */autograders/*/; do
+            classroom=$(echo "$slugdir" | cut -d/ -f1)
+            slug=$(basename "$slugdir")
+            outdir="_site/$classroom/autograders"
             mkdir -p "$outdir"
             # `-C parent slug` so the tarball's internal layout is
-            # `<slug>/test_*.py`, matching the runtime extraction
-            # path the orchestrator builds.
-            tar -czf "$outdir/$slug.tar.gz" -C "$(dirname "$testdir")" "$slug"
+            # `<slug>/<files>`, matching the runtime extraction path
+            # runner.py uses to locate the per-assignment entrypoint.
+            tar -czf "$outdir/$slug.tar.gz" -C "$(dirname "$slugdir")" "$slug"
           done
 
       - name: Build classrooms index

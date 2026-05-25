@@ -34,16 +34,18 @@ type assignmentsJSON struct {
 
 // assignmentEntry is one row in assignments.json. Field order reads
 // top-to-bottom for a teacher inspecting the file: identity →
-// template → schedule/mode → autograder. Mode and Autograder always
-// serialize (no omitempty) so consumers don't have to disambiguate
-// "absent → default" from "explicit default".
+// template → schedule/mode → autograder → runtime. Mode and
+// Autograder always serialize (no omitempty) so consumers don't
+// have to disambiguate "absent → default" from "explicit default".
 //
-// No `Tests` field — per-assignment tests live in the config repo at
-// `<classroom>/autograders/tests/<slug>/` as ordinary pytest files
-// and are downloaded at workflow runtime by the autograder
-// orchestrator (`<classroom>/autograders/autograde.py`). See
-// the Autograders wiki page (wiki/Autograders.md) for the full
-// architecture + test-authoring contract.
+// No `Tests` field — per-assignment grading lives in the config
+// repo as an `autograder.py` (entrypoint) under
+// `<classroom>/autograders/<slug>/` plus any sibling fixtures, OR
+// the classroom default at `<classroom>/autograder.py` (used when
+// no per-assignment override exists). The runner-side bootstrap at
+// `.github/scripts/runner.py` downloads the bundle, resolves the
+// entrypoint, and execs it. See the Autograders wiki
+// page (wiki/Autograders.md) for the full contract + templates.
 type assignmentEntry struct {
 	Slug        string      `json:"slug"`
 	Name        string      `json:"name"`
@@ -52,6 +54,7 @@ type assignmentEntry struct {
 	Due         string      `json:"due,omitempty"`
 	Mode        string      `json:"mode"`
 	Autograder  string      `json:"autograder"`
+	Runtime     *runtimeRef `json:"runtime,omitempty"`
 }
 
 // templateRef is the assignment's starter-code source. Three
@@ -62,6 +65,61 @@ type templateRef struct {
 	Owner  string `json:"owner"`
 	Repo   string `json:"repo"`
 	Branch string `json:"branch"`
+}
+
+// runtimeRef captures the runtime environment for an assignment's
+// autograde job. Read by the runner's setup job and dispatched into
+// `runs-on` / `container` / language toolchain / apt steps.
+//
+// Two paths, mutually exclusive:
+//
+//  1. Host runner — set RunsOn (allow-listed against GitHub-hosted
+//     labels) plus optional language fields and Apt packages.
+//  2. Container image — set Container.Image; the image controls the
+//     environment, so Apt is forbidden. Language fields still apply
+//     (setup-X actions run inside the container).
+//
+// All fields optional; an absent runtimeRef means "use defaults"
+// (ubuntu-latest + Python 3.12, no extra packages).
+type runtimeRef struct {
+	RunsOn    string         `json:"runs-on,omitempty"`
+	Container *containerSpec `json:"container,omitempty"`
+	Python    string         `json:"python,omitempty"`
+	Node      string         `json:"node,omitempty"`
+	Java      string         `json:"java,omitempty"`
+	Go        string         `json:"go,omitempty"`
+	Apt       []string       `json:"apt,omitempty"`
+}
+
+// containerSpec maps to GitHub Actions' job-level `container:`
+// keyword. `Credentials.Password` must be a `${{ secrets.NAME }}`
+// reference at write time (raw tokens are rejected so they can't
+// land in git history) — see secretRefPattern in runtime.go.
+//
+// KNOWN LIMITATION: private-image pulls via Credentials are
+// unverified end-to-end. The runtime block flows to the grade job
+// via `container: ${{ fromJSON(...) }}` and GHA does not
+// re-evaluate `${{ }}` expressions inside fromJSON-derived data,
+// so the literal text `${{ secrets.NAME }}` reaches docker login
+// as the password. See validateContainerCredentials in runtime.go
+// for the full note. Public images (no Credentials) work as
+// designed.
+//
+// `User` is an internal field translated to `container.options:
+// --user <value>` at runtime — Actions doesn't accept
+// `container.user` directly, but a non-root container (cs50/cli,
+// most maintained images) hits EACCES when `actions/checkout`
+// writes to the runner's temp dir under `/__w/_temp/`. Setting
+// `user: root` (or `user: 0`) is the standard workaround.
+type containerSpec struct {
+	Image       string          `json:"image"`
+	Credentials *containerCreds `json:"credentials,omitempty"`
+	User        string          `json:"user,omitempty"`
+}
+
+type containerCreds struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
 }
 
 // parseAssignments decodes assignments.json with a two-pass scheme:
@@ -209,6 +267,11 @@ func validateAssignmentEntry(entry assignmentEntry) error {
 	if err := validateAutograderName(entry.Autograder); err != nil {
 		return err
 	}
+	if entry.Runtime != nil {
+		if err := validateRuntime(*entry.Runtime); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -246,6 +309,11 @@ func validateExistingEntry(entry assignmentEntry) error {
 	}
 	if err := validateShortName(entry.Autograder, "autograder"); err != nil {
 		return fmt.Errorf("entry %q: %w", entry.Slug, err)
+	}
+	if entry.Runtime != nil {
+		if err := validateRuntime(*entry.Runtime); err != nil {
+			return fmt.Errorf("entry %q: %w", entry.Slug, err)
+		}
 	}
 	return nil
 }

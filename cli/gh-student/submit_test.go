@@ -3,36 +3,7 @@ package main
 import (
 	"strings"
 	"testing"
-	"time"
 )
-
-func TestBuildSubmitTagName_UTCAndHyphenated(t *testing.T) {
-	// Canonical shape: `submit/2026-06-01T14-32-05Z`. Hyphens (not
-	// colons) so the tag survives any tooling that treats `:` as
-	// reserved in refs.
-	in := time.Date(2026, 6, 1, 14, 32, 5, 0, time.UTC)
-	got := buildSubmitTagName(in)
-	want := "submit/2026-06-01T14-32-05Z"
-	if got != want {
-		t.Errorf("buildSubmitTagName(%v) = %q, want %q", in, got, want)
-	}
-}
-
-func TestBuildSubmitTagName_NormalizesToUTC(t *testing.T) {
-	// A submit from a non-UTC zone (say, the student in EDT) still
-	// produces a UTC-normalized tag so a teacher reviewing
-	// submissions across timezones sees a stable order.
-	loc, err := time.LoadLocation("America/New_York")
-	if err != nil {
-		t.Skipf("time zone DB unavailable: %v", err)
-	}
-	in := time.Date(2026, 6, 1, 10, 32, 5, 0, loc) // 10:32 EDT == 14:32 UTC
-	got := buildSubmitTagName(in)
-	want := "submit/2026-06-01T14-32-05Z"
-	if got != want {
-		t.Errorf("buildSubmitTagName(%v) = %q, want %q", in, got, want)
-	}
-}
 
 func TestParseGitHubRemote(t *testing.T) {
 	cases := []struct {
@@ -93,43 +64,80 @@ func TestParseGitHubRemote_ErrorMentionsShape(t *testing.T) {
 	}
 }
 
-func TestResolveSubmitOwner(t *testing.T) {
-	// Preference order: config.owner > remote fallback > error
-	// pointing at `gh student accept` to refresh metadata.
-	cases := []struct {
-		name          string
-		configOwner   string
-		fallbackOwner string
-		wantOwner     string
-		wantErrPart   string // empty → expect success
-	}{
-		{"config.owner set", "cs50-fall-2026", "", "cs50-fall-2026", ""},
-		{"both populated prefers config.owner", "cs50-fall-2026", "elsewhere", "cs50-fall-2026", ""},
-		{"missing config block falls back to remote", "", "cs50-fall-2026", "cs50-fall-2026", ""},
-		{"both empty surfaces the re-accept guidance", "", "", "", "gh student accept"},
+func TestRenderEmbeddedShim(t *testing.T) {
+	// The embedded shim is the universal one-body-fits-all that
+	// gh student accept drops into every student repo. {{ORG}} is
+	// the only piece of per-classroom customization; everything
+	// else is fixed.
+	got := renderEmbeddedShim("cs50-fall-2026")
+
+	// Trigger contract: branch pushes auto-grade; manual submit/*
+	// tag pushes still work (the runner detects which trigger
+	// fired and either creates the tag or reuses it).
+	for _, want := range []string{
+		"branches: [main]",
+		`tags: ["submit/*"]`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("embedded shim missing trigger %q\nfull:\n%s", want, got)
+		}
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			cfg := &ClassroomConfig{
-				Classroom:  "cs-principles",
-				Assignment: "hello",
+
+	// Org-substituted reusable-workflow `uses:` line. Quoted in
+	// the embed so the unsubstituted placeholder doesn't trip
+	// YAML's flow-mapping parser; the quotes survive substitution
+	// and remain valid in Actions `uses:`.
+	wantUses := `uses: "cs50-fall-2026/classroom50/.github/workflows/autograde-runner.yaml@main"`
+	if !strings.Contains(got, wantUses) {
+		t.Errorf("embedded shim missing %q\nfull:\n%s", wantUses, got)
+	}
+
+	// Placeholder must be fully substituted.
+	if strings.Contains(got, "{{ORG}}") {
+		t.Errorf("embedded shim still contains unsubstituted {{ORG}}:\n%s", got)
+	}
+
+	// Caller's job-level permissions must include both writes the
+	// runner downstream-steps need.
+	for _, perm := range []string{"contents: write", "statuses: write"} {
+		if !strings.Contains(got, perm) {
+			t.Errorf("embedded shim missing required permission %q\nfull:\n%s", perm, got)
+		}
+	}
+
+	// Shim must NOT contain any of the bootstrap / status / release
+	// logic — those live in autograde-runner.yaml. A regression that
+	// re-inlines them would put substantive logic in every student's
+	// repo, which is what this whole architecture exists to avoid.
+	for _, mustNotContain := range []string{
+		"PAGES_BASE_URL",
+		"shell: python3",
+		"Post commit status",
+		"Publish release",
+		"gh release",
+		"actions/checkout",
+	} {
+		if strings.Contains(got, mustNotContain) {
+			t.Errorf("embedded shim should NOT contain %q (lives in the runner, not the shim):\n%s",
+				mustNotContain, got)
+		}
+	}
+}
+
+func TestRenderEmbeddedShim_OrgSubstitution(t *testing.T) {
+	// `{{ORG}}` substitution is the only piece of per-classroom
+	// customization in the shim — exercise across hyphenated and
+	// plain shapes to confirm ReplaceAll isn't matching anything
+	// else.
+	for _, org := range []string{"cs50-fall-2026", "foundation50", "very-long-org-name-2026"} {
+		t.Run(org, func(t *testing.T) {
+			got := renderEmbeddedShim(org)
+			wantUses := `uses: "` + org + `/classroom50/.github/workflows/autograde-runner.yaml@main"`
+			if !strings.Contains(got, wantUses) {
+				t.Errorf("expected %q in shim, got:\n%s", wantUses, got)
 			}
-			cfg.Config.Owner = tc.configOwner
-			got, err := resolveSubmitOwner(cfg, tc.fallbackOwner)
-			if tc.wantErrPart != "" {
-				if err == nil {
-					t.Fatalf("expected error containing %q, got nil", tc.wantErrPart)
-				}
-				if !strings.Contains(err.Error(), tc.wantErrPart) {
-					t.Fatalf("err = %q, want substring %q", err.Error(), tc.wantErrPart)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("resolveSubmitOwner: %v", err)
-			}
-			if got != tc.wantOwner {
-				t.Errorf("resolveSubmitOwner = %q, want %q", got, tc.wantOwner)
+			if strings.Contains(got, "{{ORG}}") {
+				t.Errorf("placeholder leak for %q:\n%s", org, got)
 			}
 		})
 	}

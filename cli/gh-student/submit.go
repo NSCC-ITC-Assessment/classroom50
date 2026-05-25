@@ -13,7 +13,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/cli/go-gh/v2/pkg/api"
 	"github.com/spf13/cobra"
@@ -24,21 +23,23 @@ func submitCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "submit",
 		Short: "Submit the current assignment to its remote",
-		Long: "Snapshot the current branch and push it as a new commit on top of\n" +
-			"the assignment repo's `main` branch, then push a lightweight\n" +
-			"`submit/<UTC-timestamp>` tag at the same SHA. The autograde\n" +
-			"workflow listens for that tag and publishes a GitHub Release\n" +
-			"with `result.json` attached and a scored body shortly after.\n\n" +
+		Long: "Snapshot the current branch and push it as a new commit on top\n" +
+			"of the assignment repo's `main` branch. The autograde workflow\n" +
+			"in the student repo listens for pushes to main and (a) creates\n" +
+			"its own `submit/<UTC-timestamp>-<short-sha>` tag at the pushed\n" +
+			"commit and (b) publishes a scored Release at that tag a minute\n" +
+			"or two later.\n\n" +
 			"Before snapshotting, the latest instructor `.gitignore` and\n" +
-			"`.github/` (both optional) are fetched from the template recorded\n" +
-			"in `.classroom50.yaml`. Then the autograder workflow shim is\n" +
-			"re-fetched from the teacher's Pages site\n" +
-			"(`<org>.github.io/classroom50/<classroom>/autograders/<name>.yaml`)\n" +
-			"and overwrites `.github/workflows/autograde.yaml`. The shim is\n" +
-			"intentionally minimal — it fetches the actual orchestrator from\n" +
-			"the config repo at workflow runtime — so teacher edits to the\n" +
-			"orchestrator or per-assignment tests propagate without ever\n" +
-			"touching student repos.",
+			"`.github/` (both optional) are fetched from the template repo\n" +
+			"recorded in `.classroom50.yaml` so any teacher-side updates\n" +
+			"flow through. The autograder workflow shim itself is set\n" +
+			"once at accept time and never refreshed — runtime, dependency,\n" +
+			"and grading-logic changes propagate via the runner workflow\n" +
+			"and assignments.json on the teacher's side, both fetched\n" +
+			"fresh by the runner on every submission.\n\n" +
+			"Functionally equivalent to `git commit -am 'Submit' && git push`,\n" +
+			"with the template `.gitignore`/`.github/` refresh as the only\n" +
+			"delta.",
 		Example: "  gh student submit",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cmd.SilenceUsage = true
@@ -58,7 +59,7 @@ func submitCmd() *cobra.Command {
 	return cmd
 }
 
-func submitAssignment(ctx context.Context, client *api.RESTClient, out io.Writer, errOut io.Writer) error {
+func submitAssignment(_ context.Context, client *api.RESTClient, out io.Writer, errOut io.Writer) error {
 	const (
 		remote = "origin"
 		branch = "main"
@@ -93,7 +94,7 @@ func submitAssignment(ctx context.Context, client *api.RESTClient, out io.Writer
 
 	repoOwner, repoName, err := parseGitHubRemote(remoteURL)
 	if err != nil {
-		return fmt.Errorf("the submit-tag URL needs the GitHub owner/repo: %w", err)
+		return fmt.Errorf("parse remote URL: %w", err)
 	}
 	repoHTMLURL := fmt.Sprintf("https://github.com/%s/%s", repoOwner, repoName)
 
@@ -141,38 +142,11 @@ func submitAssignment(ctx context.Context, client *api.RESTClient, out io.Writer
 		}
 	}
 
-	// Re-fetch the autograder on every submit so teacher-side edits
-	// (to the workflow body or the autograder reference in
-	// assignments.json) propagate without per-repo maintenance.
-	// `repoOwner` from the remote is a fallback when
-	// `.classroom50.yaml` is missing the `config:` block.
-	autograderName, workflow, err := refetchAutograderWorkflow(ctx, config, repoOwner)
-	if err != nil {
-		return err
-	}
-
-	// Drop the fetched workflow over any stale autograde.yaml that
-	// the template's .github/ fetch may have brought along.
-	if err := writeAutogradeWorkflow(workTree, workflow.Content); err != nil {
-		return err
-	}
-
-	// Re-render .classroom50.yaml so autograde source/fetched_at
-	// track the just-fetched workflow shim; classroom/assignment/
-	// source/config round-trip untouched.
-	config.Autograde = AutogradeMetadata{
-		Source:    "autograders/" + autograderName + ".yaml",
-		FetchedAt: time.Now().UTC().Format(time.RFC3339),
-	}
-	if err := refreshClassroomMetadata(workTree, *config); err != nil {
-		return err
-	}
-
 	if verbose {
 		_, _ = fmt.Fprintf(out, "Pushing submission to %s %s\n", remote, branch)
 	}
 
-	commitSHA, err := commitWorkTreeOnRemoteBranch(
+	if _, err := commitWorkTreeOnRemoteBranch(
 		gitDir,
 		workTree,
 		remoteURL,
@@ -181,25 +155,13 @@ func submitAssignment(ctx context.Context, client *api.RESTClient, out io.Writer
 		identity,
 		out,
 		errOut,
-	)
-	if err != nil {
-		return err
-	}
-
-	// Push a lightweight submit tag at the same SHA. The autograde
-	// workflow triggers on `tags: ["submit/*"]`, so each submission
-	// gets its own immutable history entry and Release. Tag *after*
-	// the push so the workflow can resolve the tagged commit.
-	tagName := buildSubmitTagName(time.Now().UTC())
-	if err := pushSubmitTag(gitDir, tagName, commitSHA, out, errOut); err != nil {
+	); err != nil {
 		return err
 	}
 
 	_, _ = fmt.Fprintf(out, "Submitted %s to %s\n", config.Assignment, remoteURL)
-	_, _ = fmt.Fprintf(out, "Submit tag:  %s\n", repoHTMLURL+"/tree/"+url.PathEscape(tagName))
-	_, _ = fmt.Fprintf(out, "Autograde:   %s/actions\n", repoHTMLURL)
-	_, _ = fmt.Fprintf(out, "Release:     %s — published when the autograde workflow finishes\n",
-		repoHTMLURL+"/releases/tag/"+url.PathEscape(tagName))
+	_, _ = fmt.Fprintf(out, "Autograde:   %s/actions — the runner tags this commit and publishes the scored release\n", repoHTMLURL)
+	_, _ = fmt.Fprintf(out, "Releases:    %s/releases\n", repoHTMLURL)
 
 	return nil
 }
@@ -309,107 +271,6 @@ func fetchRepoPath(
 	}
 }
 
-// refetchAutograderWorkflow re-reads the assignment entry from
-// Pages (so a teacher's autograder-reference change propagates
-// without re-accept) and fetches the referenced workflow body. The
-// assignments.json fetch pins the ref *right now*; the workflow
-// fetch pins the body at the same moment.
-//
-// Owner preference: config.Config.Owner first; fall back to the org
-// parsed from the git remote when the config block is absent.
-func refetchAutograderWorkflow(ctx context.Context, config *ClassroomConfig, fallbackOwner string) (string, AutogradeWorkflow, error) {
-	owner, err := resolveSubmitOwner(config, fallbackOwner)
-	if err != nil {
-		return "", AutogradeWorkflow{}, err
-	}
-	// Each fetch carries its own pagesFetchTimeout via the per-call
-	// http.Client. ctx is the cobra command context so Ctrl-C
-	// cancels the fetch instead of waiting out the HTTP timeout.
-
-	entry, err := fetchAssignmentEntry(ctx, owner, config.Classroom, config.Assignment)
-	if err != nil {
-		return "", AutogradeWorkflow{}, fmt.Errorf("look up assignment for submit: %w", err)
-	}
-	name := entry.ResolveAutograder()
-	workflow, err := fetchAutograderWorkflow(ctx, owner, config.Classroom, name)
-	if err != nil {
-		return "", AutogradeWorkflow{}, fmt.Errorf("refresh autograde workflow for submit: %w", err)
-	}
-	return name, workflow, nil
-}
-
-// resolveSubmitOwner picks the org to fetch the assignment manifest
-// from: config.Config.Owner first, else the org parsed from the git
-// remote. Returns an error when both are empty — submit can't
-// repair a hand-mangled `.classroom50.yaml` or a remoteless clone.
-func resolveSubmitOwner(config *ClassroomConfig, fallbackOwner string) (string, error) {
-	if config.Config.Owner != "" {
-		return config.Config.Owner, nil
-	}
-	if fallbackOwner != "" {
-		return fallbackOwner, nil
-	}
-	return "", fmt.Errorf("%s is missing config.owner and the remote URL didn't resolve to a GitHub org — re-run `gh student accept <org> %s %s` to refresh metadata before submitting",
-		ClassroomMetadataPath, config.Classroom, config.Assignment)
-}
-
-// writeAutogradeWorkflow drops `content` at the canonical in-repo
-// path, overwriting any stale copy from a template fetch. Symmetric
-// to accept's Tree commit; submit lays the file on disk and lets
-// commit-then-push pick it up.
-func writeAutogradeWorkflow(workTree, content string) error {
-	dst := filepath.Join(workTree, filepath.FromSlash(autogradeWorkflowPath))
-	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-		return fmt.Errorf("create parent dir for %s: %w", dst, err)
-	}
-	if err := os.WriteFile(dst, []byte(content), 0o644); err != nil {
-		return fmt.Errorf("write %s: %w", dst, err)
-	}
-	return nil
-}
-
-// refreshClassroomMetadata re-renders .classroom50.yaml from the
-// parsed config so cfg.Autograde tracks the latest Pages fetch. The
-// file is CLI-managed (students are told not to hand-edit) so a
-// blind re-render is safe.
-func refreshClassroomMetadata(workTree string, cfg ClassroomConfig) error {
-	yamlBytes, err := renderClassroomMetadata(cfg)
-	if err != nil {
-		return err
-	}
-	dst := filepath.Join(workTree, ClassroomMetadataPath)
-	if err := os.WriteFile(dst, yamlBytes, 0o644); err != nil {
-		return fmt.Errorf("write %s: %w", dst, err)
-	}
-	return nil
-}
-
-// buildSubmitTagName: `submit/<UTC-timestamp>`. Uses hyphens for
-// hour/minute/second so the tag round-trips through environments
-// that treat `:` as reserved. Example: `submit/2026-06-01T14-32-05Z`.
-func buildSubmitTagName(t time.Time) string {
-	utc := t.UTC()
-	return fmt.Sprintf("submit/%04d-%02d-%02dT%02d-%02d-%02dZ",
-		utc.Year(), utc.Month(), utc.Day(),
-		utc.Hour(), utc.Minute(), utc.Second())
-}
-
-// pushSubmitTag creates and pushes a lightweight tag at `commitSHA`.
-// Must run after the main-branch push so the workflow can resolve
-// the tagged commit.
-func pushSubmitTag(gitDir, tagName, commitSHA string, out, errOut io.Writer) error {
-	tag := func(args ...string) error {
-		return runGitWithDirAndTree(gitDir, "", out, errOut, args...)
-	}
-	if err := tag("tag", tagName, commitSHA); err != nil {
-		return fmt.Errorf("create submit tag: %w", err)
-	}
-	if err := tag("push", "origin", "refs/tags/"+tagName); err != nil {
-		return fmt.Errorf("push submit tag: %w", err)
-	}
-	return nil
-}
-
 // parseGitHubRemote: extract (owner, repo) from a GitHub remote
 // URL. Accepts SSH (`git@github.com:owner/repo[.git]`), HTTPS
 // (`https://github.com/owner/repo[.git]`), and
@@ -448,7 +309,8 @@ func splitOwnerRepo(s string) (owner, repo string) {
 
 // commitWorkTreeOnRemoteBranch clones origin into a temporary bare
 // repo, stages workTree onto `branch`, commits with `identity`, and
-// pushes. Returns the new commit SHA so the caller can tag it.
+// pushes. Returns the new commit SHA (informational; the runner
+// workflow does the auto-tagging on its end).
 func commitWorkTreeOnRemoteBranch(gitDir string, workTree string, remoteURL string, branch string, message string, identity gitIdentity, out io.Writer, errOut io.Writer) (string, error) {
 	if err := runCmd(out, errOut, "", "git", "clone", "--bare", remoteURL, gitDir); err != nil {
 		return "", fmt.Errorf("clone remote history: %w", err)
@@ -482,7 +344,8 @@ func commitWorkTreeOnRemoteBranch(gitDir string, workTree string, remoteURL stri
 		return "", fmt.Errorf("push submission: %w", err)
 	}
 
-	// Capture the SHA the submit tag will point at.
+	// Resolve HEAD post-push so callers can log the SHA the runner
+	// workflow will tag.
 	sha, err := gitOutputWithGitDir(gitDir, "rev-parse", "HEAD")
 	if err != nil {
 		return "", fmt.Errorf("resolve submission SHA: %w", err)

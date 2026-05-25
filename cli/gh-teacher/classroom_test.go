@@ -89,8 +89,6 @@ func TestClassroomScaffold(t *testing.T) {
 		"cs-principles/assignments.json",
 		"cs-principles/students.csv",
 		"cs-principles/scores.json",
-		"cs-principles/autograders/default.yaml",
-		"cs-principles/autograders/autograde.py",
 	}
 	if got, want := len(files), len(wantPaths); got != want {
 		t.Fatalf("len(files) = %d, want %d (files=%v)", got, want, files)
@@ -101,41 +99,22 @@ func TestClassroomScaffold(t *testing.T) {
 		}
 	}
 
-	// Default autograder shim is the contract `assignment add
-	// --autograder default` resolves to and `gh student accept`
-	// fetches from Pages. Pin the public pieces so a refactor can't
-	// silently break the scaffold → Pages → student chain. The full
-	// shape contract lives in autograder_test.go's
-	// TestDefaultAutograderYAML — here we just confirm the scaffold
-	// pulls the right embed.
-	autograder := files["cs-principles/autograders/default.yaml"]
-	if !strings.Contains(autograder, `tags: ["submit/*"]`) {
-		t.Errorf("default autograder missing submit-tag trigger, got:\n%s", autograder)
-	}
-	if strings.Contains(autograder, "uses: foundation50/classroom50/") {
-		t.Errorf("default autograder still references the deleted reusable library, got:\n%s", autograder)
-	}
-	// Org placeholder must be substituted at scaffold time — a leaked
-	// {{ORG}} would 404 the `uses:` lookup at workflow-call time.
-	// `uses:` value is quoted in the embed (see autograder.go) so
-	// the unsubstituted placeholder doesn't trip YAML parsing.
-	wantUses := `uses: "cs50-fall-2026/classroom50/.github/workflows/autograde-runner.yaml@main"`
-	if !strings.Contains(autograder, wantUses) {
-		t.Errorf("default autograder shim missing %q after scaffold, got:\n%s", wantUses, autograder)
-	}
-	if strings.Contains(autograder, "{{ORG}}") {
-		t.Errorf("default autograder shim still contains {{ORG}} placeholder, got:\n%s", autograder)
-	}
-
-	// Orchestrator scaffolded alongside the shim. Same rationale —
-	// detailed shape contract lives in autograder_test.go's
-	// TestDefaultAutogradePyScript.
-	orchestrator := files["cs-principles/autograders/autograde.py"]
-	if !strings.Contains(orchestrator, `"classroom50/result/v1"`) {
-		t.Errorf("default autograde.py missing result schema sentinel")
-	}
-	if !strings.Contains(orchestrator, `if __name__ == "__main__":`) {
-		t.Errorf("default autograde.py missing __main__ entry point")
+	// `classroom add` is intentionally lean. No per-classroom
+	// default.yaml shim or runner.py (those live in gh-student's
+	// embed and `.github/scripts/` respectively). And no
+	// `<classroom>/autograder.py` either — the classroom default
+	// is opt-in via `gh teacher autograder set-default`. Scaffolding
+	// it would silently re-introduce a "default exists everywhere"
+	// architecture that masks "no autograder configured" errors.
+	for _, mustNotContain := range []string{
+		"cs-principles/autograders/default.yaml",
+		"cs-principles/autograders/runner.py",
+		"cs-principles/autograders/autograder.py",
+		"cs-principles/autograder.py",
+	} {
+		if _, ok := files[mustNotContain]; ok {
+			t.Errorf("classroom scaffold must not include %q", mustNotContain)
+		}
 	}
 
 	var classroom classroomJSON

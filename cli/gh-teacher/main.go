@@ -33,6 +33,7 @@ func main() {
 	root.AddCommand(classroomCmd())
 	root.AddCommand(rosterCmd())
 	root.AddCommand(assignmentCmd())
+	root.AddCommand(autograderCmd())
 	root.AddCommand(inviteCmd())
 	root.AddCommand(removeCmd())
 	root.AddCommand(downloadCmd())

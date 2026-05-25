@@ -1,9 +1,9 @@
 """Loads the embedded `collect_scores.py` for the test suite.
 
 The script lives under `cli/gh-teacher/skeleton/dotgithub/scripts/`
-because `gh teacher init` embeds it into each org's `classroom50`
-repo. Importing via `importlib` keeps that embedded path canonical
-— no second copy to keep in sync.
+because `gh teacher init` embeds it at `.github/scripts/collect_scores.py`
+in each org's `classroom50` repo. Importing via `importlib` keeps
+that embedded path canonical — no second copy to keep in sync.
 """
 
 from __future__ import annotations

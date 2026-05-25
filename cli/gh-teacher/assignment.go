@@ -30,9 +30,10 @@ func assignmentCmd() *cobra.Command {
 			"template ref pointing at the starter-code repo, and the autograder\n" +
 			"name that picks which shim YAML (`<classroom>/autograders/<name>.yaml`)\n" +
 			"— and thus which reusable runner — handles submissions for this\n" +
-			"assignment. Per-assignment tests live separately in the config\n" +
-			"repo at `<classroom>/autograders/tests/<slug>/` as ordinary pytest\n" +
-			"files (see the Autograders wiki page).",
+			"assignment. Per-assignment grading lives separately at\n" +
+			"`<classroom>/autograders/<slug>/autograder.py` (entrypoint),\n" +
+			"with optional sibling fixtures alongside (see the Autograders\n" +
+			"wiki page).",
 	}
 	cmd.AddCommand(assignmentAddCmd())
 	cmd.AddCommand(assignmentRemoveCmd())
@@ -50,6 +51,7 @@ func assignmentAddCmd() *cobra.Command {
 		due         string
 		mode        string
 		autograder  string
+		runtimeFile string
 	)
 
 	cmd := &cobra.Command{
@@ -68,31 +70,39 @@ func assignmentAddCmd() *cobra.Command {
 			"used. The template repo must be marked `is_template: true` (set\n" +
 			"in Settings → \"Template repository\"); if your account can't see\n" +
 			"the repo, the CLI returns the cross-org visibility message.\n\n" +
-			"--autograder selects which workflow shim students fetch on accept\n" +
-			"and refresh on every submit; the name resolves to\n" +
-			"<classroom>/autograders/<name>.yaml in the config repo. The default\n" +
-			"is `default` (scaffolded by `gh teacher classroom add`). The\n" +
-			"referenced file must exist at write time — a typo'd name is\n" +
-			"rejected before the assignment lands.\n\n" +
-			"The shim itself is a thin `uses:` reference to a reusable runner\n" +
-			"workflow. Most teachers won't need to vary --autograder — branching\n" +
-			"on the assignment slug inside autograde.py covers per-assignment\n" +
-			"grading-logic differences. Reach for --autograder only when an\n" +
-			"assignment needs a different *runtime environment* (e.g., a C\n" +
-			"assignment needs gcc + make, the others don't); that requires a\n" +
-			"sibling runner workflow plus a sibling shim that `uses:` it. The\n" +
-			"Autograders wiki page walks through all four steps.\n\n" +
-			"Per-assignment tests are NOT registered here — they live as\n" +
-			"ordinary pytest files in the config repo at\n" +
-			"<classroom>/autograders/tests/<slug>/ and are downloaded at\n" +
-			"workflow runtime by the orchestrator. See the Autograders wiki\n" +
-			"page for the test-authoring workflow and the @pytest.mark.score\n" +
-			"convention for per-test weighting.",
+			"--runtime points at a JSON file describing the runtime\n" +
+			"environment for this assignment's autograde job: which\n" +
+			"GitHub-hosted runner label, optional language toolchains\n" +
+			"(python/node/java/go), optional apt packages, or a custom\n" +
+			"container image. Pass `-` to read the JSON from stdin\n" +
+			"instead of a file (one-shot agent flows).\n" +
+			"Omit for the defaults (ubuntu-latest + Python 3.12).\n" +
+			"See the Autograders wiki page for the JSON schema and\n" +
+			"worked examples.\n\n" +
+			"--autograder is reserved for the rare case where you need to\n" +
+			"call a *different reusable workflow* entirely (not just\n" +
+			"different language toolchains — for that, use --runtime). The\n" +
+			"name resolves to <classroom>/autograders/<name>.yaml; the\n" +
+			"referenced file must exist at write time. The default is\n" +
+			"`default`, which uses the universal shim embedded in\n" +
+			"gh-student — that shim `uses:` the autograde-runner workflow\n" +
+			"in the config repo.\n\n" +
+			"Per-assignment grading is NOT registered here — drop an\n" +
+			"autograder.py (entrypoint) plus any sibling fixtures at\n" +
+			"<classroom>/autograders/<slug>/ in the config repo, OR run\n" +
+			"`gh teacher autograder set-default <org> <classroom>` to\n" +
+			"install a classroom default at <classroom>/autograder.py\n" +
+			"that grades every assignment in the classroom. See the\n" +
+			"Autograders wiki page for the result.json contract and\n" +
+			"templates (pytest, check50, custom).",
 		Example: "  gh teacher assignment add cs50-fall-2026 cs-principles hello \\\n" +
 			"      --name \"Hello\" --template cs50/hello-template \\\n" +
 			"      --due 2026-09-15T23:59:00-04:00\n" +
 			"  gh teacher assignment add cs50-fall-2026 cs-principles intro \\\n" +
-			"      --name \"Intro\" --template cs50/intro-template@main",
+			"      --name \"Intro\" --template cs50/intro-template@main\n" +
+			"  gh teacher assignment add cs50-fall-2026 cs-principles greet \\\n" +
+			"      --name \"Greet\" --template cs50/greet-template \\\n" +
+			"      --runtime ./runtime-c.json",
 		Args: cobra.ExactArgs(3),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cmd.SilenceUsage = true
@@ -139,6 +149,10 @@ func assignmentAddCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			runtime, err := parseRuntimeFile(strings.TrimSpace(runtimeFile))
+			if err != nil {
+				return err
+			}
 
 			client, err := requireAuthClient(cmd)
 			if err != nil {
@@ -146,7 +160,7 @@ func assignmentAddCmd() *cobra.Command {
 			}
 			return runAssignmentAdd(client, cmd.OutOrStdout(), cmd.ErrOrStderr(),
 				org, classroom, slug, nameVal, strings.TrimSpace(description),
-				tmplArg, dueVal, modeVal, autograderVal)
+				tmplArg, dueVal, modeVal, autograderVal, runtime)
 		},
 	}
 
@@ -156,6 +170,7 @@ func assignmentAddCmd() *cobra.Command {
 	cmd.Flags().StringVar(&due, "due", "", "Optional ISO-8601 due date (e.g. 2026-09-15T23:59:00-04:00)")
 	cmd.Flags().StringVar(&mode, "mode", assignmentModeIndividual, "Assignment mode: only `individual` is supported (group assignments are planned for a future release)")
 	cmd.Flags().StringVar(&autograder, "autograder", defaultAutograderName, "Autograder workflow shim this assignment opts into; resolves to <classroom>/autograders/<name>.yaml in the config repo")
+	cmd.Flags().StringVar(&runtimeFile, "runtime", "", "Path to a JSON file describing the runtime environment (runs-on, python/node/java/go versions, apt packages, or container image), or `-` to read from stdin. Omit for ubuntu-latest + Python 3.12.")
 	return cmd
 }
 
@@ -327,7 +342,7 @@ func assignmentsFilePath(classroom string) string {
 // delete of the referenced autograder loses cleanly on retry rather
 // than landing a dangling reference. Same-slug races are
 // last-writer-wins; both commits stay in history for `git revert`.
-func runAssignmentAdd(client *api.RESTClient, out, errOut io.Writer, org, classroom, slug, name, description string, tmpl templateArg, due, mode, autograder string) error {
+func runAssignmentAdd(client *api.RESTClient, out, errOut io.Writer, org, classroom, slug, name, description string, tmpl templateArg, due, mode, autograder string, runtime *runtimeRef) error {
 	branch, err := resolveConfigRepoBranch(client, org)
 	if err != nil {
 		return err
@@ -346,6 +361,7 @@ func runAssignmentAdd(client *api.RESTClient, out, errOut io.Writer, org, classr
 		Due:         due,
 		Mode:        mode,
 		Autograder:  autograder,
+		Runtime:     runtime,
 	}
 	if err := validateAssignmentEntry(entry); err != nil {
 		return err
@@ -356,17 +372,21 @@ func runAssignmentAdd(client *api.RESTClient, out, errOut io.Writer, org, classr
 		lastEncodedSize int
 	)
 	build := func(parentSHA string) (map[string]string, error) {
-		// Verify the autograder file exists at parent SHA before
+		// Verify the autograder shim exists at parent SHA before
 		// writing — otherwise the assignment lands successfully and
-		// every student's accept 404s on the Pages fetch later.
-		exists, err := autograderExists(client, org, configRepoName, classroom, entry.Autograder, parentSHA)
-		if err != nil {
-			return nil, fmt.Errorf("check autograder %s/%s/%s: %w",
-				org, configRepoName, autograderFilePath(classroom, entry.Autograder), err)
-		}
-		if !exists {
-			return nil, fmt.Errorf("autograder %q does not exist at %s/%s/%s — create it (or pass --autograder <existing-name>) before registering this assignment",
-				entry.Autograder, org, configRepoName, autograderFilePath(classroom, entry.Autograder))
+		// every student's accept 404s on the Pages fetch later. The
+		// default autograder is embedded in gh-student and has no
+		// on-disk counterpart, so skip the probe in that case.
+		if entry.Autograder != defaultAutograderName {
+			exists, err := autograderExists(client, org, configRepoName, classroom, entry.Autograder, parentSHA)
+			if err != nil {
+				return nil, fmt.Errorf("check autograder %s/%s/%s: %w",
+					org, configRepoName, autograderFilePath(classroom, entry.Autograder), err)
+			}
+			if !exists {
+				return nil, fmt.Errorf("autograder %q does not exist at %s/%s/%s — create it (or pass --autograder default) before registering this assignment",
+					entry.Autograder, org, configRepoName, autograderFilePath(classroom, entry.Autograder))
+			}
 		}
 
 		file, err := loadAssignments(client, org, classroom, parentSHA)

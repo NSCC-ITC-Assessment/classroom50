@@ -1,0 +1,6 @@
+{
+  "container": {
+    "image": "cs50/cli:latest",
+    "user": "root"
+  }
+}
