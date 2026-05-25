@@ -23,12 +23,12 @@ import (
 // dirTimestampFormat: filesystem-safe and lexicographically sortable.
 const dirTimestampFormat = "2006_01_02_T_15_04_05"
 
-// Cross-binary contract with collect_scores.py, gh student submit,
-// and autograde-runner.yaml: asset name, submit-tag prefix,
-// per-asset size cap, and the fallback window when
-// /releases/latest points at a non-submit tag. Keep aligned with
-// `RESULT_ASSET_NAME`, `SUBMIT_TAG_PREFIX`, `MAX_RESULT_BYTES`,
-// and `MAX_RELEASES_FALLBACK` in
+// Cross-binary contract with collect_scores.py and
+// autograde-runner.yaml (which creates the submit-tag releases):
+// asset name, submit-tag prefix, per-asset size cap, and the
+// fallback window when /releases/latest points at a non-submit tag.
+// Keep aligned with `RESULT_ASSET_NAME`, `SUBMIT_TAG_PREFIX`,
+// `MAX_RESULT_BYTES`, and `MAX_RELEASES_FALLBACK` in
 // skeleton/dotgithub/scripts/collect_scores.py.
 const (
 	resultAssetName     = "result.json"

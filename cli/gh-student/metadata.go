@@ -14,20 +14,21 @@ import (
 )
 
 // ClassroomMetadataPath: in-repo path read by both the student CLI
-// and the autograde workflow's load job.
+// and the autograde-runner workflow's bootstrap step.
 const ClassroomMetadataPath = ".classroom50.yaml"
 
 // ClassroomConfig is the on-disk shape of `.classroom50.yaml`.
-// source.* = the template repo. config.* = the per-org config repo
-// (authoritative assignments.json/scores.json source for the
-// autograde workflow). autograde.* = diagnostics for the last
-// Pages-fetched workflow.
+// classroom + assignment identify the submission; source.* records
+// the template repo so `gh student submit` can re-fetch the latest
+// instructor `.gitignore` / `.github/` on each push.
+//
+// The runner derives its config-repo coordinates from the calling
+// repo's org (security-pinned at workflow runtime) and the
+// classroom slug, so no `config:` block is needed on disk.
 type ClassroomConfig struct {
-	Classroom  string             `yaml:"classroom"`
-	Assignment string             `yaml:"assignment"`
-	Source     ClassroomSource    `yaml:"source"`
-	Config     ClassroomConfigRef `yaml:"config,omitempty"`
-	Autograde  AutogradeMetadata  `yaml:"autograde,omitempty"`
+	Classroom  string          `yaml:"classroom"`
+	Assignment string          `yaml:"assignment"`
+	Source     ClassroomSource `yaml:"source"`
 }
 
 // ClassroomSource: source.* block (template repo). Submit reads
@@ -38,29 +39,9 @@ type ClassroomSource struct {
 	Branch string `yaml:"branch"`
 }
 
-// ClassroomConfigRef: config.* block (authoritative classroom
-// directory in the config repo). The autograde workflow fetches
-// assignments.json from the Pages URL built from these fields.
-type ClassroomConfigRef struct {
-	Owner  string `yaml:"owner"`
-	Repo   string `yaml:"repo"`
-	Branch string `yaml:"branch"`
-	Path   string `yaml:"path"`
-}
-
-// AutogradeMetadata: autograde.* block. Source is the
-// classroom-relative path of the carried workflow shim (e.g.
-// `autograders/default.yaml`). FetchedAt is the last Pages refresh
-// (UTC). Both are diagnostic only — the autograde workflow itself
-// doesn't read them; they exist so a teacher debugging "which shim
-// is in this student's repo right now?" has the answer on disk.
-type AutogradeMetadata struct {
-	Source    string `yaml:"source,omitempty"`
-	FetchedAt string `yaml:"fetched_at,omitempty"`
-}
-
 // renderClassroomMetadata serializes cfg as double-quoted YAML.
-// Used by both accept (initial drop) and submit (refresh).
+// Used by accept to drop the initial file; submit doesn't re-render
+// since the shape is stable across the assignment's lifetime.
 func renderClassroomMetadata(cfg ClassroomConfig) ([]byte, error) {
 	yamlBytes, err := marshalQuotedYAML(cfg)
 	if err != nil {

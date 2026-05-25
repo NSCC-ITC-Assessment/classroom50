@@ -18,12 +18,6 @@ import (
 // aligned with the teacher CLI.
 const configRepoName = "classroom50"
 
-// configRepoBranch is recorded in `.classroom50.yaml`'s `config:`
-// block. The Pages URL doesn't include a branch component, so this
-// value is informational; "main" is fine even if the teacher's
-// classroom50 repo uses a different default branch.
-const configRepoBranch = "main"
-
 // pagesFetchTimeout bounds Pages GETs. Without it, http.Client would
 // hang indefinitely on a slow CDN.
 const pagesFetchTimeout = 15 * time.Second
@@ -53,9 +47,10 @@ func (e assignmentEntry) ResolveAutograder() string {
 	return e.Autograder
 }
 
-// autogradeWorkflowPath: in-repo destination for the fetched
-// autograder. Public contract — the workflow's `on: push.tags`
-// trigger only fires when GitHub finds a workflow at this path.
+// autogradeWorkflowPath: in-repo destination for the autograde shim
+// dropped at accept time. Public contract — the workflow only fires
+// when GitHub finds it at this path. Triggers: push to `main` and
+// push of a `submit/*` tag.
 const autogradeWorkflowPath = ".github/workflows/autograde.yaml"
 
 // templateRef: assignment starter-code source. All three fields
@@ -189,9 +184,10 @@ func IsAssignmentNotFound(err error) bool {
 // AutogradeWorkflow is the result of a Pages autograder fetch.
 // Content is the raw workflow shim body dropped at
 // `.github/workflows/autograde.yaml`. The shim is intentionally
-// stable — it fetches the actual orchestrator from Pages at runtime
-// on every workflow execution, so a stale shim still grades against
-// the latest teacher-side logic.
+// stable — it `uses:` the reusable autograde-runner workflow in the
+// config repo, which fetches the runner-side bootstrap (runner.py)
+// and the autograder fresh on every submission, so a stale shim
+// still grades against the latest teacher-side logic.
 type AutogradeWorkflow struct {
 	Content string
 }

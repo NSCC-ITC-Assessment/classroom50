@@ -4,10 +4,14 @@ name: embedded-python CI
 # scaffolded into each teacher's classroom50 config repo:
 #
 #   - cli/gh-teacher/skeleton/dotgithub/scripts/collect_scores.py
-#     (the score collector that runs inside collect-scores.yaml)
-#   - cli/gh-teacher/autograders/autograde.py
-#     (the autograder orchestrator that runs inside the student-repo
-#     autograde workflow shim)
+#     (score collector that runs inside collect-scores.yaml)
+#   - cli/gh-teacher/skeleton/dotgithub/scripts/runner.py
+#     (runner-side bootstrap fetched at workflow runtime by the
+#     autograde-runner reusable workflow; resolves and execs the
+#     autograder)
+#   - cli/gh-teacher/skeleton/dotgithub/scripts/autograder.py
+#     (org-level default autograder; replaced or overridden by
+#     teachers per-assignment)
 #
 # Tests live alongside each script (skeleton_tests/, autograders_tests/)
 # but are NOT embedded into the teacher's classroom50 repo — they
@@ -20,7 +24,6 @@ on:
       - 'cli/gh-teacher/skeleton/dotgithub/scripts/**'
       - 'cli/gh-teacher/skeleton/dotgithub/workflows/collect-scores.yaml'
       - 'cli/gh-teacher/skeleton_tests/**'
-      - 'cli/gh-teacher/autograders/**'
       - 'cli/gh-teacher/autograders_tests/**'
       - '.github/workflows/skeleton-scripts-ci.yaml'
   pull_request:
@@ -28,7 +31,6 @@ on:
       - 'cli/gh-teacher/skeleton/dotgithub/scripts/**'
       - 'cli/gh-teacher/skeleton/dotgithub/workflows/collect-scores.yaml'
       - 'cli/gh-teacher/skeleton_tests/**'
-      - 'cli/gh-teacher/autograders/**'
       - 'cli/gh-teacher/autograders_tests/**'
       - '.github/workflows/skeleton-scripts-ci.yaml'
 

@@ -11,11 +11,12 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-func TestRenderClassroomMetadata_FullShape(t *testing.T) {
-	// `.classroom50.yaml` carries four blocks: identity (classroom +
-	// assignment), source (template), config (config repo), and
-	// autograde (version sentinel). The round-trip pins the on-disk
-	// shape so a reader branching on schema knows the current keys.
+func TestRenderClassroomMetadata_Shape(t *testing.T) {
+	// `.classroom50.yaml` carries identity (classroom + assignment)
+	// plus a `source:` block (template repo). The runner derives
+	// the config-repo coordinates from the calling repo's org and
+	// the classroom slug at workflow time, so no `config:` block is
+	// written here.
 	cfg := ClassroomConfig{
 		Classroom:  "cs-principles",
 		Assignment: "hello",
@@ -23,16 +24,6 @@ func TestRenderClassroomMetadata_FullShape(t *testing.T) {
 			Owner:  "cs50",
 			Repo:   "hello-template",
 			Branch: "main",
-		},
-		Config: ClassroomConfigRef{
-			Owner:  "cs50-fall-2026",
-			Repo:   "classroom50",
-			Branch: "main",
-			Path:   "cs-principles",
-		},
-		Autograde: AutogradeMetadata{
-			Source:    "autograders/default.yaml",
-			FetchedAt: "2026-06-01T14:30:00Z",
 		},
 	}
 	out, err := renderClassroomMetadata(cfg)
@@ -48,11 +39,6 @@ func TestRenderClassroomMetadata_FullShape(t *testing.T) {
 		`owner: "cs50"`,
 		`repo: "hello-template"`,
 		`branch: "main"`,
-		`owner: "cs50-fall-2026"`,
-		`repo: "classroom50"`,
-		`path: "cs-principles"`,
-		`source: "autograders/default.yaml"`,
-		`fetched_at: "2026-06-01T14:30:00Z"`,
 	}
 	for _, s := range wantSubs {
 		if !strings.Contains(string(out), s) {
@@ -61,9 +47,17 @@ func TestRenderClassroomMetadata_FullShape(t *testing.T) {
 	}
 
 	// Block structure: each top-level key appears once at column 0.
-	for _, key := range []string{"classroom:", "assignment:", "source:", "config:", "autograde:"} {
+	for _, key := range []string{"classroom:", "assignment:", "source:"} {
 		if !strings.Contains(string(out), "\n"+key) && !strings.HasPrefix(string(out), key) {
 			t.Errorf("missing top-level key %q in:\n%s", key, out)
+		}
+	}
+
+	// `config:` and `autograde:` blocks are dropped; the runner no
+	// longer reads them.
+	for _, removed := range []string{"config:", "autograde:"} {
+		if strings.Contains(string(out), removed) {
+			t.Errorf("legacy key %q must not appear in rendered metadata, got:\n%s", removed, out)
 		}
 	}
 
@@ -74,31 +68,6 @@ func TestRenderClassroomMetadata_FullShape(t *testing.T) {
 	}
 	if round != cfg {
 		t.Errorf("round-trip mismatch:\n got: %#v\nwant: %#v", round, cfg)
-	}
-}
-
-func TestRenderClassroomMetadata_OmitsEmptyOptionalBlocks(t *testing.T) {
-	// Metadata without Config/Autograde must round-trip cleanly:
-	// zero-valued optional blocks must omit so the file doesn't
-	// sprout empty `config: {}` keys.
-	cfg := ClassroomConfig{
-		Classroom:  "cs-principles",
-		Assignment: "hello",
-		Source: ClassroomSource{
-			Owner:  "cs50",
-			Repo:   "hello-template",
-			Branch: "main",
-		},
-	}
-	out, err := renderClassroomMetadata(cfg)
-	if err != nil {
-		t.Fatalf("renderClassroomMetadata: %v", err)
-	}
-
-	for _, key := range []string{"config:", "autograde:"} {
-		if strings.Contains(string(out), key) {
-			t.Errorf("zero-value %s should be omitted, got:\n%s", key, out)
-		}
 	}
 }
 
