@@ -11,6 +11,100 @@ import (
 	"testing"
 )
 
+func TestApplyOrgMemberDefaults_HappyPath(t *testing.T) {
+	// Pin both field values (none / false) on a single PATCH so a
+	// refactor can't silently flip either default.
+	var (
+		mu      sync.Mutex
+		gotBody map[string]any
+		calls   int
+	)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		calls++
+		if r.Method != http.MethodPatch {
+			t.Errorf("unexpected method: %s", r.Method)
+		}
+		if r.URL.Path != "/orgs/cs50-fall-2026" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &gotBody)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	t.Cleanup(server.Close)
+	client := newTestRESTClient(t, server)
+
+	var out, errOut bytes.Buffer
+	if err := applyOrgMemberDefaults(client, &out, &errOut, "cs50-fall-2026"); err != nil {
+		t.Fatalf("applyOrgMemberDefaults: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if calls != 1 {
+		t.Errorf("calls = %d, want 1", calls)
+	}
+	if gotBody["default_repository_permission"] != "none" {
+		t.Errorf("default_repository_permission = %v, want none", gotBody["default_repository_permission"])
+	}
+	if gotBody["members_can_create_public_repositories"] != false {
+		t.Errorf("members_can_create_public_repositories = %v, want false", gotBody["members_can_create_public_repositories"])
+	}
+	if !strings.Contains(out.String(), "base permission = none") {
+		t.Errorf("stdout missing success line, got: %q", out.String())
+	}
+	if errOut.Len() != 0 {
+		t.Errorf("happy path should leave stderr empty, got: %q", errOut.String())
+	}
+}
+
+func TestApplyOrgMemberDefaults_ForbiddenWarnsButSucceeds(t *testing.T) {
+	// 403 (enterprise-locked policy) must warn-and-continue so
+	// the rest of init still runs.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"message":"Resource not accessible by integration"}`))
+	}))
+	t.Cleanup(server.Close)
+	client := newTestRESTClient(t, server)
+
+	var out, errOut bytes.Buffer
+	if err := applyOrgMemberDefaults(client, &out, &errOut, "locked-org"); err != nil {
+		t.Fatalf("applyOrgMemberDefaults should not return an error on 403: %v", err)
+	}
+	if !strings.Contains(errOut.String(), "Warning:") {
+		t.Errorf("stderr missing `Warning:` prefix: %q", errOut.String())
+	}
+	if !strings.Contains(errOut.String(), "settings/member_privileges") {
+		t.Errorf("warning should point at the org settings page: %q", errOut.String())
+	}
+	if strings.Contains(out.String(), "Warning") {
+		t.Errorf("warnings must not land on stdout, got: %q", out.String())
+	}
+}
+
+func TestApplyOrgMemberDefaults_TransportFailurePropagates(t *testing.T) {
+	// Non-policy failures (500 etc.) must propagate — silent
+	// continuation would mislead.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	t.Cleanup(server.Close)
+	client := newTestRESTClient(t, server)
+
+	var out, errOut bytes.Buffer
+	err := applyOrgMemberDefaults(client, &out, &errOut, "o")
+	if err == nil {
+		t.Fatal("expected error on PATCH 500, got nil")
+	}
+	if !strings.Contains(err.Error(), "PATCH") {
+		t.Errorf("error should mention PATCH: %v", err)
+	}
+}
+
 func TestEnablePages_CreatesAndSetsPublic(t *testing.T) {
 	// Happy path: POST creates with `build_type=workflow`, then
 	// PUT lands with `{"public": true}`. Pins both calls so a

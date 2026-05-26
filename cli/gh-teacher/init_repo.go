@@ -20,6 +20,53 @@ var plansThatSupportPrivatePages = map[string]bool{
 	"enterprise":    true,
 }
 
+// applyOrgMemberDefaults locks down two org-level member policies
+// in a single PATCH /orgs/{org}:
+//
+//   - default_repository_permission: "none" — new members don't get
+//     implicit read access to other repos (existing members and
+//     their access are unaffected).
+//   - members_can_create_public_repositories: false — prevents
+//     members from accidentally publishing student work.
+//
+// 403/422 (enterprise-locked policy) warns to errOut with the
+// settings-page link; init still completes.
+func applyOrgMemberDefaults(client *api.RESTClient, out, errOut io.Writer, org string) error {
+	body, err := json.Marshal(struct {
+		DefaultRepositoryPermission        string `json:"default_repository_permission"`
+		MembersCanCreatePublicRepositories bool   `json:"members_can_create_public_repositories"`
+	}{
+		DefaultRepositoryPermission:        "none",
+		MembersCanCreatePublicRepositories: false,
+	})
+	if err != nil {
+		return fmt.Errorf("encode body: %w", err)
+	}
+	path := fmt.Sprintf("orgs/%s", url.PathEscape(org))
+	resp, err := client.Request(http.MethodPatch, path, bytes.NewReader(body))
+	if err != nil {
+		if isHTTPStatus(err, http.StatusForbidden) || isHTTPStatus(err, http.StatusUnprocessableEntity) {
+			_, _ = fmt.Fprintf(errOut, "Warning: %s: couldn't tighten org member defaults (%v); set them manually at https://github.com/organizations/%s/settings/member_privileges — Base permissions: No permission AND Repository creation: uncheck Public.\n",
+				org, err, org)
+			return nil
+		}
+		return fmt.Errorf("PATCH %s: %w", path, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	_, _ = io.Copy(io.Discard, resp.Body)
+	switch resp.StatusCode {
+	case http.StatusOK:
+		_, _ = fmt.Fprintf(out, "%s: org member defaults set (base permission = none, public repo creation disabled)\n", org)
+		return nil
+	case http.StatusForbidden, http.StatusUnprocessableEntity:
+		_, _ = fmt.Fprintf(errOut, "Warning: %s: PATCH /orgs/%s returned HTTP %d while tightening member defaults; set them manually at https://github.com/organizations/%s/settings/member_privileges\n",
+			org, org, resp.StatusCode, org)
+		return nil
+	default:
+		return fmt.Errorf("PATCH %s: unexpected status %d", path, resp.StatusCode)
+	}
+}
+
 // checkOrgPlan warns when the org's plan can't serve Pages from a
 // private repo. Advisory — if Pages enable fails later, the teacher
 // gets a concrete error there.

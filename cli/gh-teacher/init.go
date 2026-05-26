@@ -21,10 +21,11 @@ func initCmd() *cobra.Command {
 		Short: "Bootstrap the classroom50 config repo in an organization",
 		Long: "Bootstrap the classroom50 config repo for a teaching organization.\n\n" +
 			"Performs in order: org plan check (Team/Enterprise required for\n" +
-			"GitHub Pages from a private repo), private repo creation with\n" +
-			"auto_init, single-commit skeleton drop, Pages enablement, branch\n" +
-			"protection on the default branch, workflow permissions, and the\n" +
-			"repo-level CLASSROOM50_COLLECT_TOKEN secret.\n\n" +
+			"GitHub Pages from a private repo), org-level member defaults\n" +
+			"(base permission = none, public repo creation disabled), private\n" +
+			"repo creation with auto_init, single-commit skeleton drop, Pages\n" +
+			"enablement, branch protection on the default branch, workflow\n" +
+			"permissions, and the repo-level CLASSROOM50_COLLECT_TOKEN secret.\n\n" +
 			"The collect token is read from the CLASSROOM50_COLLECT_TOKEN\n" +
 			"environment variable, falling back to a hidden stdin prompt when\n" +
 			"run interactively. No --collect-token flag is offered: PAT values\n" +
@@ -54,6 +55,12 @@ func initCmd() *cobra.Command {
 			// Plan check is read-only: warns on free tiers where
 			// Pages-from-private isn't supported, then continues.
 			if err := checkOrgPlan(client, errOut, org); err != nil {
+				return err
+			}
+
+			// Tighten org-level member defaults before any repos
+			// land so the classroom starts in a known-safe state.
+			if err := applyOrgMemberDefaults(client, out, errOut, org); err != nil {
 				return err
 			}
 
