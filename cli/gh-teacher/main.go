@@ -37,6 +37,7 @@ func main() {
 	root.AddCommand(inviteCmd())
 	root.AddCommand(removeCmd())
 	root.AddCommand(downloadCmd())
+	root.AddCommand(teardownCmd())
 
 	// Signal-aware root context: subcommands see cmd.Context()
 	// cancel on Ctrl-C / SIGTERM so in-flight HTTP unwinds.
