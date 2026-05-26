@@ -52,6 +52,7 @@ func classroomCmd() *cobra.Command {
 			"<classroom>/autograders/<slug>/ via ordinary git operations.",
 	}
 	cmd.AddCommand(classroomAddCmd())
+	cmd.AddCommand(classroomMigrateCmd())
 	return cmd
 }
 
@@ -122,7 +123,7 @@ func addClassroom(client *api.RESTClient, out, errOut io.Writer, org, shortName,
 		return err
 	}
 
-	files, err := classroomScaffold(org, shortName, name, term)
+	files, err := classroomScaffold(org, shortName, name, term, nil, nil)
 	if err != nil {
 		return err
 	}
@@ -158,12 +159,26 @@ func addClassroom(client *api.RESTClient, out, errOut io.Writer, org, shortName,
 
 // classroomJSON / scoresJSON pin the on-disk scaffold shapes;
 // assignments.json's typed shape lives in assignments_json.go.
+// MigratedFrom omits cleanly when absent.
 type classroomJSON struct {
-	Schema    string `json:"schema"`
-	Name      string `json:"name"`
-	ShortName string `json:"short_name"`
-	Term      string `json:"term"`
-	Org       string `json:"org"`
+	Schema       string                    `json:"schema"`
+	Name         string                    `json:"name"`
+	ShortName    string                    `json:"short_name"`
+	Term         string                    `json:"term"`
+	Org          string                    `json:"org"`
+	MigratedFrom *classroomMigratedFromRef `json:"migrated_from,omitempty"`
+}
+
+// classroomMigratedFromRef records where a classroom originated
+// when it was imported by `gh teacher classroom migrate`.
+// Hand-authored classrooms never carry this block.
+type classroomMigratedFromRef struct {
+	Source           string `json:"source"`
+	ClassroomID      int64  `json:"classroom_id"`
+	OriginalName     string `json:"original_name"`
+	OriginalOrgLogin string `json:"original_org_login"`
+	URL              string `json:"url,omitempty"`
+	MigratedAt       string `json:"migrated_at"`
 }
 
 // scoresJSON: one entry per (assignment, student) pair, written by
@@ -176,26 +191,33 @@ type scoresJSON struct {
 }
 
 // classroomScaffold returns destination-path → content for the
-// scaffolded files. Empty slices marshal to `[]` (not null) so the
-// on-disk shape stays stable across edits.
-func classroomScaffold(org, shortName, name, term string) (map[string]string, error) {
+// four-file scaffold. A nil `entries` is normalized to an empty
+// slice so assignments.json marshals as `[]` (not the `null` Go
+// would otherwise produce). `entries` populates assignments.json
+// through encodeAssignments (same normalization as
+// `gh teacher assignment add`); `migration` populates the optional
+// `migrated_from` block on classroom.json.
+func classroomScaffold(org, shortName, name, term string, entries []assignmentEntry, migration *classroomMigratedFromRef) (map[string]string, error) {
 	classroom := classroomJSON{
-		Schema:    classroomSchemaV1,
-		Name:      name,
-		ShortName: shortName,
-		Term:      term,
-		Org:       org,
+		Schema:       classroomSchemaV1,
+		Name:         name,
+		ShortName:    shortName,
+		Term:         term,
+		Org:          org,
+		MigratedFrom: migration,
 	}
 	classroomBytes, err := encodeJSONPretty(classroom)
 	if err != nil {
 		return nil, fmt.Errorf("encode classroom.json: %w", err)
 	}
 
-	assignments := assignmentsJSON{
-		Schema:      assignmentsSchemaV1,
-		Assignments: []assignmentEntry{},
+	if entries == nil {
+		entries = []assignmentEntry{}
 	}
-	assignmentsBytes, err := encodeJSONPretty(assignments)
+	assignmentsBytes, err := encodeAssignments(assignmentsJSON{
+		Schema:      assignmentsSchemaV1,
+		Assignments: entries,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("encode assignments.json: %w", err)
 	}

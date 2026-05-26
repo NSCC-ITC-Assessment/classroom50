@@ -79,7 +79,7 @@ func TestShortNamePattern(t *testing.T) {
 }
 
 func TestClassroomScaffold(t *testing.T) {
-	files, err := classroomScaffold("cs50-fall-2026", "cs-principles", "CS Principles", "Spring-2026")
+	files, err := classroomScaffold("cs50-fall-2026", "cs-principles", "CS Principles", "Spring-2026", nil, nil)
 	if err != nil {
 		t.Fatalf("classroomScaffold: %v", err)
 	}
@@ -184,7 +184,7 @@ func TestClassroomScaffold(t *testing.T) {
 }
 
 func TestClassroomScaffold_EmptyOptionalFlags(t *testing.T) {
-	files, err := classroomScaffold("cs50-fall-2026", "intro-java", "", "")
+	files, err := classroomScaffold("cs50-fall-2026", "intro-java", "", "", nil, nil)
 	if err != nil {
 		t.Fatalf("classroomScaffold: %v", err)
 	}

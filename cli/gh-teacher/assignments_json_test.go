@@ -203,9 +203,11 @@ func TestParseAssignments_Rejects(t *testing.T) {
 			wantErrPart: "template",
 		},
 		{
+			// `group` is now schema-legal; only arbitrary
+			// strings trip the validator.
 			name:        "entry with unsupported mode",
-			in:          `{"schema":"classroom50/assignments/v1","assignments":[{"slug":"hello","name":"Hello","template":{"owner":"cs50","repo":"hello-template","branch":"main"},"mode":"group","autograder":"default"}]}`,
-			wantErrPart: "unsupported mode",
+			in:          `{"schema":"classroom50/assignments/v1","assignments":[{"slug":"hello","name":"Hello","template":{"owner":"cs50","repo":"hello-template","branch":"main"},"mode":"team","autograder":"default"}]}`,
+			wantErrPart: "invalid mode",
 		},
 		{
 			name:        "entry with slug-pattern violation",
@@ -419,6 +421,22 @@ func TestValidateAssignmentEntry_HappyPath(t *testing.T) {
 	}
 }
 
+// TestValidateAssignmentEntry_GroupMode: `mode: "group"` is now
+// schema-legal; the group-acceptance rejection lives at narrower
+// seams (assignment add --mode, student accept).
+func TestValidateAssignmentEntry_GroupMode(t *testing.T) {
+	entry := assignmentEntry{
+		Slug:       "team-project",
+		Name:       "Team Project",
+		Template:   templateRef{Owner: "cs50", Repo: "team-project-template", Branch: "main"},
+		Mode:       "group",
+		Autograder: "default",
+	}
+	if err := validateAssignmentEntry(entry); err != nil {
+		t.Errorf("validateAssignmentEntry(group): %v", err)
+	}
+}
+
 func TestValidateAssignmentEntry_Rejects(t *testing.T) {
 	base := assignmentEntry{
 		Slug:       "hello",
@@ -436,7 +454,7 @@ func TestValidateAssignmentEntry_Rejects(t *testing.T) {
 		{"slug pattern violation", func(e *assignmentEntry) { e.Slug = "Hello" }, "slug"},
 		{"empty name", func(e *assignmentEntry) { e.Name = "" }, "--name"},
 		{"empty mode", func(e *assignmentEntry) { e.Mode = "" }, "mode"},
-		{"unsupported mode", func(e *assignmentEntry) { e.Mode = "group" }, "individual"},
+		{"unsupported mode", func(e *assignmentEntry) { e.Mode = "team" }, "invalid mode"},
 		{"empty template owner", func(e *assignmentEntry) { e.Template.Owner = "" }, "template"},
 		{"empty template repo", func(e *assignmentEntry) { e.Template.Repo = "" }, "template"},
 		{"empty template branch", func(e *assignmentEntry) { e.Template.Branch = "" }, "branch"},

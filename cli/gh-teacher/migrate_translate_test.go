@@ -1,0 +1,267 @@
+package main
+
+import (
+	"strings"
+	"testing"
+	"time"
+)
+
+func TestDeriveShortName(t *testing.T) {
+	cases := []struct {
+		name    string
+		in      string
+		want    string
+		wantErr bool
+	}{
+		{"already a slug", "cs-principles", "cs-principles", false},
+		// "classroom50test" doubles as the real-export single-word
+		// classroom name and a digits-and-letters happy path.
+		{"digits and letters / real-export name 1", "classroom50test", "classroom50test", false},
+		{"spaces", "CS Principles Fall 2026", "cs-principles-fall-2026", false},
+		{"real-export name 2", "CS50 Stress Test-classroom-1", "cs50-stress-test-classroom-1", false},
+		{"slashes and spaces", "Intro to CS / Section 1", "intro-to-cs-section-1", false},
+		{"apostrophe + em-dash", "Spring '26 — Honors", "spring-26-honors", false},
+		{"too long, truncates cleanly", "abcdefghij-abcdefghij-abcdefghij-abcdefghij", "abcdefghij-abcdefghij-abcdefghij-abcdef", false},
+		{"leading and trailing punctuation", "—Hello—", "hello", false},
+		{"empty", "", "", true},
+		{"whitespace only", "   ", "", true},
+		{"emoji only", "🎓📚", "", true},
+		// Single char — fails shortNamePattern's 2-char minimum.
+		{"single char", "a", "", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := deriveShortName(tc.in)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("deriveShortName(%q) = %q, want error", tc.in, got)
+				}
+				if !strings.Contains(err.Error(), "--short-name") {
+					t.Errorf("err = %q, want substring %q (actionable hint)", err.Error(), "--short-name")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("deriveShortName(%q) = %v, want %q", tc.in, err, tc.want)
+			}
+			if got != tc.want {
+				t.Errorf("deriveShortName(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+			// Every successful output must pass shortNamePattern so
+			// downstream callers don't reject what migrate produces.
+			if !shortNamePattern.MatchString(got) {
+				t.Errorf("deriveShortName(%q) = %q, fails shortNamePattern", tc.in, got)
+			}
+		})
+	}
+}
+
+func TestAssignmentToEntry(t *testing.T) {
+	migratedAt := time.Date(2026, time.May, 25, 20, 21, 0, 0, time.UTC)
+	target := templateRef{Owner: "cs50-fall-2026", Repo: "readability", Branch: "main"}
+
+	t.Run("individual happy path matches real export", func(t *testing.T) {
+		detail := classroomAssignmentDetail{
+			ID:         239897,
+			Title:      "readability",
+			Slug:       "readability",
+			Type:       "individual",
+			InviteLink: "https://classroom.github.com/a/9Bxg5uYu",
+			Deadline:   nil,
+			StarterCodeRepo: &classroomStarterCodeRepo{
+				FullName:      "classroom50test/readability",
+				DefaultBranch: "main",
+				Private:       true,
+			},
+		}
+
+		entry, err := assignmentToEntry(detail, 95884, target, migratedAt)
+		if err != nil {
+			t.Fatalf("assignmentToEntry: %v", err)
+		}
+		if entry.Slug != "readability" || entry.Name != "readability" {
+			t.Errorf("slug/name = %q/%q, want readability/readability", entry.Slug, entry.Name)
+		}
+		if entry.Mode != assignmentModeIndividual {
+			t.Errorf("mode = %q, want %q", entry.Mode, assignmentModeIndividual)
+		}
+		if entry.Template != target {
+			t.Errorf("template = %+v, want %+v", entry.Template, target)
+		}
+		if entry.Due != "" {
+			t.Errorf("due = %q, want empty (source deadline was null)", entry.Due)
+		}
+		if entry.Autograder != defaultAutograderName {
+			t.Errorf("autograder = %q, want %q", entry.Autograder, defaultAutograderName)
+		}
+		if entry.MigratedFrom == nil {
+			t.Fatalf("MigratedFrom is nil")
+		}
+		if entry.MigratedFrom.Source != migrateSourceGitHubClassroom {
+			t.Errorf("migrated_from.source = %q, want %q", entry.MigratedFrom.Source, migrateSourceGitHubClassroom)
+		}
+		if entry.MigratedFrom.ClassroomID != 95884 || entry.MigratedFrom.AssignmentID != 239897 {
+			t.Errorf("migrated_from ids = (%d, %d), want (95884, 239897)", entry.MigratedFrom.ClassroomID, entry.MigratedFrom.AssignmentID)
+		}
+		if entry.MigratedFrom.StarterRepo != "classroom50test/readability" {
+			t.Errorf("migrated_from.starter_repo = %q, want classroom50test/readability", entry.MigratedFrom.StarterRepo)
+		}
+		if entry.MigratedFrom.InviteLink != "https://classroom.github.com/a/9Bxg5uYu" {
+			t.Errorf("migrated_from.invite_link mismatch: %q", entry.MigratedFrom.InviteLink)
+		}
+		if entry.MigratedFrom.MigratedAt != "2026-05-25T20:21:00Z" {
+			t.Errorf("migrated_from.migrated_at = %q, want 2026-05-25T20:21:00Z", entry.MigratedFrom.MigratedAt)
+		}
+		// What we produce here is what gets committed, so it must
+		// pass the write-path validator.
+		if err := validateAssignmentEntry(entry); err != nil {
+			t.Errorf("validateAssignmentEntry(produced entry): %v", err)
+		}
+	})
+
+	t.Run("group mode passes the schema layer", func(t *testing.T) {
+		detail := classroomAssignmentDetail{
+			ID:    1,
+			Slug:  "team-project",
+			Title: "Team Project",
+			Type:  "group",
+			StarterCodeRepo: &classroomStarterCodeRepo{
+				FullName: "src/team-project", DefaultBranch: "main",
+			},
+		}
+		entry, err := assignmentToEntry(detail, 1, target, migratedAt)
+		if err != nil {
+			t.Fatalf("assignmentToEntry(group): %v", err)
+		}
+		if entry.Mode != "group" {
+			t.Errorf("mode = %q, want %q (preserved losslessly)", entry.Mode, "group")
+		}
+	})
+
+	t.Run("valid RFC-3339 deadline round-trips", func(t *testing.T) {
+		deadline := "2026-09-15T23:59:00-04:00"
+		detail := classroomAssignmentDetail{
+			ID: 1, Slug: "ok", Title: "Ok", Type: "individual",
+			Deadline:        &deadline,
+			StarterCodeRepo: &classroomStarterCodeRepo{FullName: "x/x", DefaultBranch: "main"},
+		}
+		entry, err := assignmentToEntry(detail, 1, target, migratedAt)
+		if err != nil {
+			t.Fatalf("assignmentToEntry: %v", err)
+		}
+		if entry.Due != deadline {
+			t.Errorf("due = %q, want %q (RFC 3339 verbatim)", entry.Due, deadline)
+		}
+	})
+
+	t.Run("malformed deadline drops silently", func(t *testing.T) {
+		// `due` is advisory; an unparseable value is dropped rather
+		// than aborting the migration.
+		deadline := "not-a-timestamp"
+		detail := classroomAssignmentDetail{
+			ID: 1, Slug: "ok", Title: "Ok", Type: "individual",
+			Deadline:        &deadline,
+			StarterCodeRepo: &classroomStarterCodeRepo{FullName: "x/x", DefaultBranch: "main"},
+		}
+		entry, err := assignmentToEntry(detail, 1, target, migratedAt)
+		if err != nil {
+			t.Fatalf("assignmentToEntry: %v", err)
+		}
+		if entry.Due != "" {
+			t.Errorf("due = %q, want empty (malformed deadline dropped)", entry.Due)
+		}
+	})
+
+	t.Run("missing starter_code_repository still produces an entry", func(t *testing.T) {
+		// The skip decision lives at the caller; the helper just
+		// records what it has (migrated_from.starter_repo empty).
+		detail := classroomAssignmentDetail{
+			ID: 1, Slug: "stub", Title: "Stub", Type: "individual",
+		}
+		entry, err := assignmentToEntry(detail, 1, target, migratedAt)
+		if err != nil {
+			t.Fatalf("assignmentToEntry: %v", err)
+		}
+		if entry.MigratedFrom == nil || entry.MigratedFrom.StarterRepo != "" {
+			t.Errorf("migrated_from.starter_repo = %q, want empty", entry.MigratedFrom.StarterRepo)
+		}
+	})
+
+	t.Run("rejects empty slug", func(t *testing.T) {
+		_, err := assignmentToEntry(classroomAssignmentDetail{ID: 1, Type: "individual"}, 1, target, migratedAt)
+		if err == nil {
+			t.Fatalf("expected error for empty slug")
+		}
+		if !strings.Contains(err.Error(), "empty slug") {
+			t.Errorf("err = %v, want 'empty slug' substring", err)
+		}
+	})
+
+	t.Run("rejects unknown type", func(t *testing.T) {
+		_, err := assignmentToEntry(classroomAssignmentDetail{ID: 1, Slug: "valid-slug", Type: "weird"}, 1, target, migratedAt)
+		if err == nil {
+			t.Fatalf("expected error for unknown type")
+		}
+		if !strings.Contains(err.Error(), "unknown type") {
+			t.Errorf("err = %v, want 'unknown type' substring", err)
+		}
+	})
+
+	t.Run("rejects slug failing shortNamePattern", func(t *testing.T) {
+		// GitHub Classroom permits shapes our shortNamePattern
+		// rejects (uppercase, underscores); surface explicitly.
+		_, err := assignmentToEntry(classroomAssignmentDetail{ID: 1, Slug: "Hello", Type: "individual"}, 1, target, migratedAt)
+		if err == nil {
+			t.Fatalf("expected error for capitalized slug")
+		}
+		if !strings.Contains(err.Error(), "slug") {
+			t.Errorf("err = %v, want 'slug' substring", err)
+		}
+	})
+}
+
+// TestClassroomMigratedFromFromDetail pins the classroom-level
+// migrated_from shape against real-export data.
+func TestClassroomMigratedFromFromDetail(t *testing.T) {
+	detail := classroomDetail{
+		ID:       95884,
+		Name:     "classroom50test",
+		Archived: false,
+		URL:      "https://classroom.github.com/classrooms/90273123-classroom50test",
+		Organization: classroomDetailOrganization{
+			Login: "classroom50test",
+		},
+	}
+	migratedAt := time.Date(2026, time.May, 25, 20, 21, 0, 0, time.UTC)
+
+	got := classroomMigratedFromFromDetail(detail, migratedAt)
+	if got == nil {
+		t.Fatalf("classroomMigratedFromFromDetail returned nil")
+	}
+	want := classroomMigratedFromRef{
+		Source:           migrateSourceGitHubClassroom,
+		ClassroomID:      95884,
+		OriginalName:     "classroom50test",
+		OriginalOrgLogin: "classroom50test",
+		URL:              "https://classroom.github.com/classrooms/90273123-classroom50test",
+		MigratedAt:       "2026-05-25T20:21:00Z",
+	}
+	if *got != want {
+		t.Errorf("classroomMigratedFromFromDetail = %+v, want %+v", *got, want)
+	}
+}
+
+func TestMigrationPlanCountsByMode(t *testing.T) {
+	plan := migrationPlan{
+		Assignments: []classroomAssignmentDetail{
+			{Type: "individual"},
+			{Type: "individual"},
+			{Type: "group"},
+			{Type: "weird"},
+		},
+	}
+	ind, grp, oth := plan.countsByMode()
+	if ind != 2 || grp != 1 || oth != 1 {
+		t.Errorf("countsByMode = (%d, %d, %d), want (2, 1, 1)", ind, grp, oth)
+	}
+}

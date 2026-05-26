@@ -8,10 +8,28 @@ import (
 	"io"
 )
 
-// assignmentModeIndividual is the only mode currently supported.
-// Other modes are rejected at every write/parse site; the autograde
-// workflow and `gh student accept` both branch on this field.
-const assignmentModeIndividual = "individual"
+// Assignment modes accepted at the parse/write layer. `individual`
+// is the end-to-end-working path; `group` is accepted at the schema
+// layer so migrate can losslessly record group assignments, but
+// `gh teacher assignment add --mode group` and `gh student accept`
+// still reject group at their own seams until group support lands.
+const (
+	assignmentModeIndividual = "individual"
+	assignmentModeGroup      = "group"
+)
+
+// assignmentModes is the canonical allow-list, sorted alphabetically
+// so error messages stay stable.
+var assignmentModes = []string{assignmentModeGroup, assignmentModeIndividual}
+
+func isValidAssignmentMode(m string) bool {
+	for _, allowed := range assignmentModes {
+		if m == allowed {
+			return true
+		}
+	}
+	return false
+}
 
 // largeAssignmentsWarnBytes is the encoded-size threshold above
 // which `gh teacher assignment add` emits a stderr warning. Set
@@ -34,9 +52,10 @@ type assignmentsJSON struct {
 
 // assignmentEntry is one row in assignments.json. Field order reads
 // top-to-bottom for a teacher inspecting the file: identity →
-// template → schedule/mode → autograder → runtime. Mode and
-// Autograder always serialize (no omitempty) so consumers don't
-// have to disambiguate "absent → default" from "explicit default".
+// template → schedule/mode → autograder → runtime → provenance.
+// Mode and Autograder always serialize (no omitempty) so consumers
+// don't have to disambiguate "absent → default" from "explicit
+// default". MigratedFrom omits cleanly when absent.
 //
 // No `Tests` field — per-assignment grading lives in the config
 // repo as an `autograder.py` (entrypoint) under
@@ -47,14 +66,30 @@ type assignmentsJSON struct {
 // entrypoint, and execs it. See the Autograders wiki
 // page (wiki/Autograders.md) for the full contract + templates.
 type assignmentEntry struct {
-	Slug        string      `json:"slug"`
-	Name        string      `json:"name"`
-	Description string      `json:"description,omitempty"`
-	Template    templateRef `json:"template"`
-	Due         string      `json:"due,omitempty"`
-	Mode        string      `json:"mode"`
-	Autograder  string      `json:"autograder"`
-	Runtime     *runtimeRef `json:"runtime,omitempty"`
+	Slug         string           `json:"slug"`
+	Name         string           `json:"name"`
+	Description  string           `json:"description,omitempty"`
+	Template     templateRef      `json:"template"`
+	Due          string           `json:"due,omitempty"`
+	Mode         string           `json:"mode"`
+	Autograder   string           `json:"autograder"`
+	Runtime      *runtimeRef      `json:"runtime,omitempty"`
+	MigratedFrom *migratedFromRef `json:"migrated_from,omitempty"`
+}
+
+// migratedFromRef records where an assignment originated when it
+// was imported by `gh teacher classroom migrate`. Hand-authored
+// entries never carry this block. OriginalSlug is set only when it
+// differs from the current Slug; StarterRepo is the legacy
+// "owner/repo" before re-templating; InviteLink is diagnostic.
+type migratedFromRef struct {
+	Source       string `json:"source"`
+	ClassroomID  int64  `json:"classroom_id"`
+	AssignmentID int64  `json:"assignment_id"`
+	OriginalSlug string `json:"original_slug,omitempty"`
+	StarterRepo  string `json:"starter_repo,omitempty"`
+	InviteLink   string `json:"invite_link,omitempty"`
+	MigratedAt   string `json:"migrated_at"`
 }
 
 // templateRef is the assignment's starter-code source. Three
@@ -252,8 +287,8 @@ func validateAssignmentEntry(entry assignmentEntry) error {
 	if entry.Mode == "" {
 		return errors.New("mode must not be empty")
 	}
-	if entry.Mode != assignmentModeIndividual {
-		return fmt.Errorf("invalid mode %q: only `individual` is supported (group assignments are planned for a future release)", entry.Mode)
+	if !isValidAssignmentMode(entry.Mode) {
+		return fmt.Errorf("invalid mode %q: must be one of %v", entry.Mode, assignmentModes)
 	}
 	if entry.Template.Owner == "" || entry.Template.Repo == "" {
 		return errors.New("template owner/repo must not be empty")
@@ -292,8 +327,8 @@ func validateExistingEntry(entry assignmentEntry) error {
 	if entry.Mode == "" {
 		return fmt.Errorf("entry %q has empty mode", entry.Slug)
 	}
-	if entry.Mode != assignmentModeIndividual {
-		return fmt.Errorf("entry %q has unsupported mode %q", entry.Slug, entry.Mode)
+	if !isValidAssignmentMode(entry.Mode) {
+		return fmt.Errorf("entry %q has invalid mode %q (must be one of %v)", entry.Slug, entry.Mode, assignmentModes)
 	}
 	if entry.Template.Owner == "" || entry.Template.Repo == "" {
 		return fmt.Errorf("entry %q has empty template owner/repo", entry.Slug)

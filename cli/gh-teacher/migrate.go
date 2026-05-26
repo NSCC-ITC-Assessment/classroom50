@@ -1,0 +1,342 @@
+package main
+
+import (
+	"errors"
+	"fmt"
+	"io"
+	"strings"
+	"time"
+
+	"github.com/cli/go-gh/v2/pkg/api"
+	"github.com/spf13/cobra"
+)
+
+// classroomMigrateCmd implements `gh teacher classroom migrate`:
+// reads a GitHub Classroom source, copies each starter repo as a
+// fresh template in the target org, and commits the matching
+// classroom directory (classroom.json / assignments.json /
+// students.csv / scores.json) to <target>/classroom50.
+func classroomMigrateCmd() *cobra.Command {
+	var (
+		source          string
+		target          string
+		shortName       string
+		term            string
+		templateSuffix  string
+		includeArchived bool
+		dryRun          bool
+	)
+
+	cmd := &cobra.Command{
+		Use:   "migrate --source <id-or-org> --target <org>",
+		Short: "Migrate a classroom from GitHub Classroom into the target org's classroom50 repo",
+		Long: "Migrate a classroom from the legacy GitHub Classroom product into\n" +
+			"<target>/classroom50 — copies each starter repo as a fresh template\n" +
+			"in the target org and registers a matching entry in\n" +
+			"<short-name>/assignments.json. The roster and scores are NOT\n" +
+			"migrated; teachers re-onboard students for the new term via\n" +
+			"`gh teacher roster add|import`.\n\n" +
+			"GitHub Classroom is 1:1 with orgs (the org IS the classroom\n" +
+			"container) while Classroom 50 hosts multiple classrooms per\n" +
+			"org under one classroom50 config repo. Migrating N legacy\n" +
+			"classrooms into one target org means running this command N\n" +
+			"times, once per source classroom.\n\n" +
+			"--source accepts a numeric GitHub Classroom ID (e.g. 95884) or\n" +
+			"the source org's login (e.g. classroom50test). Org-login\n" +
+			"resolution errors if zero or more than one classroom matches.\n" +
+			"Archived classrooms resolve when looked up by numeric ID; they\n" +
+			"are skipped during org-name resolution unless --include-archived\n" +
+			"is passed.\n\n" +
+			"--target is the destination org where the classroom50 config\n" +
+			"repo lives. Run `gh teacher init <target>` first if it doesn't\n" +
+			"yet exist.\n\n" +
+			"--short-name overrides the auto-derived classroom directory\n" +
+			"name. Migrate slugifies the source classroom name (lowercase,\n" +
+			"non-alnum → '-', collapsed, trimmed) and validates against\n" +
+			"^[a-z0-9][a-z0-9-]{1,38}$. Pass --short-name explicitly if\n" +
+			"the derived value fails validation.\n\n" +
+			"--template-suffix appends a string to every target template\n" +
+			"repo name (e.g. --template-suffix migrated → readability-migrated).\n" +
+			"Use to escape collisions with existing target-org repos.\n\n" +
+			"--dry-run runs discovery against the source and prints what\n" +
+			"would be migrated. No API writes to either source or target.",
+		Example: "  gh teacher classroom migrate --source 95884 --target cs50-fall-2026 --dry-run\n" +
+			"  gh teacher classroom migrate --source classroom50test --target cs50-fall-2026 --dry-run\n" +
+			"  gh teacher classroom migrate --source 95884 --target cs50-fall-2026 --dry-run \\\n" +
+			"      --short-name cs-principles --term Spring-2026",
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cmd.SilenceUsage = true
+
+			sourceVal := strings.TrimSpace(source)
+			targetVal := strings.TrimSpace(target)
+			if sourceVal == "" {
+				return errors.New("--source is required (numeric classroom ID or org login)")
+			}
+			if targetVal == "" {
+				return errors.New("--target is required (destination org owning the classroom50 config repo)")
+			}
+
+			client, err := requireAuthClient(cmd)
+			if err != nil {
+				return err
+			}
+			return runMigrate(client, cmd.OutOrStdout(), cmd.ErrOrStderr(), migrateOptions{
+				Source:          sourceVal,
+				Target:          targetVal,
+				ShortName:       strings.TrimSpace(shortName),
+				Term:            strings.TrimSpace(term),
+				TemplateSuffix:  strings.TrimSpace(templateSuffix),
+				IncludeArchived: includeArchived,
+				DryRun:          dryRun,
+			})
+		},
+	}
+
+	cmd.Flags().StringVar(&source, "source", "", "Source classroom — numeric ID or org login (required)")
+	cmd.Flags().StringVar(&target, "target", "", "Destination org owning the classroom50 config repo (required)")
+	cmd.Flags().StringVar(&shortName, "short-name", "", "Override the auto-derived classroom directory name")
+	cmd.Flags().StringVar(&term, "term", "", "Set classroom.json.term (e.g. Spring-2026)")
+	cmd.Flags().StringVar(&templateSuffix, "template-suffix", "", "Suffix appended to every target template repo name (e.g. --template-suffix migrated → readability-migrated)")
+	cmd.Flags().BoolVar(&includeArchived, "include-archived", false, "Include archived classrooms when resolving --source by org name (ignored when --source is a numeric ID)")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Print the discovered migration plan without API writes")
+	return cmd
+}
+
+// migrateOptions packages the CLI flags runMigrate consumes so
+// tests can call it directly without going through cobra.
+type migrateOptions struct {
+	Source          string
+	Target          string
+	ShortName       string
+	Term            string
+	TemplateSuffix  string
+	IncludeArchived bool
+	DryRun          bool
+}
+
+// runMigrate is the top-level orchestrator:
+//
+//  1. Discovery — resolve --source, derive short-name, fetch all
+//     assignment details.
+//  2. Pre-flight — refuse to overwrite an existing target dir.
+//  3. Template copy — per-assignment generate/reuse/skip.
+//  4. Config commit — single Tree commit on <target>/classroom50.
+//
+// DryRun short-circuits after step 1.
+func runMigrate(client *api.RESTClient, out, errOut io.Writer, opts migrateOptions) error {
+	plan, err := discoverMigration(client, errOut, opts)
+	if err != nil {
+		return err
+	}
+
+	if err := printMigrationPlan(out, plan); err != nil {
+		return err
+	}
+
+	if opts.DryRun {
+		_, _ = fmt.Fprintln(errOut, "Dry-run complete — no API writes performed.")
+		_, _ = fmt.Fprintln(errOut, "Next: re-run without --dry-run to perform the migration.")
+		return nil
+	}
+
+	return performMigration(client, out, errOut, plan, opts.TemplateSuffix)
+}
+
+// discoverMigration runs discovery: resolves --source, derives the
+// short-name, and fetches every assignment detail.
+func discoverMigration(client *api.RESTClient, errOut io.Writer, opts migrateOptions) (migrationPlan, error) {
+	detail, err := resolveSource(client, errOut, opts.Source, opts.IncludeArchived)
+	if err != nil {
+		return migrationPlan{}, err
+	}
+
+	shortNameVal := opts.ShortName
+	if shortNameVal == "" {
+		shortNameVal, err = deriveShortName(detail.Name)
+		if err != nil {
+			return migrationPlan{}, err
+		}
+	}
+	if err := validateShortName(shortNameVal, "short-name"); err != nil {
+		return migrationPlan{}, err
+	}
+
+	assignments, err := fetchAssignmentsForClassroom(client, detail.ID)
+	if err != nil {
+		return migrationPlan{}, err
+	}
+
+	return migrationPlan{
+		Classroom:   detail,
+		Assignments: assignments,
+		TargetOrg:   opts.Target,
+		ShortName:   shortNameVal,
+		Term:        opts.Term,
+		MigratedAt:  time.Now().UTC(),
+	}, nil
+}
+
+// performMigration runs template copy followed by a single Tree
+// commit on <target>/classroom50. Returns a non-nil error when any
+// assignment was skipped during template copy — best-effort: the
+// commit still lands with the successful entries, the non-zero
+// exit code signals partial completion.
+func performMigration(client *api.RESTClient, out, errOut io.Writer, plan migrationPlan, templateSuffix string) error {
+	branch, err := resolveConfigRepoBranch(client, plan.TargetOrg)
+	if err != nil {
+		return err
+	}
+
+	// Fail fast on the common "already exists" case before any
+	// template repos get created. The commitTree build callback
+	// re-probes for race-safety against a concurrent writer.
+	exists, err := contentsExists(client, plan.TargetOrg, configRepoName, plan.ShortName, branch)
+	if err != nil {
+		return err
+	}
+	if exists {
+		return fmt.Errorf("classroom %q already exists in %s/%s — pick a different --short-name or delete the dir",
+			plan.ShortName, plan.TargetOrg, configRepoName)
+	}
+
+	resolved, err := runTemplateCopy(client, errOut, plan, templateSuffix)
+	if err != nil {
+		return err
+	}
+
+	entries := buildMigratedEntries(errOut, plan, resolved)
+	migration := classroomMigratedFromFromDetail(plan.Classroom, plan.MigratedAt)
+
+	build := func(parentSHA string) (map[string]string, error) {
+		exists, err := contentsExists(client, plan.TargetOrg, configRepoName, plan.ShortName, parentSHA)
+		if err != nil {
+			return nil, err
+		}
+		if exists {
+			return nil, fmt.Errorf("classroom %q appeared in %s/%s mid-commit (concurrent writer?)",
+				plan.ShortName, plan.TargetOrg, configRepoName)
+		}
+		return classroomScaffold(plan.TargetOrg, plan.ShortName, plan.Classroom.Name, plan.Term, entries, migration)
+	}
+
+	message := fmt.Sprintf("Migrate %s from GitHub Classroom %d (gh teacher classroom migrate)",
+		plan.ShortName, plan.Classroom.ID)
+	commitSHA, err := commitTree(client, plan.TargetOrg, configRepoName, branch, message, build)
+	if err != nil {
+		return err
+	}
+
+	printMigrationSummary(out, errOut, plan, resolved, entries, commitSHA, branch)
+
+	_, _, skipped := countTemplateActions(resolved)
+	if skipped > 0 {
+		return fmt.Errorf("%d assignment(s) skipped during template copy — see stderr for per-assignment reasons", skipped)
+	}
+	return nil
+}
+
+// buildMigratedEntries materializes the assignmentEntry slice for
+// the commit. A commit-time mapping failure (unreachable in normal
+// operation since copyOneTemplate pre-validates) is recorded as a
+// Skipped action so post-commit counts + exit code stay accurate.
+func buildMigratedEntries(errOut io.Writer, plan migrationPlan, resolved []resolvedTemplate) []assignmentEntry {
+	out := make([]assignmentEntry, 0, len(resolved))
+	for i := range resolved {
+		if resolved[i].Action == templateActionSkipped {
+			continue
+		}
+		entry, err := assignmentToEntry(resolved[i].Assignment, plan.Classroom.ID, resolved[i].Template, plan.MigratedAt)
+		if err != nil {
+			_, _ = fmt.Fprintf(errOut, "Skipping %q at commit time: %v\n", resolved[i].Assignment.Slug, err)
+			resolved[i].Action = templateActionSkipped
+			resolved[i].SkipReason = "commit-time mapping failed: " + err.Error()
+			continue
+		}
+		out = append(out, entry)
+	}
+	return out
+}
+
+// printMigrationSummary writes the parseable post-commit result to
+// stdout (one anchor line + per-file deltas) and follow-up advice
+// to stderr. All counts come from the committed entries so the
+// summary stays consistent with what landed on disk.
+func printMigrationSummary(out, errOut io.Writer, plan migrationPlan, resolved []resolvedTemplate, entries []assignmentEntry, commitSHA, branch string) {
+	generated, reused, skipped := countTemplateActions(resolved)
+	indiv, group := countEntriesByMode(entries)
+	short := commitSHA
+	if len(short) > 8 {
+		short = short[:8]
+	}
+
+	_, _ = fmt.Fprintf(out, "%s/%s/%s: migrated from classroom %d (commit %s; %d generated, %d reused, %d skipped)\n",
+		plan.TargetOrg, configRepoName, plan.ShortName, plan.Classroom.ID, short, generated, reused, skipped)
+
+	_, _ = fmt.Fprintf(out, "  classroom.json     %q (migrated_from: github_classroom/%d)\n",
+		plan.Classroom.Name, plan.Classroom.ID)
+	_, _ = fmt.Fprintf(out, "  assignments.json   %d entries (%d individual, %d group)\n",
+		len(entries), indiv, group)
+	_, _ = fmt.Fprintln(out, "  students.csv       empty (not migrated)")
+	_, _ = fmt.Fprintln(out, "  scores.json        empty (not migrated)")
+
+	_, _ = fmt.Fprintf(errOut, "View at https://github.com/%s/%s/tree/%s/%s\n",
+		plan.TargetOrg, configRepoName, branch, plan.ShortName)
+	_, _ = fmt.Fprintln(errOut, "Next:")
+	_, _ = fmt.Fprintf(errOut, "  - Add students: gh teacher roster add %s %s <username>\n",
+		plan.TargetOrg, plan.ShortName)
+	_, _ = fmt.Fprintf(errOut, "  - Author grading code: drop autograder.py under %s/autograders/<slug>/,\n",
+		plan.ShortName)
+	_, _ = fmt.Fprintf(errOut, "    or set a classroom default: gh teacher autograder set-default %s %s\n",
+		plan.TargetOrg, plan.ShortName)
+}
+
+// printMigrationPlan writes the plan to stdout in source-API order
+// (deterministic so callers can pipe it). Stderr advisory output is
+// the caller's responsibility.
+func printMigrationPlan(out io.Writer, plan migrationPlan) error {
+	indiv, group, other := plan.countsByMode()
+	noun := "assignment"
+	if len(plan.Assignments) != 1 {
+		noun = "assignments"
+	}
+
+	_, _ = fmt.Fprintf(out, "%s/%s/%s: planned migration from classroom %d (%d %s)\n",
+		plan.TargetOrg, configRepoName, plan.ShortName, plan.Classroom.ID, len(plan.Assignments), noun)
+	_, _ = fmt.Fprintf(out, "  source:        %s (org: %s)\n",
+		plan.Classroom.Name, plan.Classroom.Organization.Login)
+	if plan.Classroom.Archived {
+		_, _ = fmt.Fprintf(out, "  archived:      true\n")
+	}
+	_, _ = fmt.Fprintf(out, "  short_name:    %s\n", plan.ShortName)
+	if plan.Term != "" {
+		_, _ = fmt.Fprintf(out, "  term:          %s\n", plan.Term)
+	}
+	_, _ = fmt.Fprintf(out, "  modes:         %d individual, %d group", indiv, group)
+	if other > 0 {
+		_, _ = fmt.Fprintf(out, ", %d unknown", other)
+	}
+	_, _ = fmt.Fprintln(out)
+
+	if len(plan.Assignments) == 0 {
+		_, _ = fmt.Fprintln(out, "  assignments:   (none)")
+	} else {
+		_, _ = fmt.Fprintln(out, "  assignments:")
+		for _, a := range plan.Assignments {
+			starter := "no starter_code_repository — would be skipped"
+			if a.StarterCodeRepo != nil {
+				privacy := "public"
+				if a.StarterCodeRepo.Private {
+					privacy = "private"
+				}
+				starter = fmt.Sprintf("%s @ %s (%s)", a.StarterCodeRepo.FullName, a.StarterCodeRepo.DefaultBranch, privacy)
+			}
+			line := fmt.Sprintf("    - %-32s mode=%s  starter=%s", a.Slug, a.Type, starter)
+			if a.Deadline != nil && *a.Deadline != "" {
+				line += "  deadline=" + *a.Deadline
+			}
+			_, _ = fmt.Fprintln(out, line)
+		}
+	}
+	return nil
+}

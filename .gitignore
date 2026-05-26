@@ -12,3 +12,7 @@ __pycache__/
 # pytest's cache lives at the repo root when `pytest` is invoked
 # from there.
 .pytest_cache/
+
+# Internal planning docs — kept out of git entirely so drafts never
+# end up in the public mirror or shared review surface.
+plans/
