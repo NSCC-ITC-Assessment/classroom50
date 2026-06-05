@@ -430,7 +430,7 @@ func loadScores(client *api.RESTClient, org, classroom, ref string) (scoresJSON,
 		return scoresJSON{}, err
 	}
 	if !ok {
-		return scoresJSON{Schema: scoresSchemaV1, Submissions: []map[string]any{}}, nil
+		return scoresJSON{Schema: scoresSchemaV1, Submissions: map[string][]map[string]any{}}, nil
 	}
 	scores, err := parseScores(data)
 	if err != nil {
@@ -445,24 +445,92 @@ func scoresFilePath(classroom string) string {
 }
 
 // parseScores enforces the schema sentinel before trusting any
-// other field. Submissions stay as []map[string]any so a shape
-// addition doesn't require updating this struct — download reads
-// only a handful of well-known keys.
+// other field, then decodes `submissions` into the assignment-keyed
+// map. The decode is deliberately lenient: the v1 schema string now
+// names two structures (the current map and the legacy flat array),
+// and two of the target repo's classrooms even ship a stray "{}"
+// string. decodeSubmissions coerces all of them so download never
+// fails on a hand-edit or a not-yet-migrated file. Rows stay as
+// map[string]any -- download reads only a handful of well-known keys.
 func parseScores(data []byte) (scoresJSON, error) {
 	if len(bytes.TrimSpace(data)) == 0 {
-		return scoresJSON{Schema: scoresSchemaV1, Submissions: []map[string]any{}}, nil
+		return scoresJSON{Schema: scoresSchemaV1, Submissions: map[string][]map[string]any{}}, nil
 	}
-	var scores scoresJSON
-	if err := json.Unmarshal(data, &scores); err != nil {
+	var raw struct {
+		Schema      string          `json:"schema"`
+		Submissions json.RawMessage `json:"submissions"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
 		return scoresJSON{}, fmt.Errorf("parse: %w", err)
 	}
-	if scores.Schema != scoresSchemaV1 {
-		return scoresJSON{}, fmt.Errorf("schema mismatch: got %q, want %q (this CLI handles only v1)", scores.Schema, scoresSchemaV1)
+	if raw.Schema != scoresSchemaV1 {
+		return scoresJSON{}, fmt.Errorf("schema mismatch: got %q, want %q (this CLI handles only v1)", raw.Schema, scoresSchemaV1)
 	}
-	if scores.Submissions == nil {
-		scores.Submissions = []map[string]any{}
+	submissions, err := decodeSubmissions(raw.Submissions)
+	if err != nil {
+		return scoresJSON{}, err
 	}
-	return scores, nil
+	return scoresJSON{Schema: raw.Schema, Submissions: submissions}, nil
+}
+
+// decodeSubmissions coerces the `submissions` field into the
+// assignment-keyed map, tolerating the shapes a v1 file can carry: an
+// object (current), null/absent, a JSON-string wrapper (e.g. the "{}"
+// some classrooms ship), or a legacy flat array (regrouped by each
+// row's `assignment`, dropping that now-redundant key). Mirrors
+// normalize_submissions in collect_scores.py.
+func decodeSubmissions(raw json.RawMessage) (map[string][]map[string]any, error) {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || string(trimmed) == "null" {
+		return map[string][]map[string]any{}, nil
+	}
+	switch trimmed[0] {
+	case '{':
+		var m map[string][]map[string]any
+		if err := json.Unmarshal(trimmed, &m); err != nil {
+			return nil, fmt.Errorf("parse submissions: %w", err)
+		}
+		if m == nil {
+			m = map[string][]map[string]any{}
+		}
+		return m, nil
+	case '"':
+		// JSON-string wrapper, e.g. "{}" -- unwrap once and retry.
+		var s string
+		if err := json.Unmarshal(trimmed, &s); err != nil {
+			return nil, fmt.Errorf("parse submissions: %w", err)
+		}
+		if strings.TrimSpace(s) == "" {
+			return map[string][]map[string]any{}, nil
+		}
+		return decodeSubmissions(json.RawMessage(s))
+	case '[':
+		// Legacy flat array -> regroup by each row's assignment. Fail
+		// on a row we can't bucket rather than silently dropping it,
+		// mirroring normalize_submissions in collect_scores.py.
+		// (A non-object row already fails the Unmarshal below.)
+		var rows []map[string]any
+		if err := json.Unmarshal(trimmed, &rows); err != nil {
+			return nil, fmt.Errorf("parse submissions: %w", err)
+		}
+		grouped := map[string][]map[string]any{}
+		for i, row := range rows {
+			assignment, _ := row["assignment"].(string)
+			if assignment == "" {
+				return nil, fmt.Errorf("legacy submissions[%d] is missing a non-empty string \"assignment\"", i)
+			}
+			entry := make(map[string]any, len(row))
+			for k, v := range row {
+				if k != "assignment" {
+					entry[k] = v
+				}
+			}
+			grouped[assignment] = append(grouped[assignment], entry)
+		}
+		return grouped, nil
+	default:
+		return nil, fmt.Errorf("submissions must be an object, got %s", string(trimmed))
+	}
 }
 
 // writeScoresCSV writes a per-assignment summary. One row per
@@ -471,11 +539,9 @@ func parseScores(data []byte) (scoresJSON, error) {
 // breakdowns are intentionally omitted — that detail lives in the
 // per-repo result.json.
 func writeScoresCSV(path string, scores scoresJSON, assignment string, roster []rosterRow) error {
-	bySubmitter := make(map[string]map[string]any, len(scores.Submissions))
-	for _, sub := range scores.Submissions {
-		if !submissionMatchesAssignment(sub, assignment) {
-			continue
-		}
+	rows := submissionsForAssignment(scores, assignment)
+	bySubmitter := make(map[string]map[string]any, len(rows))
+	for _, sub := range rows {
 		for _, u := range submissionUsernames(sub) {
 			bySubmitter[strings.ToLower(u)] = sub
 		}
@@ -518,12 +584,20 @@ func scoresCSVRow(username string, sub map[string]any) []string {
 	}
 }
 
-// submissionMatchesAssignment: case-insensitive on the assignment
-// field — `assignment add` lowercases on write and the CLI
-// lowercases its argument.
-func submissionMatchesAssignment(sub map[string]any, assignment string) bool {
-	got, _ := sub["assignment"].(string)
-	return strings.EqualFold(got, assignment)
+// submissionsForAssignment returns the bucket of rows for an
+// assignment. The lookup is case-insensitive -- `assignment add`
+// lowercases slugs on write and the CLI lowercases its argument, but
+// a hand-edited scores.json key might not match exactly.
+func submissionsForAssignment(scores scoresJSON, assignment string) []map[string]any {
+	if rows, ok := scores.Submissions[assignment]; ok {
+		return rows
+	}
+	for slug, rows := range scores.Submissions {
+		if strings.EqualFold(slug, assignment) {
+			return rows
+		}
+	}
+	return nil
 }
 
 // submissionUsernames returns every username on a submission entry.

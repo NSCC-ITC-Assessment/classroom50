@@ -181,13 +181,14 @@ type classroomMigratedFromRef struct {
 	MigratedAt       string `json:"migrated_at"`
 }
 
-// scoresJSON: one entry per (assignment, student) pair, written by
-// `collect-scores.yaml`'s collect_scores.py. The slice is `[]` (not
-// null) at scaffold time so the collect script sees a well-formed
-// file on first run.
+// scoresJSON: the gradebook written by `collect-scores.yaml`'s
+// collect_scores.py. `submissions` is keyed by assignment slug; each
+// value is that assignment's rows (one per student). The map is
+// non-nil (`{}`, not null) at scaffold time so the collect script
+// sees a well-formed file on first run.
 type scoresJSON struct {
-	Schema      string           `json:"schema"`
-	Submissions []map[string]any `json:"submissions"`
+	Schema      string                      `json:"schema"`
+	Submissions map[string][]map[string]any `json:"submissions"`
 }
 
 // classroomScaffold returns destination-path → content for the
@@ -224,7 +225,7 @@ func classroomScaffold(org, shortName, name, term string, entries []assignmentEn
 
 	scores := scoresJSON{
 		Schema:      scoresSchemaV1,
-		Submissions: []map[string]any{},
+		Submissions: map[string][]map[string]any{},
 	}
 	scoresBytes, err := encodeJSONPretty(scores)
 	if err != nil {

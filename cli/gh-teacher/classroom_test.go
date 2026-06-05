@@ -163,15 +163,16 @@ func TestClassroomScaffold(t *testing.T) {
 		t.Errorf("scores.json schema = %q, want %q", scores.Schema, scoresSchemaV1)
 	}
 	if scores.Submissions == nil {
-		t.Errorf("scores.json Submissions must be a non-nil empty slice so it marshals to [], not null; collect-scores.yaml needs the field present from scaffold time")
+		t.Errorf("scores.json Submissions must be a non-nil empty map so it marshals to {}, not null; collect-scores.yaml needs the field present from scaffold time")
 	}
 	if len(scores.Submissions) != 0 {
-		t.Errorf("scores.json should start empty, got %d submissions", len(scores.Submissions))
+		t.Errorf("scores.json should start empty, got %d assignment buckets", len(scores.Submissions))
 	}
-	// `[]` not `null` on the wire — collect_scores.py appends to
-	// the array without normalizing null first.
-	if !strings.Contains(files["cs-principles/scores.json"], "\"submissions\": []") {
-		t.Errorf("scores.json should serialize the empty list as [], got:\n%s", files["cs-principles/scores.json"])
+	// `{}` not `null` on the wire -- submissions is keyed by
+	// assignment slug, and collect_scores.py adds buckets without
+	// normalizing null first.
+	if !strings.Contains(files["cs-principles/scores.json"], "\"submissions\": {}") {
+		t.Errorf("scores.json should serialize the empty map as {}, got:\n%s", files["cs-principles/scores.json"])
 	}
 
 	csv := files["cs-principles/students.csv"]

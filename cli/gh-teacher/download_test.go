@@ -130,37 +130,52 @@ func TestParseScores(t *testing.T) {
 	cases := []struct {
 		name        string
 		in          string
-		wantLen     int
+		wantRows    int // total rows across every assignment bucket
 		wantErrPart string
 	}{
 		{
-			name:    "empty file → empty submissions",
-			in:      "",
-			wantLen: 0,
+			name:     "empty file -> empty submissions",
+			in:       "",
+			wantRows: 0,
 		},
 		{
-			name:    "whitespace only → empty submissions",
-			in:      "   \n\t",
-			wantLen: 0,
+			name:     "whitespace only -> empty submissions",
+			in:       "   \n\t",
+			wantRows: 0,
 		},
 		{
-			name:    "well-formed empty array",
-			in:      `{"schema":"classroom50/scores/v1","submissions":[]}`,
-			wantLen: 0,
+			name:     "well-formed empty map",
+			in:       `{"schema":"classroom50/scores/v1","submissions":{}}`,
+			wantRows: 0,
 		},
 		{
-			name:    "null submissions normalize to empty",
-			in:      `{"schema":"classroom50/scores/v1","submissions":null}`,
-			wantLen: 0,
+			name:     "null submissions normalize to empty",
+			in:       `{"schema":"classroom50/scores/v1","submissions":null}`,
+			wantRows: 0,
 		},
 		{
-			name:    "one submission",
-			in:      `{"schema":"classroom50/scores/v1","submissions":[{"assignment":"hello","usernames":["alice"],"score":10}]}`,
-			wantLen: 1,
+			name:     `"{}" string wrapper tolerated`,
+			in:       `{"schema":"classroom50/scores/v1","submissions":"{}"}`,
+			wantRows: 0,
+		},
+		{
+			name:     "one submission in a bucket",
+			in:       `{"schema":"classroom50/scores/v1","submissions":{"hello":[{"usernames":["alice"],"score":10}]}}`,
+			wantRows: 1,
+		},
+		{
+			name:     "legacy flat array regroups by assignment",
+			in:       `{"schema":"classroom50/scores/v1","submissions":[{"assignment":"hello","usernames":["alice"],"score":10},{"assignment":"bye","usernames":["bob"],"score":5}]}`,
+			wantRows: 2,
+		},
+		{
+			name:        "legacy row without assignment rejected (no silent drop)",
+			in:          `{"schema":"classroom50/scores/v1","submissions":[{"usernames":["alice"],"score":10}]}`,
+			wantErrPart: "assignment",
 		},
 		{
 			name:        "wrong schema rejected",
-			in:          `{"schema":"classroom50/scores/v2","submissions":[]}`,
+			in:          `{"schema":"classroom50/scores/v2","submissions":{}}`,
 			wantErrPart: "schema mismatch",
 		},
 		{
@@ -184,26 +199,46 @@ func TestParseScores(t *testing.T) {
 			if err != nil {
 				t.Fatalf("parseScores: %v", err)
 			}
-			if len(got.Submissions) != tc.wantLen {
-				t.Fatalf("submissions = %d, want %d", len(got.Submissions), tc.wantLen)
+			if got.Submissions == nil {
+				t.Fatal("Submissions must be a non-nil map")
+			}
+			rows := 0
+			for _, bucket := range got.Submissions {
+				rows += len(bucket)
+			}
+			if rows != tc.wantRows {
+				t.Fatalf("rows = %d, want %d", rows, tc.wantRows)
 			}
 		})
 	}
 }
 
-func TestSubmissionMatchesAssignment(t *testing.T) {
-	sub := map[string]any{"assignment": "Hello"}
-	if !submissionMatchesAssignment(sub, "hello") {
-		t.Error("case-insensitive match must succeed")
+// TestParseScoresLegacyArrayRegroup pins the back-compat migration:
+// a v1 file still carrying the old flat array is regrouped by each
+// row's assignment, and the now-redundant `assignment` key is dropped
+// from the stored rows (mirrors normalize_submissions in
+// collect_scores.py).
+func TestParseScoresLegacyArrayRegroup(t *testing.T) {
+	in := `{"schema":"classroom50/scores/v1","submissions":[` +
+		`{"assignment":"hello","usernames":["alice"],"score":10},` +
+		`{"assignment":"hello","usernames":["bob"],"score":7},` +
+		`{"assignment":"bye","usernames":["alice"],"score":3}]}`
+	got, err := parseScores([]byte(in))
+	if err != nil {
+		t.Fatalf("parseScores: %v", err)
 	}
-	if submissionMatchesAssignment(sub, "goodbye") {
-		t.Error("non-matching assignment must not match")
+	if len(got.Submissions["hello"]) != 2 {
+		t.Errorf("hello bucket = %d rows, want 2", len(got.Submissions["hello"]))
 	}
-	if submissionMatchesAssignment(map[string]any{}, "hello") {
-		t.Error("missing assignment field must not match")
+	if len(got.Submissions["bye"]) != 1 {
+		t.Errorf("bye bucket = %d rows, want 1", len(got.Submissions["bye"]))
 	}
-	if submissionMatchesAssignment(map[string]any{"assignment": 123}, "hello") {
-		t.Error("non-string assignment must not match")
+	for slug, bucket := range got.Submissions {
+		for _, row := range bucket {
+			if _, ok := row["assignment"]; ok {
+				t.Errorf("%s row still carries an 'assignment' field after migration: %#v", slug, row)
+			}
+		}
 	}
 }
 
@@ -255,40 +290,41 @@ func TestWriteScoresCSV(t *testing.T) {
 
 	// scores: alice submitted, bob submitted with override true, carol has no row.
 	// "mallory" has a submission but isn't on the roster → must NOT appear in csv.
-	// An entry for a different assignment → must NOT appear.
+	// A row in a different assignment bucket must NOT appear. Stored rows carry
+	// no "assignment" field (it's the bucket key).
 	scores := scoresJSON{
 		Schema: scoresSchemaV1,
-		Submissions: []map[string]any{
-			{
-				"assignment": "hello",
-				"usernames":  []any{"alice"},
-				"score":      float64(18),
-				"max-score":  float64(30),
-				"datetime":   "2026-06-01T14:33:11Z",
-				"submission": "submit/2026-06-01T14-32-05Z",
-				"review":     "https://github.com/cs50/cs-principles-hello-alice/commit/abc",
+		Submissions: map[string][]map[string]any{
+			"hello": {
+				{
+					"usernames":  []any{"alice"},
+					"score":      float64(18),
+					"max-score":  float64(30),
+					"datetime":   "2026-06-01T14:33:11Z",
+					"submission": "submit/2026-06-01T14-32-05Z",
+					"review":     "https://github.com/cs50/cs-principles-hello-alice/commit/abc",
+				},
+				{
+					"usernames":  []any{"bob"},
+					"score":      float64(25),
+					"max-score":  float64(30),
+					"datetime":   "2026-06-01T15:00:00Z",
+					"submission": "submit/2026-06-01T14-59-00Z",
+					"review":     "https://github.com/cs50/cs-principles-hello-bob/commit/def",
+					"override":   true,
+				},
+				{
+					"usernames": []any{"mallory"},
+					"score":     float64(0),
+					"max-score": float64(30),
+				},
 			},
-			{
-				"assignment": "hello",
-				"usernames":  []any{"bob"},
-				"score":      float64(25),
-				"max-score":  float64(30),
-				"datetime":   "2026-06-01T15:00:00Z",
-				"submission": "submit/2026-06-01T14-59-00Z",
-				"review":     "https://github.com/cs50/cs-principles-hello-bob/commit/def",
-				"override":   true,
-			},
-			{
-				"assignment": "hello",
-				"usernames":  []any{"mallory"},
-				"score":      float64(0),
-				"max-score":  float64(30),
-			},
-			{
-				"assignment": "goodbye",
-				"usernames":  []any{"alice"},
-				"score":      float64(99),
-				"max-score":  float64(100),
+			"goodbye": {
+				{
+					"usernames": []any{"alice"},
+					"score":     float64(99),
+					"max-score": float64(100),
+				},
 			},
 		},
 	}

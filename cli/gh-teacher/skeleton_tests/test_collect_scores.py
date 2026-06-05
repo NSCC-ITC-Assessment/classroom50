@@ -54,6 +54,15 @@ def make_result(
     return base
 
 
+def stored_row(**kwargs) -> dict:
+    """The gradebook row apply_updates stores: a result payload with
+    the `assignment` field dropped (it's the bucket key). Everything
+    else (schema, tests, submission, ...) is retained."""
+    row = make_result(**kwargs)
+    row.pop("assignment", None)
+    return row
+
+
 def write_roster(path, rows: list[dict[str, str]]) -> None:
     """Write a 6-column students.csv at `path`. Each row dict only needs
     the fields the test cares about; missing fields default to ''."""
@@ -83,40 +92,36 @@ def write_minimal_classroom(root: pathlib.Path) -> pathlib.Path:
     )
     write_roster(classroom / "students.csv", [{"username": "alice", "github_id": "111"}])
     (classroom / "scores.json").write_text(
-        json.dumps({"schema": cs.SCORES_SCHEMA_V1, "submissions": []})
+        json.dumps({"schema": cs.SCORES_SCHEMA_V1, "submissions": {}})
     )
     return classroom
 
 
-# submission_key --------------------------------------------------------------
+# usernames_key ---------------------------------------------------------------
 
 
-class TestSubmissionKey:
-    def test_canonical_record_returns_lowercased_tuple_key(self):
+class TestUsernamesKey:
+    def test_canonical_record_returns_lowercased_tuple(self):
         # Lowercased usernames keep a hand-edited "Alice" and the
-        # canonical "alice" from creating duplicate rows.
-        rec = {"assignment": "hello", "usernames": ["Alice"]}
-        assert cs.submission_key(rec) == ("hello", ("alice",))
-
-    def test_missing_assignment_returns_none(self):
-        assert cs.submission_key({"usernames": ["alice"]}) is None
+        # canonical "alice" from creating duplicate rows. The
+        # assignment is the bucket key now, not part of this key.
+        assert cs.usernames_key({"usernames": ["Alice"]}) == ("alice",)
 
     def test_missing_usernames_returns_none(self):
-        assert cs.submission_key({"assignment": "hello"}) is None
+        assert cs.usernames_key({"datetime": "x"}) is None
 
     def test_empty_usernames_list_returns_none(self):
-        assert cs.submission_key({"assignment": "hello", "usernames": []}) is None
+        assert cs.usernames_key({"usernames": []}) is None
 
     def test_non_string_username_returns_none(self):
         # Defensive — a hand-edited numeric username would silently
         # match nothing in apply_updates.
-        assert cs.submission_key({"assignment": "hello", "usernames": [123]}) is None
+        assert cs.usernames_key({"usernames": [123]}) is None
 
     def test_multi_username_preserves_order_lowercased(self):
         # Tuple shape is intentionally extensible so a key migration
         # isn't needed if group submissions land.
-        rec = {"assignment": "hello", "usernames": ["Alice", "Bob"]}
-        assert cs.submission_key(rec) == ("hello", ("alice", "bob"))
+        assert cs.usernames_key({"usernames": ["Alice", "Bob"]}) == ("alice", "bob")
 
 
 # apply_updates ---------------------------------------------------------------
@@ -124,77 +129,105 @@ class TestSubmissionKey:
 
 class TestApplyUpdates:
     def test_appends_new_submission(self):
-        scores = {"schema": cs.SCORES_SCHEMA_V1, "submissions": []}
+        scores = {"schema": cs.SCORES_SCHEMA_V1, "submissions": {}}
         changes = cs.apply_updates(scores, [make_result()])
         assert changes == 1
-        assert scores["submissions"] == [make_result()]
+        assert scores["submissions"] == {"hello": [stored_row()]}
+
+    def test_buckets_by_assignment(self):
+        # Each assignment is its own bucket, keyed by slug.
+        scores = {"schema": cs.SCORES_SCHEMA_V1, "submissions": {}}
+        changes = cs.apply_updates(
+            scores,
+            [
+                make_result(assignment="hello", username="alice"),
+                make_result(assignment="goodbye", username="alice"),
+            ],
+        )
+        assert changes == 2
+        assert set(scores["submissions"]) == {"hello", "goodbye"}
+        assert scores["submissions"]["hello"] == [stored_row(assignment="hello", username="alice")]
+        assert scores["submissions"]["goodbye"] == [stored_row(assignment="goodbye", username="alice")]
+
+    def test_stored_row_drops_assignment_keeps_other_fields(self):
+        # The bucket key is the assignment, so the row must not
+        # duplicate it, but schema/tests/submission are retained.
+        scores = {"schema": cs.SCORES_SCHEMA_V1, "submissions": {}}
+        cs.apply_updates(scores, [make_result()])
+        row = scores["submissions"]["hello"][0]
+        assert "assignment" not in row
+        assert row["schema"] == cs.RESULT_SCHEMA_V1
+        assert row["tests"]  # per-test breakdown retained
+        assert row["submission"].startswith("submit/")
 
     def test_replaces_existing_submission_in_place(self):
-        # Row order is preserved across collect runs.
-        first = make_result(username="alice", score=10)
-        second = make_result(username="bob", score=5)
-        scores = {"schema": cs.SCORES_SCHEMA_V1, "submissions": [first, second]}
+        # Row order within a bucket is preserved across collect runs.
+        first = stored_row(username="alice", score=10)
+        second = stored_row(username="bob", score=5)
+        scores = {"schema": cs.SCORES_SCHEMA_V1, "submissions": {"hello": [first, second]}}
         updated_alice = make_result(
             username="alice", score=20, submission_tag="submit/2026-06-02T10-00-00Z"
         )
         changes = cs.apply_updates(scores, [updated_alice])
         assert changes == 1
-        assert scores["submissions"][0] == updated_alice
-        assert scores["submissions"][1] == second  # bob is untouched
+        assert scores["submissions"]["hello"][0] == stored_row(
+            username="alice", score=20, submission_tag="submit/2026-06-02T10-00-00Z"
+        )
+        assert scores["submissions"]["hello"][1] == second  # bob is untouched
 
     def test_skips_overridden_rows(self):
         # Override contract: teacher correction is final until cleared.
         # A fresh result must not silently overwrite it.
-        existing = make_result(username="alice", score=20)
+        existing = stored_row(username="alice", score=20)
         existing["override"] = True
-        scores = {"schema": cs.SCORES_SCHEMA_V1, "submissions": [existing]}
+        scores = {"schema": cs.SCORES_SCHEMA_V1, "submissions": {"hello": [existing]}}
         incoming = make_result(username="alice", score=5)
         changes = cs.apply_updates(scores, [incoming])
         assert changes == 0
-        assert scores["submissions"][0] == existing
+        assert scores["submissions"]["hello"][0] == existing
 
     def test_override_false_is_not_a_skip_signal(self):
         # Explicit "override": false is treated like absent for
         # the refresh decision, but preserved on replacement.
-        existing = make_result(username="alice", score=5)
+        existing = stored_row(username="alice", score=5)
         existing["override"] = False
-        scores = {"schema": cs.SCORES_SCHEMA_V1, "submissions": [existing]}
+        scores = {"schema": cs.SCORES_SCHEMA_V1, "submissions": {"hello": [existing]}}
         incoming = make_result(username="alice", score=10)
         changes = cs.apply_updates(scores, [incoming])
         assert changes == 1
-        assert scores["submissions"][0]["score"] == 10
-        assert scores["submissions"][0]["override"] is False
+        assert scores["submissions"]["hello"][0]["score"] == 10
+        assert scores["submissions"]["hello"][0]["override"] is False
 
     def test_identical_incoming_is_a_noop(self):
         # `same_submission` gates re-runs: stable classroom → no commits.
-        existing = make_result()
-        scores = {"schema": cs.SCORES_SCHEMA_V1, "submissions": [existing]}
+        existing = stored_row()
+        scores = {"schema": cs.SCORES_SCHEMA_V1, "submissions": {"hello": [existing]}}
         changes = cs.apply_updates(scores, [make_result()])
         assert changes == 0
 
     def test_identical_modulo_override_field_is_a_noop(self):
         # "override": false on existing vs absent on incoming →
         # same effective data, no change.
-        existing = make_result()
+        existing = stored_row()
         existing["override"] = False
-        scores = {"schema": cs.SCORES_SCHEMA_V1, "submissions": [existing]}
+        scores = {"schema": cs.SCORES_SCHEMA_V1, "submissions": {"hello": [existing]}}
         changes = cs.apply_updates(scores, [make_result()])
         assert changes == 0
         # Existing override field is preserved (no overwrite).
-        assert scores["submissions"][0]["override"] is False
+        assert scores["submissions"]["hello"][0]["override"] is False
 
     def test_handles_malformed_existing_row_gracefully(self):
         # A hand-edited non-dict entry doesn't crash the collector;
         # apply_updates ignores it and appends the new row.
-        scores = {"schema": cs.SCORES_SCHEMA_V1, "submissions": ["junk"]}
+        scores = {"schema": cs.SCORES_SCHEMA_V1, "submissions": {"hello": ["junk"]}}
         changes = cs.apply_updates(scores, [make_result()])
         assert changes == 1
         # The junk row stays where it was; the new row appends.
-        assert scores["submissions"][0] == "junk"
-        assert scores["submissions"][1] == make_result()
+        assert scores["submissions"]["hello"][0] == "junk"
+        assert scores["submissions"]["hello"][1] == stored_row()
 
     def test_multiple_updates_apply_in_order(self):
-        scores = {"schema": cs.SCORES_SCHEMA_V1, "submissions": []}
+        scores = {"schema": cs.SCORES_SCHEMA_V1, "submissions": {}}
         updates = [
             make_result(username="alice"),
             make_result(username="bob"),
@@ -202,8 +235,9 @@ class TestApplyUpdates:
         ]
         changes = cs.apply_updates(scores, updates)
         assert changes == 3  # alice insert, bob insert, alice replace
-        assert [s["usernames"][0] for s in scores["submissions"]] == ["alice", "bob"]
-        assert scores["submissions"][0]["score"] == 99
+        bucket = scores["submissions"]["hello"]
+        assert [s["usernames"][0] for s in bucket] == ["alice", "bob"]
+        assert bucket[0]["score"] == 99
 
 
 # validate_result -------------------------------------------------------------
@@ -435,13 +469,13 @@ class TestReadStudentsCSV:
 class TestScoresIO:
     def test_load_returns_skeleton_for_missing_file(self, tmp_path):
         scores = cs.load_scores(tmp_path / "scores.json")
-        assert scores == {"schema": cs.SCORES_SCHEMA_V1, "submissions": []}
+        assert scores == {"schema": cs.SCORES_SCHEMA_V1, "submissions": {}}
 
     def test_load_returns_skeleton_for_empty_file(self, tmp_path):
         path = tmp_path / "scores.json"
         path.write_text("")
         scores = cs.load_scores(path)
-        assert scores == {"schema": cs.SCORES_SCHEMA_V1, "submissions": []}
+        assert scores == {"schema": cs.SCORES_SCHEMA_V1, "submissions": {}}
 
     def test_load_raises_on_malformed_json(self, tmp_path):
         path = tmp_path / "scores.json"
@@ -451,23 +485,79 @@ class TestScoresIO:
 
     def test_load_raises_on_wrong_schema(self, tmp_path):
         path = tmp_path / "scores.json"
-        path.write_text(json.dumps({"schema": "classroom50/scores/v2", "submissions": []}))
+        path.write_text(json.dumps({"schema": "classroom50/scores/v2", "submissions": {}}))
         with pytest.raises(cs.ScoresFileError, match="schema"):
             cs.load_scores(path)
 
     def test_load_normalizes_null_submissions(self, tmp_path):
-        # `"submissions": null` normalizes to [] so a hand-edit
+        # `"submissions": null` normalizes to {} so a hand-edit
         # doesn't crash the collector.
         path = tmp_path / "scores.json"
         path.write_text(json.dumps({"schema": cs.SCORES_SCHEMA_V1, "submissions": None}))
         scores = cs.load_scores(path)
-        assert scores["submissions"] == []
+        assert scores["submissions"] == {}
 
-    def test_load_raises_when_submissions_is_not_a_list(self, tmp_path):
-        # Defensive — a dict-shaped submissions field is corrupt;
-        # don't silently repair it.
+    def test_load_tolerates_stringified_empty_map(self, tmp_path):
+        # Two of the target repo's classrooms ship `"submissions":"{}"`
+        # (a JSON-string wrapper). Unwrap it instead of crashing.
         path = tmp_path / "scores.json"
-        path.write_text(json.dumps({"schema": cs.SCORES_SCHEMA_V1, "submissions": {}}))
+        path.write_text(json.dumps({"schema": cs.SCORES_SCHEMA_V1, "submissions": "{}"}))
+        scores = cs.load_scores(path)
+        assert scores["submissions"] == {}
+
+    def test_load_migrates_legacy_flat_array(self, tmp_path):
+        # An old v1 file still using the flat array regroups by
+        # assignment, dropping the now-redundant key from each row.
+        path = tmp_path / "scores.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "schema": cs.SCORES_SCHEMA_V1,
+                    "submissions": [
+                        make_result(assignment="hello", username="alice"),
+                        make_result(assignment="goodbye", username="bob"),
+                    ],
+                }
+            )
+        )
+        scores = cs.load_scores(path)
+        assert set(scores["submissions"]) == {"hello", "goodbye"}
+        assert scores["submissions"]["hello"] == [stored_row(assignment="hello", username="alice")]
+        assert "assignment" not in scores["submissions"]["hello"][0]
+
+    def test_load_raises_on_legacy_row_without_assignment(self, tmp_path):
+        # A legacy-array row we can't bucket must fail the run, not get
+        # silently dropped on the next write (teacher data protection).
+        path = tmp_path / "scores.json"
+        bad = make_result()
+        del bad["assignment"]
+        path.write_text(
+            json.dumps({"schema": cs.SCORES_SCHEMA_V1, "submissions": [bad]})
+        )
+        with pytest.raises(cs.ScoresFileError, match="assignment"):
+            cs.load_scores(path)
+
+    def test_load_raises_on_non_dict_legacy_row(self, tmp_path):
+        # Same protection for a stray non-object row in a legacy array.
+        path = tmp_path / "scores.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "schema": cs.SCORES_SCHEMA_V1,
+                    "submissions": [make_result(), "junk"],
+                }
+            )
+        )
+        with pytest.raises(cs.ScoresFileError, match="not an object"):
+            cs.load_scores(path)
+
+    def test_load_raises_when_bucket_is_not_a_list(self, tmp_path):
+        # Defensive -- a dict-shaped bucket value is corrupt; don't
+        # silently repair it.
+        path = tmp_path / "scores.json"
+        path.write_text(
+            json.dumps({"schema": cs.SCORES_SCHEMA_V1, "submissions": {"hello": {}}})
+        )
         with pytest.raises(cs.ScoresFileError, match="must be a list"):
             cs.load_scores(path)
 
@@ -476,14 +566,14 @@ class TestScoresIO:
         # doesn't. scores.json has to stay valid for both.
         path = tmp_path / "scores.json"
         path.write_text(
-            '{"schema":"classroom50/scores/v1","submissions":[{"assignment":"hello","usernames":["alice"],"score":NaN}]}'
+            '{"schema":"classroom50/scores/v1","submissions":{"hello":[{"usernames":["alice"],"score":NaN}]}}'
         )
         with pytest.raises(cs.ScoresFileError, match="non-finite"):
             cs.load_scores(path)
 
     def test_save_writes_atomically_and_cleans_up_tmp(self, tmp_path):
         path = tmp_path / "scores.json"
-        scores = {"schema": cs.SCORES_SCHEMA_V1, "submissions": [make_result()]}
+        scores = {"schema": cs.SCORES_SCHEMA_V1, "submissions": {"hello": [stored_row()]}}
         cs.save_scores(path, scores)
 
         round_trip = json.loads(path.read_text())
@@ -496,8 +586,8 @@ class TestScoresIO:
         # allow_nan=False keeps a bad custom score from writing
         # Go-invalid JSON.
         path = tmp_path / "scores.json"
-        scores = {"schema": cs.SCORES_SCHEMA_V1, "submissions": [make_result(score=1)]}
-        scores["submissions"][0]["score"] = float("nan")
+        scores = {"schema": cs.SCORES_SCHEMA_V1, "submissions": {"hello": [stored_row(score=1)]}}
+        scores["submissions"]["hello"][0]["score"] = float("nan")
         with pytest.raises(cs.ScoresFileError, match="encode failed"):
             cs.save_scores(path, scores)
         assert not path.exists()
@@ -506,7 +596,7 @@ class TestScoresIO:
         # On os.replace failure (e.g. permissions), the original is
         # untouched and the temp file is cleaned up.
         path = tmp_path / "scores.json"
-        path.write_text(json.dumps({"schema": cs.SCORES_SCHEMA_V1, "submissions": []}))
+        path.write_text(json.dumps({"schema": cs.SCORES_SCHEMA_V1, "submissions": {}}))
         original = path.read_text()
 
         def fail_replace(*args, **kwargs):
@@ -514,7 +604,10 @@ class TestScoresIO:
 
         monkeypatch.setattr(os, "replace", fail_replace)
         with pytest.raises(cs.ScoresFileError, match="atomic write failed"):
-            cs.save_scores(path, {"schema": cs.SCORES_SCHEMA_V1, "submissions": [make_result()]})
+            cs.save_scores(
+                path,
+                {"schema": cs.SCORES_SCHEMA_V1, "submissions": {"hello": [stored_row()]}},
+            )
 
         assert path.read_text() == original
         assert not (tmp_path / "scores.json.tmp").exists()

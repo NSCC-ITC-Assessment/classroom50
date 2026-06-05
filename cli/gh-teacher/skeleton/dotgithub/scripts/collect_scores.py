@@ -6,6 +6,12 @@ pair, fetches the canonical `<classroom>-<assignment>-<username>`
 repo's latest release, validates the `result.json` asset, and
 upserts into `<classroom>/scores.json`.
 
+`scores.json` groups rows by assignment: `submissions` is an object
+keyed by assignment slug, each value the list of that assignment's
+rows. A stored row is the validated `result.json` payload with the
+now-redundant `assignment` field dropped (it's the bucket key);
+everything else, including `schema` and `tests`, is kept verbatim.
+
 Single writer per scores.json. Re-runs are idempotent: unchanged
 submissions are no-ops, and `"override": true` entries are
 preserved verbatim so teacher corrections never get overwritten.
@@ -368,15 +374,20 @@ def load_scores(path: pathlib.Path) -> dict[str, Any]:
     """Read scores.json. Missing or empty returns the v1 skeleton.
     Malformed raises so the workflow fails instead of overwriting
     the teacher's work.
+
+    `submissions` is an object keyed by assignment slug. The legacy
+    shapes a v1 file can carry (a flat array, a stray `"{}"` string,
+    null) are coerced by `normalize_submissions` so an upgrade or a
+    hand-edit doesn't crash the run.
     """
     if not path.is_file():
-        return {"schema": SCORES_SCHEMA_V1, "submissions": []}
+        return {"schema": SCORES_SCHEMA_V1, "submissions": {}}
     try:
         raw = path.read_text()
     except OSError as exc:
         raise ScoresFileError(f"{path}: read failed: {exc}") from exc
     if not raw.strip():
-        return {"schema": SCORES_SCHEMA_V1, "submissions": []}
+        return {"schema": SCORES_SCHEMA_V1, "submissions": {}}
     try:
         scores = strict_json_loads(raw)
     except (json.JSONDecodeError, ValueError) as exc:
@@ -387,14 +398,77 @@ def load_scores(path: pathlib.Path) -> dict[str, Any]:
         raise ScoresFileError(
             f"{path}: schema = {scores.get('schema')!r}, want {SCORES_SCHEMA_V1!r}"
         )
-    submissions = scores.get("submissions")
-    if submissions is None:
-        scores["submissions"] = []
-    elif not isinstance(submissions, list):
-        raise ScoresFileError(
-            f"{path}: submissions field must be a list, got {type(submissions).__name__}"
-        )
+    try:
+        scores["submissions"] = normalize_submissions(scores.get("submissions"))
+    except ValueError as exc:
+        raise ScoresFileError(f"{path}: {exc}") from exc
     return scores
+
+
+def normalize_submissions(submissions: Any) -> dict[str, list[Any]]:
+    """Coerce the `submissions` field into the canonical
+    assignment-keyed map. Tolerates the shapes a v1 file can carry so
+    an upgrade or a hand-edit doesn't crash the collector:
+
+      - None / missing              -> {}
+      - dict                        -> kept (each value forced to a list)
+      - "" / "{}" (string quirk)    -> re-parsed, then re-normalized
+      - [ ... ] (legacy flat array) -> regrouped by each row's
+                                       `assignment` (dropping that key)
+
+    Raises ValueError on anything else (a number, or a legacy-array
+    row we can't bucket) so genuine corruption fails the run instead
+    of being silently dropped on the next write.
+    """
+    if submissions is None:
+        return {}
+    if isinstance(submissions, str):
+        text = submissions.strip()
+        if not text:
+            return {}
+        try:
+            parsed = strict_json_loads(text)
+        except (json.JSONDecodeError, ValueError) as exc:
+            raise ValueError(f"submissions string is not valid JSON ({exc})")
+        return normalize_submissions(parsed)
+    if isinstance(submissions, list):
+        # Legacy flat array -> regroup by assignment, dropping the
+        # now-redundant key from each row. Fail fast on any row we
+        # can't bucket (non-dict, or no usable `assignment`) rather
+        # than silently dropping it on the next write -- the file may
+        # be a teacher's hand-edit and the run must not lose data.
+        grouped: dict[str, list[Any]] = {}
+        for i, row in enumerate(submissions):
+            if not isinstance(row, dict):
+                raise ValueError(
+                    f"legacy submissions[{i}] is not an object "
+                    f"(got {type(row).__name__}); fix it before re-running collect"
+                )
+            assignment = row.get("assignment")
+            if not isinstance(assignment, str) or not assignment:
+                raise ValueError(
+                    f"legacy submissions[{i}] is missing a non-empty string "
+                    f"'assignment' (got {assignment!r}); fix it before re-running collect"
+                )
+            grouped.setdefault(assignment, []).append(
+                {k: v for k, v in row.items() if k != "assignment"}
+            )
+        return grouped
+    if isinstance(submissions, dict):
+        normalized: dict[str, list[Any]] = {}
+        for assignment, rows in submissions.items():
+            if rows is None:
+                normalized[assignment] = []
+            elif isinstance(rows, list):
+                normalized[assignment] = rows
+            else:
+                raise ValueError(
+                    f"submissions[{assignment!r}] must be a list, got {type(rows).__name__}"
+                )
+        return normalized
+    raise ValueError(
+        f"submissions field must be an object, got {type(submissions).__name__}"
+    )
 
 
 def save_scores(path: pathlib.Path, scores: dict[str, Any]) -> None:
@@ -426,58 +500,75 @@ def save_scores(path: pathlib.Path, scores: dict[str, Any]) -> None:
 
 
 def apply_updates(scores: dict[str, Any], updates: Iterable[dict[str, Any]]) -> int:
-    """Merge incoming result payloads into scores["submissions"];
-    return the number of rows added or replaced. Existing rows with
-    `"override": true` are preserved verbatim. Rows are keyed by
-    (assignment, tuple(lowercased usernames)) — individual mode has
-    exactly one username today; the tuple shape leaves room for
-    group submissions later.
+    """Merge incoming result payloads into the assignment-keyed
+    `scores["submissions"]` map; return the number of rows added or
+    replaced. Each stored row is the result payload with the
+    redundant `assignment` field dropped (it's the bucket key).
+
+    Existing rows with `"override": true` are preserved verbatim.
+    Rows within a bucket are keyed by tuple(lowercased usernames) --
+    individual mode has exactly one username today; the tuple shape
+    leaves room for group submissions later.
     """
-    submissions = scores["submissions"]
-    by_key: dict[tuple[str, tuple[str, ...]], int] = {}
-    for i, row in enumerate(submissions):
-        if not isinstance(row, dict):
-            continue
-        key = submission_key(row)
-        if key is not None:
-            by_key[key] = i
+    submissions: dict[str, Any] = scores["submissions"]
+    # Per-bucket index: assignment slug -> {usernames_key: row index}.
+    index: dict[str, dict[tuple[str, ...], int]] = {}
+    for assignment, rows in submissions.items():
+        bucket_index: dict[tuple[str, ...], int] = {}
+        for i, row in enumerate(rows):
+            if not isinstance(row, dict):
+                continue
+            key = usernames_key(row)
+            if key is not None:
+                bucket_index[key] = i
+        index[assignment] = bucket_index
 
     changes = 0
     for update in updates:
-        key = submission_key(update)
-        if key is None:
+        assignment = update.get("assignment")
+        key = usernames_key(update)
+        if not isinstance(assignment, str) or not assignment or key is None:
             continue
-        idx = by_key.get(key)
+        row = entry_from_result(update)
+        bucket = submissions.setdefault(assignment, [])
+        bucket_index = index.setdefault(assignment, {})
+        idx = bucket_index.get(key)
         if idx is None:
-            submissions.append(update)
-            by_key[key] = len(submissions) - 1
+            bucket.append(row)
+            bucket_index[key] = len(bucket) - 1
             changes += 1
             continue
 
-        existing = submissions[idx]
+        existing = bucket[idx]
         if existing.get("override") is True:
             continue
-        if same_submission(existing, update):
+        if same_submission(existing, row):
             continue
         # Preserve an explicit "override": false on replacement —
         # the teacher's "I reviewed this, keep refreshing" signal.
-        if "override" in existing and "override" not in update:
-            update = dict(update)
-            update["override"] = existing["override"]
-        submissions[idx] = update
+        if "override" in existing and "override" not in row:
+            row = dict(row)
+            row["override"] = existing["override"]
+        bucket[idx] = row
         changes += 1
     return changes
 
 
-def submission_key(record: dict[str, Any]) -> tuple[str, tuple[str, ...]] | None:
-    """(assignment, tuple(lowercased usernames)). None signals an
-    unkeyable record (missing assignment, missing/empty usernames,
-    or any non-string username).
+def entry_from_result(payload: dict[str, Any]) -> dict[str, Any]:
+    """The stored gradebook row: the validated result payload minus
+    `assignment` (the bucket key -- keeping it would duplicate data).
+    Every other field, including `schema` and `tests`, is retained
+    verbatim; an existing `override` flag is carried through.
     """
-    assignment = record.get("assignment")
+    return {k: v for k, v in payload.items() if k != "assignment"}
+
+
+def usernames_key(record: dict[str, Any]) -> tuple[str, ...] | None:
+    """tuple(lowercased usernames), or None for an unkeyable record
+    (missing/empty usernames or any non-string username). Rows within
+    an assignment bucket are matched on this.
+    """
     usernames = record.get("usernames") or []
-    if not isinstance(assignment, str) or not assignment:
-        return None
     if not isinstance(usernames, list) or not usernames:
         return None
     lowered: list[str] = []
@@ -485,7 +576,7 @@ def submission_key(record: dict[str, Any]) -> tuple[str, tuple[str, ...]] | None
         if not isinstance(u, str) or not u:
             return None
         lowered.append(u.lower())
-    return assignment, tuple(lowered)
+    return tuple(lowered)
 
 
 def same_submission(a: dict[str, Any], b: dict[str, Any]) -> bool:
