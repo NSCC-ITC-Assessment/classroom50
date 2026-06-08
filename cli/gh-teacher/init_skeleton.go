@@ -5,6 +5,7 @@ import (
 	"embed"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -64,11 +65,28 @@ func skeletonFiles(defaultBranch string) (map[string]string, error) {
 	return files, nil
 }
 
-// commitSkeleton lands the embedded skeleton on defaultBranch in
-// one Tree commit. Re-runs no-op via the probe file. When `created`
-// is true, refAndTree retries on 404 because GitHub doesn't
-// propagate auto_init's initial ref synchronously.
-func commitSkeleton(client *api.RESTClient, out io.Writer, owner, repo, defaultBranch string, created bool) error {
+// skeletonCommitMessage is the single bootstrap commit's message.
+const skeletonCommitMessage = "Bootstrap classroom50 config repo (gh teacher init)"
+
+// skeletonCommitAttempts: read-parent + build-tree retries, at 200ms x
+// 2^n backoff (~3s), to ride out a fresh repo's git-data lag.
+const skeletonCommitAttempts = 5
+
+// errRefNotReady: refAndTree returned 200 but an empty SHA -- the ref
+// isn't readable yet and the Tree API would 404 on the blank
+// base_tree. Retryable.
+var errRefNotReady = errors.New("branch ref not fully propagated")
+
+// commitSkeleton lands the embedded skeleton on defaultBranch in one
+// Tree commit; re-runs no-op via the probe file.
+//
+// A just-created repo (auto_init, or one a prior run made seconds ago
+// then 422'd on) serves the git-data APIs before its ref propagates:
+// reads 404, the Tree write 409s "Git Repository is empty". So wait
+// for the branch tip to settle, then retry the read+build for any lag
+// that slips through. Both run on every path -- "already exists" is
+// often a seconds-old repo.
+func commitSkeleton(client *api.RESTClient, out, errOut io.Writer, owner, repo, defaultBranch string) error {
 	files, err := skeletonFiles(defaultBranch)
 	if err != nil {
 		return err
@@ -83,35 +101,21 @@ func commitSkeleton(client *api.RESTClient, out io.Writer, owner, repo, defaultB
 		return nil
 	}
 
-	var parentSHA, parentTreeSHA string
-	attempts := 1
-	if created {
-		attempts = 5
-	}
-	for i := 0; i < attempts; i++ {
-		parentSHA, parentTreeSHA, err = refAndTree(client, owner, repo, defaultBranch)
-		if err == nil {
-			break
-		}
-		if isHTTPStatus(err, http.StatusNotFound) && i < attempts-1 {
-			time.Sleep(time.Duration(200*(1<<i)) * time.Millisecond)
-			continue
-		}
-		return err
+	// Let auto_init's commit propagate first. Best-effort: the retry
+	// below still covers a ref slow past the poll budget.
+	if err := waitForStableBranch(client, owner, repo, defaultBranch); err != nil {
+		_, _ = fmt.Fprintf(errOut, "Warning: %s/%s: %s slow to propagate (%v); proceeding with retries\n",
+			owner, repo, defaultBranch, err)
 	}
 
+	// Blobs are content-addressed, so upload once; a retry below
+	// reuses these SHAs.
 	entries, err := uploadBlobs(client, owner, repo, files)
 	if err != nil {
 		return err
 	}
 
-	treeSHA, err := createTree(client, owner, repo, parentTreeSHA, entries)
-	if err != nil {
-		return err
-	}
-
-	commitSHA, err := createCommit(client, owner, repo, treeSHA, parentSHA,
-		"Bootstrap classroom50 config repo (gh teacher init)")
+	commitSHA, err := buildSkeletonCommit(client, owner, repo, defaultBranch, entries)
 	if err != nil {
 		return err
 	}
@@ -122,6 +126,44 @@ func commitSkeleton(client *api.RESTClient, out io.Writer, owner, repo, defaultB
 
 	_, _ = fmt.Fprintf(out, "%s/%s: skeleton committed (%d files)\n", owner, repo, len(entries))
 	return nil
+}
+
+// buildSkeletonCommit builds the skeleton tree+commit on the current
+// branch tip and returns the new (not-yet-referenced) commit SHA.
+// createTree's base_tree must resolve, so the retry wraps the write,
+// not just the ref read (see isSkeletonRetryable for the conditions).
+func buildSkeletonCommit(client *api.RESTClient, owner, repo, branch string, entries []treeEntry) (string, error) {
+	var err error
+	for i := 0; i < skeletonCommitAttempts; i++ {
+		var parentSHA, parentTreeSHA string
+		parentSHA, parentTreeSHA, err = refAndTree(client, owner, repo, branch)
+		if err == nil && (parentSHA == "" || parentTreeSHA == "") {
+			err = fmt.Errorf("%s/%s@%s: %w", owner, repo, branch, errRefNotReady)
+		}
+		if err == nil {
+			var treeSHA string
+			if treeSHA, err = createTree(client, owner, repo, parentTreeSHA, entries); err == nil {
+				var commitSHA string
+				if commitSHA, err = createCommit(client, owner, repo, treeSHA, parentSHA, skeletonCommitMessage); err == nil {
+					return commitSHA, nil
+				}
+			}
+		}
+		if !isSkeletonRetryable(err) || i == skeletonCommitAttempts-1 {
+			return "", err
+		}
+		time.Sleep(time.Duration(200*(1<<i)) * time.Millisecond)
+	}
+	return "", err
+}
+
+// isSkeletonRetryable: the transient fresh-repo conditions worth a
+// retry -- 404 (reads), 409 "Git Repository is empty" (writes), or an
+// empty parent SHA (errRefNotReady).
+func isSkeletonRetryable(err error) bool {
+	return isHTTPStatus(err, http.StatusNotFound) ||
+		isHTTPStatus(err, http.StatusConflict) ||
+		errors.Is(err, errRefNotReady)
 }
 
 // contentsExists: 404 → false, 200 → true, else error.

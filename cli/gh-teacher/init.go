@@ -80,7 +80,7 @@ func initCmd() *cobra.Command {
 				branch = "main"
 			}
 
-			if err := commitSkeleton(client, out, org, configRepoName, branch, created); err != nil {
+			if err := commitSkeleton(client, out, errOut, org, configRepoName, branch); err != nil {
 				return err
 			}
 			if err := enablePages(client, out, errOut, org, configRepoName); err != nil {
