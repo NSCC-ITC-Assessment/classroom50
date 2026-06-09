@@ -20,24 +20,29 @@ var plansThatSupportPrivatePages = map[string]bool{
 	"enterprise":    true,
 }
 
-// applyOrgMemberDefaults locks down two org-level member policies
-// in a single PATCH /orgs/{org}:
+// applyOrgMemberDefaults sets three org-level member policies in a
+// single PATCH /orgs/{org}:
 //
 //   - default_repository_permission: "none" — new members don't get
 //     implicit read access to other repos (existing members and
 //     their access are unaffected).
 //   - members_can_create_public_repositories: false — prevents
 //     members from accidentally publishing student work.
+//   - members_can_create_private_repositories: true, which `gh student
+//     accept` relies on to create each student's private repo; without
+//     it the teacher must flip the org setting by hand.
 //
 // 403/422 (enterprise-locked policy) warns to errOut with the
 // settings-page link; init still completes.
 func applyOrgMemberDefaults(client *api.RESTClient, out, errOut io.Writer, org string) error {
 	body, err := json.Marshal(struct {
-		DefaultRepositoryPermission        string `json:"default_repository_permission"`
-		MembersCanCreatePublicRepositories bool   `json:"members_can_create_public_repositories"`
+		DefaultRepositoryPermission         string `json:"default_repository_permission"`
+		MembersCanCreatePublicRepositories  bool   `json:"members_can_create_public_repositories"`
+		MembersCanCreatePrivateRepositories bool   `json:"members_can_create_private_repositories"`
 	}{
-		DefaultRepositoryPermission:        "none",
-		MembersCanCreatePublicRepositories: false,
+		DefaultRepositoryPermission:         "none",
+		MembersCanCreatePublicRepositories:  false,
+		MembersCanCreatePrivateRepositories: true,
 	})
 	if err != nil {
 		return fmt.Errorf("encode body: %w", err)
@@ -46,7 +51,7 @@ func applyOrgMemberDefaults(client *api.RESTClient, out, errOut io.Writer, org s
 	resp, err := client.Request(http.MethodPatch, path, bytes.NewReader(body))
 	if err != nil {
 		if isHTTPStatus(err, http.StatusForbidden) || isHTTPStatus(err, http.StatusUnprocessableEntity) {
-			_, _ = fmt.Fprintf(errOut, "Warning: %s: couldn't tighten org member defaults (%v); set them manually at https://github.com/organizations/%s/settings/member_privileges — Base permissions: No permission AND Repository creation: uncheck Public.\n",
+			_, _ = fmt.Fprintf(errOut, "Warning: %s: couldn't set org member defaults (%v); set them manually at https://github.com/organizations/%s/settings/member_privileges — Base permissions: No permission, and under Repository creation uncheck Public and check Private.\n",
 				org, err, org)
 			return nil
 		}
@@ -56,7 +61,7 @@ func applyOrgMemberDefaults(client *api.RESTClient, out, errOut io.Writer, org s
 	_, _ = io.Copy(io.Discard, resp.Body)
 	switch resp.StatusCode {
 	case http.StatusOK:
-		_, _ = fmt.Fprintf(out, "%s: org member defaults set (base permission = none, public repo creation disabled)\n", org)
+		_, _ = fmt.Fprintf(out, "%s: org member defaults set (base permission = none, public repo creation disabled, private repo creation enabled)\n", org)
 		return nil
 	case http.StatusForbidden, http.StatusUnprocessableEntity:
 		_, _ = fmt.Fprintf(errOut, "Warning: %s: PATCH /orgs/%s returned HTTP %d while tightening member defaults; set them manually at https://github.com/organizations/%s/settings/member_privileges\n",

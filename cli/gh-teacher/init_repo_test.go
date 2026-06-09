@@ -12,8 +12,8 @@ import (
 )
 
 func TestApplyOrgMemberDefaults_HappyPath(t *testing.T) {
-	// Pin both field values (none / false) on a single PATCH so a
-	// refactor can't silently flip either default.
+	// Pin all three field values on a single PATCH so a refactor
+	// can't silently flip a default.
 	var (
 		mu      sync.Mutex
 		gotBody map[string]any
@@ -52,6 +52,9 @@ func TestApplyOrgMemberDefaults_HappyPath(t *testing.T) {
 	}
 	if gotBody["members_can_create_public_repositories"] != false {
 		t.Errorf("members_can_create_public_repositories = %v, want false", gotBody["members_can_create_public_repositories"])
+	}
+	if gotBody["members_can_create_private_repositories"] != true {
+		t.Errorf("members_can_create_private_repositories = %v, want true", gotBody["members_can_create_private_repositories"])
 	}
 	if !strings.Contains(out.String(), "base permission = none") {
 		t.Errorf("stdout missing success line, got: %q", out.String())
