@@ -67,6 +67,121 @@ func applyOrgMemberDefaults(client *api.RESTClient, out, errOut io.Writer, org s
 	}
 }
 
+// orgActionsPermissions is the subset of GET
+// /orgs/{org}/actions/permissions that we read.
+type orgActionsPermissions struct {
+	EnabledRepositories string `json:"enabled_repositories"`
+}
+
+// ensureOrgActionsEnabled turns Actions on for the org when it's off
+// org-wide ("none" -> PUT "all"); Classroom50's workflows run as
+// Actions and never run otherwise. "all" -> noop; "selected"/unknown
+// -> warn. Read failures and a rejected enable (403/409/422, usually
+// enterprise-locked) warn and continue so init still finishes.
+func ensureOrgActionsEnabled(client *api.RESTClient, out, errOut io.Writer, org string) error {
+	path := fmt.Sprintf("orgs/%s/actions/permissions", url.PathEscape(org))
+
+	var perms orgActionsPermissions
+	if err := client.Get(path, &perms); err != nil {
+		_, _ = fmt.Fprintf(errOut, "Warning: %s: couldn't read Actions permissions (%v); make sure GitHub Actions is enabled for the org at https://github.com/organizations/%s/settings/actions — Classroom50's autograde, publish-pages, and collect-scores workflows won't run without it.\n",
+			org, err, org)
+		return nil
+	}
+
+	switch perms.EnabledRepositories {
+	case "all":
+		_, _ = fmt.Fprintf(out, "%s: Actions already enabled (all repositories)\n", org)
+		return nil
+	case "selected":
+		_, _ = fmt.Fprintf(errOut, "Warning: %s: Actions is enabled only for selected repositories; ensure the classroom50 config repo and the <classroom>-* student repos are included (or switch to All repositories) at https://github.com/organizations/%s/settings/actions -- Classroom50's autograde, publish-pages, and collect-scores workflows won't run in any repo left out.\n",
+			org, org)
+		return nil
+	case "none":
+		// Off org-wide -- enable it below.
+	default:
+		// Empty or unknown value: warn, don't touch the policy.
+		_, _ = fmt.Fprintf(errOut, "Warning: %s: unexpected Actions enabled_repositories value %q; leaving it unchanged -- verify GitHub Actions is enabled for the org at https://github.com/organizations/%s/settings/actions, or Classroom50's workflows may not run.\n",
+			org, perms.EnabledRepositories, org)
+		return nil
+	}
+
+	body, err := json.Marshal(struct {
+		EnabledRepositories string `json:"enabled_repositories"`
+	}{EnabledRepositories: "all"})
+	if err != nil {
+		return fmt.Errorf("encode body: %w", err)
+	}
+	resp, err := client.Request(http.MethodPut, path, bytes.NewReader(body))
+	if err != nil {
+		if isHTTPStatus(err, http.StatusForbidden) || isHTTPStatus(err, http.StatusConflict) || isHTTPStatus(err, http.StatusUnprocessableEntity) {
+			_, _ = fmt.Fprintf(errOut, "Warning: %s: couldn't enable GitHub Actions (%v); this is often an enterprise-level policy an org admin can't override — ask an enterprise admin to enable Actions for the org at https://github.com/organizations/%s/settings/actions. Classroom50 workflows won't run until then.\n",
+				org, err, org)
+			return nil
+		}
+		return fmt.Errorf("PUT %s: %w", path, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	_, _ = io.Copy(io.Discard, resp.Body)
+	if resp.StatusCode != http.StatusNoContent {
+		_, _ = fmt.Fprintf(errOut, "Warning: %s: PUT /actions/permissions returned HTTP %d while enabling Actions; enable it manually at https://github.com/organizations/%s/settings/actions\n",
+			org, resp.StatusCode, org)
+		return nil
+	}
+	_, _ = fmt.Fprintf(out, "%s: Actions enabled (all repositories)\n", org)
+	return nil
+}
+
+// repoActionsPermissions is the subset of GET
+// /repos/{owner}/{repo}/actions/permissions that we read.
+type repoActionsPermissions struct {
+	Enabled bool `json:"enabled"`
+}
+
+// ensureRepoActionsEnabled turns Actions back on for a single repo when
+// it's been disabled at the repo level (`enabled` false -> PUT true),
+// independent of the org-wide setting. A read failure or a rejected
+// enable (403/409/422, usually an org/enterprise policy) warns and
+// continues, matching init's warn-and-carry-on convention.
+func ensureRepoActionsEnabled(client *api.RESTClient, out, errOut io.Writer, owner, repo string) error {
+	path := fmt.Sprintf("repos/%s/%s/actions/permissions", url.PathEscape(owner), url.PathEscape(repo))
+
+	var perms repoActionsPermissions
+	if err := client.Get(path, &perms); err != nil {
+		_, _ = fmt.Fprintf(errOut, "Warning: %s/%s: couldn't read Actions permissions (%v); make sure Actions is enabled at https://github.com/%s/%s/settings/actions -- Classroom50's publish-pages and collect-scores workflows won't run without it.\n",
+			owner, repo, err, owner, repo)
+		return nil
+	}
+	if perms.Enabled {
+		_, _ = fmt.Fprintf(out, "%s/%s: Actions already enabled\n", owner, repo)
+		return nil
+	}
+
+	body, err := json.Marshal(struct {
+		Enabled bool `json:"enabled"`
+	}{Enabled: true})
+	if err != nil {
+		return fmt.Errorf("encode body: %w", err)
+	}
+	resp, err := client.Request(http.MethodPut, path, bytes.NewReader(body))
+	if err != nil {
+		if isHTTPStatus(err, http.StatusForbidden) || isHTTPStatus(err, http.StatusConflict) || isHTTPStatus(err, http.StatusUnprocessableEntity) {
+			_, _ = fmt.Fprintf(errOut, "Warning: %s/%s: couldn't enable Actions (%v); this is often an org or enterprise policy -- enable it at https://github.com/%s/%s/settings/actions. Classroom50's publish-pages and collect-scores workflows won't run until then.\n",
+				owner, repo, err, owner, repo)
+			return nil
+		}
+		return fmt.Errorf("PUT %s: %w", path, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	_, _ = io.Copy(io.Discard, resp.Body)
+	if resp.StatusCode != http.StatusNoContent {
+		_, _ = fmt.Fprintf(errOut, "Warning: %s/%s: PUT /actions/permissions returned HTTP %d while enabling Actions; enable it manually at https://github.com/%s/%s/settings/actions\n",
+			owner, repo, resp.StatusCode, owner, repo)
+		return nil
+	}
+	_, _ = fmt.Fprintf(out, "%s/%s: Actions enabled\n", owner, repo)
+	return nil
+}
+
 // checkOrgPlan warns when the org's plan can't serve Pages from a
 // private repo. Advisory — if Pages enable fails later, the teacher
 // gets a concrete error there.

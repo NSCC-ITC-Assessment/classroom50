@@ -392,3 +392,470 @@ func TestEnableReusableWorkflowAccess_UnexpectedStatusWarns(t *testing.T) {
 		t.Errorf("warning should cite the unexpected status, got: %q", errOut.String())
 	}
 }
+
+func TestEnsureOrgActionsEnabled_AlreadyAllIsNoOp(t *testing.T) {
+	// enabled_repositories == "all": on org-wide, so GET only, no PUT.
+	var (
+		mu    sync.Mutex
+		calls int
+	)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		calls++
+		if r.Method != http.MethodGet {
+			t.Errorf("unexpected %s (no write expected when already enabled)", r.Method)
+		}
+		if r.URL.Path != "/orgs/cs50-fall-2026/actions/permissions" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"enabled_repositories":"all"}`))
+	}))
+	t.Cleanup(server.Close)
+	client := newTestRESTClient(t, server)
+
+	var out, errOut bytes.Buffer
+	if err := ensureOrgActionsEnabled(client, &out, &errOut, "cs50-fall-2026"); err != nil {
+		t.Fatalf("ensureOrgActionsEnabled: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if calls != 1 {
+		t.Errorf("calls = %d, want 1 (GET only, no PUT)", calls)
+	}
+	if !strings.Contains(out.String(), "already enabled") {
+		t.Errorf("stdout missing already-enabled line, got: %q", out.String())
+	}
+	if errOut.Len() != 0 {
+		t.Errorf("no-op path should leave stderr empty, got: %q", errOut.String())
+	}
+}
+
+func TestEnsureOrgActionsEnabled_NoneEnablesAllRepositories(t *testing.T) {
+	// enabled_repositories == "none": off org-wide, so PUT "all".
+	var (
+		mu      sync.Mutex
+		gotPUT  bool
+		putBody map[string]any
+	)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		if r.URL.Path != "/orgs/cs50-fall-2026/actions/permissions" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		switch r.Method {
+		case http.MethodGet:
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"enabled_repositories":"none"}`))
+		case http.MethodPut:
+			gotPUT = true
+			body, _ := io.ReadAll(r.Body)
+			_ = json.Unmarshal(body, &putBody)
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			t.Errorf("unexpected method: %s", r.Method)
+		}
+	}))
+	t.Cleanup(server.Close)
+	client := newTestRESTClient(t, server)
+
+	var out, errOut bytes.Buffer
+	if err := ensureOrgActionsEnabled(client, &out, &errOut, "cs50-fall-2026"); err != nil {
+		t.Fatalf("ensureOrgActionsEnabled: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if !gotPUT {
+		t.Fatal("expected a PUT to enable Actions, got none")
+	}
+	if putBody["enabled_repositories"] != "all" {
+		t.Errorf("PUT enabled_repositories = %v, want all", putBody["enabled_repositories"])
+	}
+	if !strings.Contains(out.String(), "Actions enabled") {
+		t.Errorf("stdout missing enabled line, got: %q", out.String())
+	}
+	if errOut.Len() != 0 {
+		t.Errorf("success path should leave stderr empty, got: %q", errOut.String())
+	}
+}
+
+func TestEnsureOrgActionsEnabled_EnableForbiddenWarnsButSucceeds(t *testing.T) {
+	// 403 on the enable PUT (enterprise-locked) must warn and return nil.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"enabled_repositories":"none"}`))
+		case http.MethodPut:
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(`{"message":"Forbidden"}`))
+		default:
+			t.Errorf("unexpected method: %s", r.Method)
+		}
+	}))
+	t.Cleanup(server.Close)
+	client := newTestRESTClient(t, server)
+
+	var out, errOut bytes.Buffer
+	if err := ensureOrgActionsEnabled(client, &out, &errOut, "cs50-fall-2026"); err != nil {
+		t.Fatalf("403 on enable must warn-and-continue, not error: %v", err)
+	}
+	if !strings.Contains(errOut.String(), "enterprise") {
+		t.Errorf("stderr should suggest asking an enterprise admin, got: %q", errOut.String())
+	}
+}
+
+func TestEnsureOrgActionsEnabled_SelectedWarnsNoPut(t *testing.T) {
+	// "selected": on but scoped -- warn, don't clobber it with a PUT.
+	var (
+		mu    sync.Mutex
+		calls int
+	)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		calls++
+		if r.Method != http.MethodGet {
+			t.Errorf("unexpected %s (no write expected for selected)", r.Method)
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"enabled_repositories":"selected"}`))
+	}))
+	t.Cleanup(server.Close)
+	client := newTestRESTClient(t, server)
+
+	var out, errOut bytes.Buffer
+	if err := ensureOrgActionsEnabled(client, &out, &errOut, "cs50-fall-2026"); err != nil {
+		t.Fatalf("ensureOrgActionsEnabled: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if calls != 1 {
+		t.Errorf("calls = %d, want 1 (GET only, no PUT)", calls)
+	}
+	if !strings.Contains(errOut.String(), "Warning:") || !strings.Contains(errOut.String(), "selected repositories") {
+		t.Errorf("stderr should warn that selected repositories must include the classroom repos, got: %q", errOut.String())
+	}
+	if out.Len() != 0 {
+		t.Errorf("selected path should not write to stdout, got: %q", out.String())
+	}
+}
+
+func TestEnsureOrgActionsEnabled_UnexpectedValueWarnsNoPut(t *testing.T) {
+	// Unknown value (future enum or empty 200): warn, no PUT.
+	var (
+		mu    sync.Mutex
+		calls int
+	)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		calls++
+		if r.Method != http.MethodGet {
+			t.Errorf("unexpected %s (no write expected for an unknown value)", r.Method)
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"enabled_repositories":"someday_new_value"}`))
+	}))
+	t.Cleanup(server.Close)
+	client := newTestRESTClient(t, server)
+
+	var out, errOut bytes.Buffer
+	if err := ensureOrgActionsEnabled(client, &out, &errOut, "cs50-fall-2026"); err != nil {
+		t.Fatalf("ensureOrgActionsEnabled: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if calls != 1 {
+		t.Errorf("calls = %d, want 1 (GET only, no PUT)", calls)
+	}
+	if !strings.Contains(errOut.String(), "unexpected") {
+		t.Errorf("stderr should warn about the unexpected value, got: %q", errOut.String())
+	}
+}
+
+func TestEnsureOrgActionsEnabled_ReadFailureWarnsButSucceeds(t *testing.T) {
+	// GET failure (5xx or missing org-admin scope): warn, return nil, no PUT.
+	var (
+		mu    sync.Mutex
+		calls int
+	)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		calls++
+		if r.Method != http.MethodGet {
+			t.Errorf("unexpected %s (no PUT expected after a read failure)", r.Method)
+		}
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"message":"boom"}`))
+	}))
+	t.Cleanup(server.Close)
+	client := newTestRESTClient(t, server)
+
+	var out, errOut bytes.Buffer
+	if err := ensureOrgActionsEnabled(client, &out, &errOut, "cs50-fall-2026"); err != nil {
+		t.Fatalf("read failure must warn-and-continue, not error: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if calls != 1 {
+		t.Errorf("calls = %d, want 1 (GET only, no PUT after read failure)", calls)
+	}
+	if !strings.Contains(errOut.String(), "couldn't read Actions permissions") {
+		t.Errorf("stderr should report the read failure, got: %q", errOut.String())
+	}
+}
+
+func TestEnsureRepoActionsEnabled_AlreadyEnabledIsNoOp(t *testing.T) {
+	// enabled == true: on for the repo, so GET only, no PUT.
+	var (
+		mu    sync.Mutex
+		calls int
+	)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		calls++
+		if r.Method != http.MethodGet {
+			t.Errorf("unexpected %s (no write expected when already enabled)", r.Method)
+		}
+		if r.URL.Path != "/repos/cs50-fall-2026/classroom50/actions/permissions" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"enabled":true,"allowed_actions":"all"}`))
+	}))
+	t.Cleanup(server.Close)
+	client := newTestRESTClient(t, server)
+
+	var out, errOut bytes.Buffer
+	if err := ensureRepoActionsEnabled(client, &out, &errOut, "cs50-fall-2026", "classroom50"); err != nil {
+		t.Fatalf("ensureRepoActionsEnabled: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if calls != 1 {
+		t.Errorf("calls = %d, want 1 (GET only, no PUT)", calls)
+	}
+	if !strings.Contains(out.String(), "already enabled") {
+		t.Errorf("stdout missing already-enabled line, got: %q", out.String())
+	}
+	if errOut.Len() != 0 {
+		t.Errorf("no-op path should leave stderr empty, got: %q", errOut.String())
+	}
+}
+
+func TestEnsureRepoActionsEnabled_DisabledEnables(t *testing.T) {
+	// enabled == false: off for the repo, so PUT {"enabled":true}.
+	var (
+		mu      sync.Mutex
+		gotPUT  bool
+		putBody map[string]any
+	)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		if r.URL.Path != "/repos/cs50-fall-2026/classroom50/actions/permissions" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		switch r.Method {
+		case http.MethodGet:
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"enabled":false}`))
+		case http.MethodPut:
+			gotPUT = true
+			body, _ := io.ReadAll(r.Body)
+			_ = json.Unmarshal(body, &putBody)
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			t.Errorf("unexpected method: %s", r.Method)
+		}
+	}))
+	t.Cleanup(server.Close)
+	client := newTestRESTClient(t, server)
+
+	var out, errOut bytes.Buffer
+	if err := ensureRepoActionsEnabled(client, &out, &errOut, "cs50-fall-2026", "classroom50"); err != nil {
+		t.Fatalf("ensureRepoActionsEnabled: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if !gotPUT {
+		t.Fatal("expected a PUT to enable Actions, got none")
+	}
+	if putBody["enabled"] != true {
+		t.Errorf("PUT enabled = %v, want true", putBody["enabled"])
+	}
+	if !strings.Contains(out.String(), "Actions enabled") {
+		t.Errorf("stdout missing enabled line, got: %q", out.String())
+	}
+	if errOut.Len() != 0 {
+		t.Errorf("success path should leave stderr empty, got: %q", errOut.String())
+	}
+}
+
+func TestEnsureRepoActionsEnabled_EnableForbiddenWarnsButSucceeds(t *testing.T) {
+	// 403 on the enable PUT (org/enterprise-locked) must warn and return
+	// nil. Pin the GET-then-PUT sequence so a 403 against the wrong
+	// endpoint can't pass for the wrong reason.
+	var (
+		mu      sync.Mutex
+		methods []string
+	)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		methods = append(methods, r.Method)
+		if r.URL.Path != "/repos/cs50-fall-2026/classroom50/actions/permissions" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		switch r.Method {
+		case http.MethodGet:
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"enabled":false}`))
+		case http.MethodPut:
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(`{"message":"Forbidden"}`))
+		default:
+			t.Errorf("unexpected method: %s", r.Method)
+		}
+	}))
+	t.Cleanup(server.Close)
+	client := newTestRESTClient(t, server)
+
+	var out, errOut bytes.Buffer
+	if err := ensureRepoActionsEnabled(client, &out, &errOut, "cs50-fall-2026", "classroom50"); err != nil {
+		t.Fatalf("403 on enable must warn-and-continue, not error: %v", err)
+	}
+	if !strings.Contains(errOut.String(), "couldn't enable Actions") {
+		t.Errorf("stderr should report the enable failure, got: %q", errOut.String())
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(methods) != 2 || methods[0] != http.MethodGet || methods[1] != http.MethodPut {
+		t.Errorf("want GET then PUT, got: %v", methods)
+	}
+}
+
+func TestEnsureRepoActionsEnabled_ReadFailureWarnsButSucceeds(t *testing.T) {
+	// GET failure (5xx or missing admin scope): warn, return nil, no PUT.
+	var (
+		mu    sync.Mutex
+		calls int
+	)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		calls++
+		if r.Method != http.MethodGet {
+			t.Errorf("unexpected %s (no PUT expected after a read failure)", r.Method)
+		}
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"message":"boom"}`))
+	}))
+	t.Cleanup(server.Close)
+	client := newTestRESTClient(t, server)
+
+	var out, errOut bytes.Buffer
+	if err := ensureRepoActionsEnabled(client, &out, &errOut, "cs50-fall-2026", "classroom50"); err != nil {
+		t.Fatalf("read failure must warn-and-continue, not error: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if calls != 1 {
+		t.Errorf("calls = %d, want 1 (GET only, no PUT after read failure)", calls)
+	}
+	if !strings.Contains(errOut.String(), "couldn't read Actions permissions") {
+		t.Errorf("stderr should report the read failure, got: %q", errOut.String())
+	}
+}
+
+func TestEnsureRepoActionsEnabled_UnexpectedStatusWarns(t *testing.T) {
+	// A 2xx-but-not-204 PUT (go-gh surfaces any 2xx) must warn, return nil.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"enabled":false}`))
+		case http.MethodPut:
+			w.WriteHeader(http.StatusOK) // 200, not the expected 204
+		default:
+			t.Errorf("unexpected method: %s", r.Method)
+		}
+	}))
+	t.Cleanup(server.Close)
+	client := newTestRESTClient(t, server)
+
+	var out, errOut bytes.Buffer
+	if err := ensureRepoActionsEnabled(client, &out, &errOut, "cs50-fall-2026", "classroom50"); err != nil {
+		t.Fatalf("unexpected 2xx must warn-and-continue, not error: %v", err)
+	}
+	if !strings.Contains(errOut.String(), "HTTP 200") {
+		t.Errorf("stderr should cite the unexpected status, got: %q", errOut.String())
+	}
+}
+
+func TestEnsureRepoActionsEnabled_PUTFailurePropagates(t *testing.T) {
+	// A non-policy PUT failure (500, not 403/409/422) must propagate.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"enabled":false}`))
+		case http.MethodPut:
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`{"message":"boom"}`))
+		default:
+			t.Errorf("unexpected method: %s", r.Method)
+		}
+	}))
+	t.Cleanup(server.Close)
+	client := newTestRESTClient(t, server)
+
+	var out, errOut bytes.Buffer
+	err := ensureRepoActionsEnabled(client, &out, &errOut, "cs50-fall-2026", "classroom50")
+	if err == nil {
+		t.Fatal("a 500 on the enable PUT must propagate as an error")
+	}
+	if !strings.Contains(err.Error(), "PUT") {
+		t.Errorf("error should mention the PUT, got: %v", err)
+	}
+}
+
+func TestEnsureRepoActionsEnabled_EnableUnavailableWarns(t *testing.T) {
+	// A `selected` org policy excluding the repo makes the enable 422;
+	// that must warn and return nil, same as the 403 path.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"enabled":false}`))
+		case http.MethodPut:
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			_, _ = w.Write([]byte(`{"message":"Unprocessable"}`))
+		default:
+			t.Errorf("unexpected method: %s", r.Method)
+		}
+	}))
+	t.Cleanup(server.Close)
+	client := newTestRESTClient(t, server)
+
+	var out, errOut bytes.Buffer
+	if err := ensureRepoActionsEnabled(client, &out, &errOut, "cs50-fall-2026", "classroom50"); err != nil {
+		t.Fatalf("422 on enable must warn-and-continue, not error: %v", err)
+	}
+	if !strings.Contains(errOut.String(), "couldn't enable Actions") {
+		t.Errorf("stderr should report the enable failure, got: %q", errOut.String())
+	}
+}

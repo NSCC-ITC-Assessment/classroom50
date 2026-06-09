@@ -64,6 +64,12 @@ func initCmd() *cobra.Command {
 				return err
 			}
 
+			// Enable Actions before any repo/Pages/workflow setup --
+			// the classroom workflows all depend on it.
+			if err := ensureOrgActionsEnabled(client, out, errOut, org); err != nil {
+				return err
+			}
+
 			// Default branch comes from the create/fetch response —
 			// org policy can rename it.
 			repo, created, err := ensureConfigRepo(client, org)
@@ -78,6 +84,12 @@ func initCmd() *cobra.Command {
 			branch := repo.DefaultBranch
 			if branch == "" {
 				branch = "main"
+			}
+
+			// Re-enable repo-level Actions before the skeleton push
+			// so the workflows' first run isn't blocked.
+			if err := ensureRepoActionsEnabled(client, out, errOut, org, configRepoName); err != nil {
+				return err
 			}
 
 			if err := commitSkeleton(client, out, errOut, org, configRepoName, branch); err != nil {
