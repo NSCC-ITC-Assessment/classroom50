@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/cli/go-gh/v2/pkg/api"
 	"github.com/spf13/cobra"
@@ -15,6 +16,17 @@ import (
 func isHTTPStatus(err error, code int) bool {
 	httpErr, ok := errors.AsType[*api.HTTPError](err)
 	return ok && httpErr.StatusCode == code
+}
+
+// scopeListContains reports whether the comma-separated OAuth scope
+// list (an X-OAuth-Scopes header value) includes want.
+func scopeListContains(scopes, want string) bool {
+	for _, s := range strings.Split(scopes, ",") {
+		if strings.TrimSpace(s) == want {
+			return true
+		}
+	}
+	return false
 }
 
 // shortNamePatternDescription: human-readable summary of

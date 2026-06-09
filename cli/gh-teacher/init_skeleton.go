@@ -77,6 +77,12 @@ const skeletonCommitAttempts = 5
 // base_tree. Retryable.
 var errRefNotReady = errors.New("branch ref not fully propagated")
 
+// errMissingWorkflowScope: no `workflow` OAuth scope, so GitHub 404s
+// the Tree write of the skeleton's .github/workflows files. Looks like
+// the fresh-repo lag above, so createTree detects it via X-OAuth-Scopes
+// and treats it as terminal, not retryable.
+var errMissingWorkflowScope = errors.New("auth token is missing the `workflow` OAuth scope, so init can't commit the skeleton's .github/workflows files; re-run `gh teacher login` (or `gh auth refresh -s admin:org,workflow`), then run init again")
+
 // commitSkeleton lands the embedded skeleton on defaultBranch in one
 // Tree commit; re-runs no-op via the probe file.
 //
@@ -161,9 +167,27 @@ func buildSkeletonCommit(client *api.RESTClient, owner, repo, branch string, ent
 // retry -- 404 (reads), 409 "Git Repository is empty" (writes), or an
 // empty parent SHA (errRefNotReady).
 func isSkeletonRetryable(err error) bool {
+	if errors.Is(err, errMissingWorkflowScope) {
+		return false
+	}
 	return isHTTPStatus(err, http.StatusNotFound) ||
 		isHTTPStatus(err, http.StatusConflict) ||
 		errors.Is(err, errRefNotReady)
+}
+
+// tokenLacksWorkflowScope reports whether err's X-OAuth-Scopes header is
+// present but missing `workflow`. An absent header (a fine-grained PAT
+// doesn't set it) returns false, so we fall back rather than guess.
+func tokenLacksWorkflowScope(err error) bool {
+	httpErr, ok := errors.AsType[*api.HTTPError](err)
+	if !ok {
+		return false
+	}
+	scopes := httpErr.Headers.Get("X-OAuth-Scopes")
+	if scopes == "" {
+		return false
+	}
+	return !scopeListContains(scopes, "workflow")
 }
 
 // contentsExists: 404 → false, 200 → true, else error.
@@ -274,6 +298,11 @@ func createTree(client *api.RESTClient, owner, repo, baseTreeSHA string, entries
 		SHA string `json:"sha"`
 	}
 	if err := client.Post(path, bytes.NewReader(body), &resp); err != nil {
+		// 404 without `workflow` scope is GitHub refusing the
+		// .github/workflows write, not the fresh-repo lag -- fail fast.
+		if isHTTPStatus(err, http.StatusNotFound) && tokenLacksWorkflowScope(err) {
+			return "", fmt.Errorf("POST %s: %w", path, errMissingWorkflowScope)
+		}
 		return "", fmt.Errorf("POST %s: %w", path, err)
 	}
 	return resp.SHA, nil

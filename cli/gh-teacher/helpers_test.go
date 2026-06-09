@@ -76,6 +76,30 @@ func TestIsHTTPStatus(t *testing.T) {
 	}
 }
 
+func TestScopeListContains(t *testing.T) {
+	// Whole-token match against the comma-separated X-OAuth-Scopes list.
+	cases := []struct {
+		name   string
+		scopes string
+		want   string
+		found  bool
+	}{
+		{"present among several", "admin:org, gist, repo, workflow", "workflow", true},
+		{"absent", "admin:org, gist, repo", "workflow", false},
+		{"single value", "workflow", "workflow", true},
+		{"empty list", "", "workflow", false},
+		{"no substring match", "admin:org", "org", false},
+		{"surrounding spaces trimmed", "  workflow  ,repo", "workflow", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := scopeListContains(tc.scopes, tc.want); got != tc.found {
+				t.Fatalf("scopeListContains(%q, %q) = %v, want %v", tc.scopes, tc.want, got, tc.found)
+			}
+		})
+	}
+}
+
 func TestValidateShortName_LabelFlowsIntoError(t *testing.T) {
 	// The label is part of the error surface — callers pass
 	// "slug", "short-name", or "classroom" and the teacher should

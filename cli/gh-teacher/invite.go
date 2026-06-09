@@ -211,12 +211,7 @@ func classifyOrgInviteError(client *api.RESTClient, org, username, path string, 
 
 // hasOrgAdminScope: X-OAuth-Scopes contains admin:org.
 func hasOrgAdminScope(scopes string) bool {
-	for _, s := range strings.Split(scopes, ",") {
-		if strings.TrimSpace(s) == "admin:org" {
-			return true
-		}
-	}
-	return false
+	return scopeListContains(scopes, "admin:org")
 }
 
 // getMembershipState returns the org membership state ("active" or

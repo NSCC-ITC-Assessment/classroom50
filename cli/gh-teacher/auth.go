@@ -10,10 +10,13 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// requiredScopes: extras on top of gh's defaults — admin:org for the
-// org-membership endpoints used by `gh teacher invite`. One source
-// of truth for loginCmd and requireAuthClient's auto-login.
-var requiredScopes = []string{"admin:org"}
+// requiredScopes: extras on top of gh's defaults; one source of truth
+// for loginCmd and requireAuthClient's auto-login.
+//   - admin:org: org-membership endpoints (`gh teacher invite`).
+//   - workflow: GitHub 404s the Git Data API write of the skeleton's
+//     .github/workflows files without it. gh adds it only incidentally
+//     (HTTPS git auth), so request it explicitly.
+var requiredScopes = []string{"admin:org", "workflow"}
 
 // requireAuthClient returns a REST client, auto-running
 // `gh auth login` when no token is set for the default host so the
