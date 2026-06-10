@@ -96,8 +96,9 @@ jobs:
       # `.classroom50.yaml` is in the student repo (untrusted) — every
       # field validated against a strict regex; org pinned to the
       # calling repo's owner so a hand-edited file can't redirect to
-      # an attacker-hosted Pages site. Allow-list mirrors
-      # cli/gh-teacher/runtime.go.
+      # an attacker-hosted Pages site. Allow-lists mirror
+      # cli/gh-teacher/runtime.go (runtime block) and
+      # cli/gh-teacher/tests.go (declarative tests block).
       - id: read
         env:
           SUBMISSION_TAG: ${{ steps.tag.outputs.tag }}
@@ -182,6 +183,81 @@ jobs:
           )
           if entry is None:
               fail(f"assignment {assignment!r} not registered in {manifest_url} — ask your instructor to run `gh teacher assignment add`")
+
+          # === Re-validate the declarative tests block ===
+          # Mirrors cli/gh-teacher/tests.go (write-time validator) so a
+          # hand-edited assignments.json fails here with a clear
+          # setup-time error instead of mid-grade. The specs never touch
+          # workflow YAML — they reach the grade job as Pages-bundle
+          # data — and nothing from `tests` is emitted to job outputs.
+          tests = entry.get("tests")
+          if tests is not None:
+              _TEST_TYPES = {"io", "run", "python"}
+              _COMPARISONS = {"exact", "included", "regex"}
+              _TEST_KEYS = {"name", "type", "setup", "run", "input", "input-file",
+                            "expected", "expected-file", "comparison", "timeout",
+                            "exit-code", "points"}
+              _IO_ONLY_KEYS = ("input", "input-file", "expected", "expected-file", "comparison")
+              if not isinstance(tests, list):
+                  fail(f"entry {assignment!r}: tests must be an array")
+              if len(tests) > 100:
+                  fail(f"entry {assignment!r}: too many tests ({len(tests)} exceeds the cap of 100)")
+              seen_names = set()
+              for i, t in enumerate(tests):
+                  where = f"entry {assignment!r}: tests[{i}]"
+                  if not isinstance(t, dict):
+                      fail(f"{where} is not an object")
+                  extras = sorted(set(t) - _TEST_KEYS)
+                  if extras:
+                      fail(f"{where} has unsupported keys: {extras}")
+                  name = t.get("name")
+                  if not isinstance(name, str) or not name:
+                      fail(f"{where}.name must be a non-empty string")
+                  # Byte length, mirroring Go's len() on the UTF-8 string.
+                  if len(name.encode("utf-8")) > 100:
+                      fail(f"{where}.name exceeds 100 bytes")
+                  if any(ord(c) < 0x20 or ord(c) == 0x7F for c in name):
+                      fail(f"{where}.name must not contain control characters")
+                  if name in seen_names:
+                      fail(f"{where}: duplicate test name {name!r}")
+                  seen_names.add(name)
+                  ttype = t.get("type")
+                  if ttype not in _TEST_TYPES:
+                      fail(f"{where}.type {ttype!r} must be one of {sorted(_TEST_TYPES)}")
+                  if not isinstance(t.get("run"), str) or not t.get("run"):
+                      fail(f"{where}.run must be a non-empty string")
+                  for key in ("setup",) + _IO_ONLY_KEYS:
+                      v = t.get(key)
+                      if v is not None and not isinstance(v, str):
+                          fail(f"{where}.{key} must be a string")
+                  timeout = t.get("timeout", 0)
+                  if isinstance(timeout, bool) or not isinstance(timeout, int) or (timeout != 0 and not (1 <= timeout <= 600)):
+                      fail(f"{where}.timeout must be an integer between 1 and 600 seconds (0/omitted = default)")
+                  points = t.get("points", 0)
+                  if isinstance(points, bool) or not isinstance(points, int) or not (0 <= points <= 1000):
+                      fail(f"{where}.points must be an integer between 0 and 1000")
+                  exit_code = t.get("exit-code")
+                  if ttype == "io":
+                      comparison = t.get("comparison")
+                      if comparison not in _COMPARISONS:
+                          fail(f"{where}.comparison {comparison!r} must be one of {sorted(_COMPARISONS)} for an io test")
+                      if t.get("input") and t.get("input-file"):
+                          fail(f"{where}: input and input-file are mutually exclusive")
+                      if t.get("expected") and t.get("expected-file"):
+                          fail(f"{where}: expected and expected-file are mutually exclusive")
+                      if comparison != "exact" and not t.get("expected") and not t.get("expected-file"):
+                          fail(f"{where}: an io test with comparison {comparison!r} needs a non-empty expected or expected-file (an empty expected matches everything)")
+                      if exit_code is not None:
+                          fail(f"{where}: exit-code is not valid for an io test (use type 'run')")
+                  else:
+                      for key in _IO_ONLY_KEYS:
+                          if t.get(key):
+                              fail(f"{where}.{key} is only valid for an io test, not a {ttype} test")
+                      if exit_code is not None:
+                          if ttype != "run":
+                              fail(f"{where}: exit-code is only valid for a run test, not a {ttype} test")
+                          if isinstance(exit_code, bool) or not isinstance(exit_code, int) or not (0 <= exit_code <= 255):
+                              fail(f"{where}.exit-code must be an integer between 0 and 255")
 
           runtime = entry.get("runtime") or {}
           if not isinstance(runtime, dict):

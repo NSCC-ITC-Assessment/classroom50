@@ -62,6 +62,8 @@ import io
 import json
 import os
 import pathlib
+import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -86,6 +88,31 @@ RELEASE_BODY_FILENAME = "release-body.md"
 # Conventional name for both the per-assignment override and the
 # classroom default entrypoint.
 ENTRYPOINT_FILENAME = "autograder.py"
+
+# Per-assignment declarative tests: a bundled tests.json (materialized
+# from assignments.json by publish-pages.yaml) is graded by the built-in
+# interpreter below. Schema lives in tests.go; contract in the wiki.
+TESTS_FILENAME = "tests.json"
+TESTS_SCHEMA_V1 = "classroom50/tests/v1"
+
+# Default per-test timeout (seconds) when `timeout` is omitted/0. Setup
+# and run commands are each bounded by it independently.
+DEFAULT_TEST_TIMEOUT = 10
+
+# Captured stdout/stderr is truncated to this many characters in the
+# release body so a runaway program can't bloat the published release.
+MAX_CAPTURED_CHARS = 2000
+
+# Test types and io comparison modes -- mirror the allow-lists in tests.go.
+TEST_TYPE_IO = "io"
+TEST_TYPE_RUN = "run"
+TEST_TYPE_PYTHON = "python"
+TEST_TYPES = (TEST_TYPE_IO, TEST_TYPE_RUN, TEST_TYPE_PYTHON)
+
+COMPARISON_INCLUDED = "included"
+COMPARISON_EXACT = "exact"
+COMPARISON_REGEX = "regex"
+COMPARISONS = (COMPARISON_INCLUDED, COMPARISON_EXACT, COMPARISON_REGEX)
 
 # Bounded retry for Pages fetches. 1s → 2s → 4s on transient network
 # errors / HTTP 5xx. 404 is NOT retried — for the bundle URL it
@@ -164,6 +191,38 @@ def classroom_default_autograder_url(pages_base_url: str, classroom: str) -> str
     return f"{pages_base_url}/{safe_classroom}/{ENTRYPOINT_FILENAME}"
 
 
+def make_result(
+    *,
+    classroom: str,
+    assignment: str,
+    username: str,
+    submission: str,
+    commit_link: str,
+    release_link: str,
+    when: datetime.datetime,
+    score: int,
+    max_score: int,
+    tests: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Build a v1-shaped result.json payload. Single source of the field
+    layout shared by the error/vacuous paths (empty_result) and the
+    declarative grader (which passes real score/tests)."""
+    return {
+        "schema": RESULT_SCHEMA_V1,
+        "classroom": classroom,
+        "assignment": assignment,
+        "usernames": [username],
+        "submission": submission,
+        "commit": commit_link,
+        "release": release_link,
+        "review": commit_link,
+        "datetime": when.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "score": score,
+        "max-score": max_score,
+        "tests": tests,
+    }
+
+
 def empty_result(
     *,
     classroom: str,
@@ -180,20 +239,18 @@ def empty_result(
     ingests it as "submitted, error"; the workflow log carries the
     actual failure reason.
     """
-    return {
-        "schema": RESULT_SCHEMA_V1,
-        "classroom": classroom,
-        "assignment": assignment,
-        "usernames": [username],
-        "submission": submission,
-        "commit": commit_link,
-        "release": release_link,
-        "review": commit_link,
-        "datetime": when.strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "score": 0,
-        "max-score": 0,
-        "tests": [],
-    }
+    return make_result(
+        classroom=classroom,
+        assignment=assignment,
+        username=username,
+        submission=submission,
+        commit_link=commit_link,
+        release_link=release_link,
+        when=when,
+        score=0,
+        max_score=0,
+        tests=[],
+    )
 
 
 def derive_status_and_summary(result: dict[str, Any]) -> tuple[str, str]:
@@ -494,6 +551,431 @@ class Finalizer:
 
 
 # ---------------------------------------------------------------------------
+# Declarative test grading (GitHub Classroom-style io / run / python tests)
+# ---------------------------------------------------------------------------
+#
+# Grades a bundled tests.json with a built-in interpreter. The specs are
+# DATA, never code: `run`/`setup` strings are teacher-authored shell,
+# executed in the student checkout at the same privilege as an
+# autograder.py. They arrive via the Pages bundle — never interpolated
+# into workflow YAML — and students can't edit assignments.json. The
+# interpreter re-validates spec shape because the file is hand-editable.
+# Write-time validator: tests.go; trust-boundary rationale: the
+# Autograders wiki page.
+
+
+class TestsConfigError(Exception):
+    """Raised when tests.json is missing, malformed, or fails the
+    runtime re-validation. Surfaced to the workflow via Finalizer.error."""
+
+
+class TestFixtureError(Exception):
+    """Raised when a test references an input-file/expected-file that is
+    missing or escapes the bundle directory."""
+
+
+def compare_output(actual: str, expected: str, mode: str) -> bool:
+    """Compare program stdout against expected output, GitHub Classroom-style.
+
+    - included: expected appears anywhere in actual (raw substring).
+    - exact: actual equals expected, ignoring leading/trailing whitespace
+      (the trailing-newline footgun otherwise fails almost every test).
+    - regex: Python `re.search` with re.MULTILINE (so ^/$ anchor at line
+      boundaries in multi-line output). Raises re.error on a malformed
+      pattern so the caller can report it as a failing test.
+    """
+    if mode == COMPARISON_INCLUDED:
+        return expected in actual
+    if mode == COMPARISON_EXACT:
+        return actual.strip() == expected.strip()
+    if mode == COMPARISON_REGEX:
+        return re.search(expected, actual, re.MULTILINE) is not None
+    raise ValueError(f"unknown comparison mode {mode!r}")
+
+
+def _clip(text: str | None) -> str:
+    """Truncate captured output for the release body."""
+    text = text or ""
+    if len(text) > MAX_CAPTURED_CHARS:
+        return text[:MAX_CAPTURED_CHARS] + "\n... (truncated)"
+    return text
+
+
+def _fence(text: str) -> str:
+    """A backtick fence longer than any backtick run inside `text`, so
+    student output containing ``` can't break out of the code block and
+    inject Markdown into the release body."""
+    longest = max((len(m.group(0)) for m in re.finditer(r"`+", text)), default=0)
+    return "`" * max(3, longest + 1)
+
+
+def _make_outcome(name: str, points: int, passed: bool, detail: str,
+                  *, score: int | None = None) -> dict[str, Any]:
+    """One test's outcome. Carries the v1 result-row fields plus a `detail`
+    string used only for the release body (stripped before result.json)."""
+    if score is None:
+        score = points if passed else 0
+    return {
+        "test-name": name,
+        "passed": passed,
+        "score": score,
+        "max-score": points,
+        "detail": detail,
+    }
+
+
+def _read_fixture(rel: str, fixtures_dir: pathlib.Path) -> str:
+    """Read a bundled fixture file, rejecting any path that escapes the
+    bundle directory (a hand-edited expected-file: '../../etc/passwd'
+    must not be readable)."""
+    base = pathlib.Path(os.path.realpath(fixtures_dir))
+    target = pathlib.Path(os.path.realpath(base / rel))
+    if target != base and base not in target.parents:
+        raise TestFixtureError(f"fixture path escapes the bundle: {rel!r}")
+    if not target.is_file():
+        raise TestFixtureError(f"fixture file not found: {rel!r}")
+    return target.read_text(encoding="utf-8", errors="replace")
+
+
+def _resolve_stdin(spec: dict[str, Any], fixtures_dir: pathlib.Path) -> str:
+    """stdin for an io test: the bundled input-file if set, else the inline
+    `input`, else empty (always a string so the child never inherits the
+    parent's stdin and hangs waiting on a terminal)."""
+    if spec.get("input-file"):
+        return _read_fixture(spec["input-file"], fixtures_dir)
+    return spec.get("input") or ""
+
+
+def _resolve_expected(spec: dict[str, Any], fixtures_dir: pathlib.Path) -> str:
+    if spec.get("expected-file"):
+        return _read_fixture(spec["expected-file"], fixtures_dir)
+    return spec.get("expected") or ""
+
+
+def _run_command(command: str, cwd: pathlib.Path, timeout: int,
+                 stdin: str = "") -> subprocess.CompletedProcess[str]:
+    """Run a shell command in the student checkout with captured text
+    output and an empty-by-default stdin."""
+    return subprocess.run(
+        command,
+        shell=True,
+        cwd=str(cwd),
+        input=stdin,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=timeout,
+    )
+
+
+def _run_setup(setup: str, cwd: pathlib.Path, timeout: int) -> str | None:
+    """Run a test's setup command. Returns an error string if it times out
+    or exits non-zero, else None."""
+    try:
+        sp = _run_command(setup, cwd, timeout)
+    except subprocess.TimeoutExpired:
+        return f"setup timed out after {timeout}s"
+    except OSError as exc:
+        return f"setup failed to start: {exc}"
+    if sp.returncode != 0:
+        return f"setup exited {sp.returncode}\n{_clip(sp.stderr or sp.stdout)}"
+    return None
+
+
+def _grade_python(spec: dict[str, Any], cwd: pathlib.Path, timeout: int,
+                  points: int, name: str) -> dict[str, Any]:
+    """Run a pytest command and split `points` across discovered cases
+    (GitHub Classroom's points/num_tests model), reading pytest-json-report
+    output. Falls back to exit-code scoring (all-or-nothing) when no JSON
+    report is produced -- e.g. the plugin isn't installed."""
+    report_dir = pathlib.Path(tempfile.mkdtemp(prefix="classroom50-pytest-"))
+    report = report_dir / "report.json"
+    # Skip appending when the teacher's command already configures the
+    # plugin (duplicate flags would make pytest exit with a usage error).
+    if "--json-report" in spec["run"]:
+        cmd = spec["run"]
+    else:
+        cmd = f"{spec['run']} --json-report --json-report-file={shlex.quote(str(report))}"
+    try:
+        rp = _run_command(cmd, cwd, timeout)
+    except subprocess.TimeoutExpired:
+        shutil.rmtree(report_dir, ignore_errors=True)
+        return _make_outcome(name, points, False, f"timed out after {timeout}s")
+    except OSError as exc:
+        shutil.rmtree(report_dir, ignore_errors=True)
+        return _make_outcome(name, points, False, f"failed to start: {exc}")
+
+    passed_n = total_n = None
+    if report.is_file():
+        try:
+            summary = (json.loads(report.read_text(encoding="utf-8", errors="replace"))
+                       .get("summary") or {})
+            total_n = int(summary.get("total") or 0)
+            passed_n = int(summary.get("passed") or 0)
+        except (json.JSONDecodeError, ValueError, TypeError, AttributeError):
+            passed_n = total_n = None
+    shutil.rmtree(report_dir, ignore_errors=True)
+
+    if total_n:
+        score = max(0, min(points, round(points * passed_n / total_n)))
+        passed = passed_n == total_n
+        # Full credit is reserved for an all-pass run: with small point
+        # values, round() could otherwise award points/points to a test
+        # whose row reads FAIL (e.g. points=1, 2/3 cases passed).
+        if not passed:
+            score = min(score, max(0, points - 1))
+        detail = f"pytest: {passed_n}/{total_n} cases passed"
+        if not passed:
+            detail += "\n" + _clip(rp.stdout or rp.stderr)
+        return _make_outcome(name, points, passed, detail, score=score)
+
+    # Fallback: no parseable report -> all-or-nothing on the exit code.
+    passed = rp.returncode == 0
+    detail = (f"pytest exit {rp.returncode} "
+              f"(no JSON report; install pytest-json-report for per-case scoring)")
+    if not passed:
+        detail += "\n" + _clip(rp.stdout or rp.stderr)
+    return _make_outcome(name, points, passed, detail)
+
+
+def execute_test(spec: dict[str, Any], *, cwd: pathlib.Path,
+                 fixtures_dir: pathlib.Path) -> dict[str, Any]:
+    """Run one declarative test and return its outcome dict. Never raises
+    for a test failure -- a timeout, crash, bad fixture, or bad regex all
+    map to a failing outcome with a diagnostic `detail`."""
+    name = spec["name"]
+    points = int(spec.get("points") or 0)
+    ttype = spec["type"]
+    timeout = int(spec.get("timeout") or 0) or DEFAULT_TEST_TIMEOUT
+
+    setup = spec.get("setup") or ""
+    if setup:
+        err = _run_setup(setup, cwd, timeout)
+        if err:
+            return _make_outcome(name, points, False, err)
+
+    if ttype == TEST_TYPE_PYTHON:
+        return _grade_python(spec, cwd, timeout, points, name)
+
+    try:
+        stdin = _resolve_stdin(spec, fixtures_dir)
+    except TestFixtureError as exc:
+        return _make_outcome(name, points, False, str(exc))
+
+    try:
+        rp = _run_command(spec["run"], cwd, timeout, stdin=stdin)
+    except subprocess.TimeoutExpired:
+        return _make_outcome(name, points, False, f"timed out after {timeout}s")
+    except OSError as exc:
+        return _make_outcome(name, points, False, f"failed to start: {exc}")
+
+    if ttype == TEST_TYPE_RUN:
+        want = spec.get("exit-code")
+        want = 0 if want is None else int(want)
+        passed = rp.returncode == want
+        detail = f"exit {rp.returncode} (wanted {want})"
+        if not passed:
+            detail += "\n" + _clip(rp.stderr or rp.stdout)
+        return _make_outcome(name, points, passed, detail)
+
+    # io test.
+    try:
+        expected = _resolve_expected(spec, fixtures_dir)
+    except TestFixtureError as exc:
+        return _make_outcome(name, points, False, str(exc))
+    comparison = spec["comparison"]
+    try:
+        passed = compare_output(rp.stdout, expected, comparison)
+    except re.error as exc:
+        return _make_outcome(name, points, False, f"invalid regex in expected: {exc}")
+    detail = f"exit {rp.returncode}; comparison={comparison}"
+    if not passed:
+        detail += (f"\n--- expected ({comparison}) ---\n{_clip(expected)}"
+                   f"\n--- actual stdout ---\n{_clip(rp.stdout)}")
+        if rp.stderr.strip():
+            detail += f"\n--- stderr ---\n{_clip(rp.stderr)}"
+    return _make_outcome(name, points, passed, detail)
+
+
+def _validate_test_spec(t: Any) -> str | None:
+    """Re-validate one spec at grade time — a lower bar than tests.go
+    that keeps a hand-edited assignments.json from crashing the grader."""
+    if not isinstance(t, dict):
+        return "not an object"
+    name = t.get("name")
+    if not isinstance(name, str) or not name:
+        return "name must be a non-empty string"
+    if t.get("type") not in TEST_TYPES:
+        return f"type {t.get('type')!r} must be one of {list(TEST_TYPES)}"
+    if not isinstance(t.get("run"), str) or not t.get("run"):
+        return "run must be a non-empty string"
+    points = t.get("points", 0)
+    if isinstance(points, bool) or not isinstance(points, int) or points < 0:
+        return "points must be a non-negative integer"
+    timeout = t.get("timeout", 0)
+    if isinstance(timeout, bool) or not isinstance(timeout, int) or timeout < 0 or timeout > 600:
+        return "timeout must be an integer between 0 and 600"
+    # Type-check the optional string fields execute_test consumes, so a
+    # malformed tests.json fails with a clear message instead of a
+    # mid-run TypeError.
+    for key in ("setup", "input", "input-file", "expected", "expected-file"):
+        v = t.get(key)
+        if v is not None and not isinstance(v, str):
+            return f"{key} must be a string"
+    if t.get("type") == TEST_TYPE_IO and t.get("comparison") not in COMPARISONS:
+        return f"comparison must be one of {list(COMPARISONS)}"
+    # exit-code feeds `int(...)` and an equality check in execute_test.
+    exit_code = t.get("exit-code")
+    if exit_code is not None and (isinstance(exit_code, bool) or not isinstance(exit_code, int)):
+        return "exit-code must be an integer"
+    return None
+
+
+def load_tests(path: pathlib.Path) -> list[dict[str, Any]]:
+    """Parse + re-validate a materialized tests.json. Raises TestsConfigError
+    on any structural problem."""
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise TestsConfigError(f"{TESTS_FILENAME} is not a JSON object")
+    if data.get("schema") != TESTS_SCHEMA_V1:
+        raise TestsConfigError(
+            f"{TESTS_FILENAME} schema is {data.get('schema')!r}, want {TESTS_SCHEMA_V1!r}")
+    tests = data.get("tests")
+    if not isinstance(tests, list) or not tests:
+        raise TestsConfigError(f"{TESTS_FILENAME} 'tests' must be a non-empty list")
+    seen = set()
+    for i, t in enumerate(tests):
+        err = _validate_test_spec(t)
+        if err:
+            raise TestsConfigError(f"{TESTS_FILENAME} tests[{i}]: {err}")
+        # Names are row identities in result.json; duplicates would make
+        # the gradebook ambiguous.
+        if t["name"] in seen:
+            raise TestsConfigError(f"{TESTS_FILENAME} tests[{i}]: duplicate test name {t['name']!r}")
+        seen.add(t["name"])
+    return tests
+
+
+def render_declarative_body(result: dict[str, Any], outcomes: list[dict[str, Any]],
+                            summary: str) -> str:
+    """Release-body Markdown for a declaratively-graded submission: the
+    score line, a per-test table, and a collapsible failure-detail section
+    with captured output for any failing test."""
+    lines = [f"### classroom50 autograde: {result['score']}/{result['max-score']}", ""]
+    lines.append("| Test | Result | Score |")
+    lines.append("|---|---|---|")
+    for o in outcomes:
+        ok = "PASS" if o["passed"] else "FAIL"
+        name = o["test-name"].replace("|", "\\|")
+        lines.append(f"| {name} | {ok} | {o['score']} / {o['max-score']} |")
+    lines.append("")
+
+    failed = [o for o in outcomes if not o["passed"]]
+    if failed:
+        lines.append("<details><summary>Failure details</summary>")
+        lines.append("")
+        for o in failed:
+            detail = (o.get("detail") or "").rstrip()
+            fence = _fence(detail)
+            lines.append(f"**{o['test-name']}**")
+            lines.append("")
+            lines.append(fence)
+            lines.append(detail)
+            lines.append(fence)
+            lines.append("")
+        lines.append("</details>")
+        lines.append("")
+
+    lines.append(f"Status: {summary}")
+    return "\n".join(lines) + "\n"
+
+
+class DeclarativeGrader:
+    """Runs a list of declarative test specs and builds the v1 result.json.
+    Constructed with the same identity context the Finalizer carries."""
+
+    def __init__(self, *, workspace: pathlib.Path, fixtures_dir: pathlib.Path,
+                 classroom: str, assignment: str, username: str, submission: str,
+                 commit_link: str, release_link: str):
+        self.workspace = workspace
+        self.fixtures_dir = fixtures_dir
+        self.classroom = classroom
+        self.assignment = assignment
+        self.username = username
+        self.submission = submission
+        self.commit_link = commit_link
+        self.release_link = release_link
+
+    def grade(self, tests: list[dict[str, Any]]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+        """Run every test. Returns (result.json dict, outcomes) where the
+        outcomes carry per-test `detail` for the release body."""
+        outcomes = [execute_test(t, cwd=self.workspace, fixtures_dir=self.fixtures_dir)
+                    for t in tests]
+        rows = [{k: o[k] for k in ("test-name", "passed", "score", "max-score")}
+                for o in outcomes]
+        result = make_result(
+            classroom=self.classroom,
+            assignment=self.assignment,
+            username=self.username,
+            submission=self.submission,
+            commit_link=self.commit_link,
+            release_link=self.release_link,
+            when=now_utc(),
+            score=sum(o["score"] for o in outcomes),
+            max_score=sum(o["max-score"] for o in outcomes),
+            tests=rows,
+        )
+        return result, outcomes
+
+
+def run_declarative(tests_path: pathlib.Path, finalize: Finalizer,
+                    fixtures_dir: pathlib.Path) -> int:
+    """Grade a per-assignment tests.json: load + re-validate, run each test,
+    then write result.json / release-body.md / GITHUB_OUTPUT. A malformed
+    tests.json routes through Finalizer.error so the submission still
+    publishes as 'submitted, error'. Always returns 0 -- a grading outcome
+    (even all-fail) never fails the runner."""
+    try:
+        tests = load_tests(tests_path)
+    except (json.JSONDecodeError, TestsConfigError, OSError) as exc:
+        return finalize.error(f"{TESTS_FILENAME}: {exc}")
+
+    grader = DeclarativeGrader(
+        workspace=finalize.workspace,
+        fixtures_dir=fixtures_dir,
+        classroom=finalize.classroom,
+        assignment=finalize.assignment,
+        username=finalize.username,
+        submission=finalize.submission,
+        commit_link=finalize.commit_link,
+        release_link=finalize.release_link,
+    )
+    # Backstop: execute_test/load_tests handle the expected failures; the
+    # broad catch guarantees the "grading outcomes always exit 0"
+    # invariant — an unexpected exception becomes a published error
+    # result, never an uncaught crash.
+    try:
+        result, outcomes = grader.grade(tests)
+    except Exception as exc:  # noqa: BLE001 - grading must never crash the runner
+        return finalize.error(f"declarative grader crashed: {exc}")
+
+    # Should always pass (the grader controls every field), but validating
+    # keeps parity with collect_scores ingest and catches drift early.
+    err = validate_result(result, classroom=finalize.classroom, assignment=finalize.assignment)
+    if err is not None:
+        return finalize.error(f"declarative grader produced invalid result: {err}")
+
+    status, summary = derive_status_and_summary(result)
+    print(f"runner: {summary}")
+    (finalize.workspace / RESULT_FILENAME).write_text(json.dumps(result, indent=2) + "\n")
+    (finalize.workspace / RELEASE_BODY_FILENAME).write_text(
+        render_declarative_body(result, outcomes, summary))
+    append_outputs(finalize.github_output, status, summary)
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # main()
 # ---------------------------------------------------------------------------
 
@@ -563,15 +1045,24 @@ def main() -> int:
         except (tarfile.TarError, OSError, ValueError) as exc:
             return finalize.error(f"bundle extraction failed: {exc} — see workflow logs")
 
-    # 2) Resolve the entrypoint: per-assignment > classroom default.
-    # When neither exists, synthesize a vacuous-pass result via
-    # finalize.no_autograder() — "no autograder configured" is a valid
-    # mid-setup state, not an error, so the gradebook records the
-    # submission as 0/0 success.
+    # 2) Resolve the entrypoint, most-specific first:
+    #      per-assignment autograder.py
+    #      > per-assignment tests.json (declarative, graded in-process)
+    #      > classroom default autograder.py
+    #      > vacuous pass.
+    # A hand-written per-assignment autograder.py wins over declarative
+    # tests for the same slug (it's the escape hatch). When nothing
+    # exists, finalize.no_autograder() synthesizes a vacuous-pass result
+    # — "no autograder configured" is a valid mid-setup state, not an
+    # error, so the gradebook records the submission as 0/0 success.
     per_assignment = runtime_dir / assignment / ENTRYPOINT_FILENAME
+    per_assignment_tests = runtime_dir / assignment / TESTS_FILENAME
     if per_assignment.is_file():
         entrypoint = per_assignment
         print(f"runner: using per-assignment entrypoint {entrypoint}")
+    elif per_assignment_tests.is_file():
+        print(f"runner: grading per-assignment declarative tests {per_assignment_tests}")
+        return run_declarative(per_assignment_tests, finalize, runtime_dir / assignment)
     else:
         durl = classroom_default_autograder_url(pages_base_url, classroom)
         print(

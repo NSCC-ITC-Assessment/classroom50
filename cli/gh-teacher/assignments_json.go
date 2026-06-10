@@ -51,20 +51,23 @@ type assignmentsJSON struct {
 }
 
 // assignmentEntry is one row in assignments.json. Field order reads
-// top-to-bottom for a teacher inspecting the file: identity →
-// template → schedule/mode → autograder → runtime → provenance.
-// Mode and Autograder always serialize (no omitempty) so consumers
-// don't have to disambiguate "absent → default" from "explicit
-// default". MigratedFrom omits cleanly when absent.
+// top-to-bottom for a teacher inspecting the file: identity ->
+// template -> schedule/mode -> autograder -> runtime -> tests ->
+// provenance. Mode and Autograder always serialize (no omitempty) so
+// consumers don't have to disambiguate "absent -> default" from
+// "explicit default". MigratedFrom omits cleanly when absent.
 //
-// No `Tests` field — per-assignment grading lives in the config
-// repo as an `autograder.py` (entrypoint) under
-// `<classroom>/autograders/<slug>/` plus any sibling fixtures, OR
-// the classroom default at `<classroom>/autograder.py` (used when
-// no per-assignment override exists). The runner-side bootstrap at
-// `.github/scripts/runner.py` downloads the bundle, resolves the
-// entrypoint, and execs it. See the Autograders wiki
-// page (wiki/Autograders.md) for the full contract + templates.
+// Tests is the optional declarative-grading layer (see tests.go):
+// publish-pages materializes it into the Pages bundle as tests.json and
+// runner.py grades it with a built-in interpreter. Entrypoint precedence
+// at grade time: per-assignment autograder.py > tests.json > classroom
+// default autograder.py > vacuous pass. See wiki/Autograders.md.
+// (An earlier `Tests` field was removed in PR #58 with the matrix
+// autograder; this is its declarative successor on runner.py.)
+// MaxGroupSize is accepted at the schema layer for group-mode entries
+// (mirroring how `mode: "group"` itself is accepted but behaviorally
+// unsupported) so GUI clients can persist it today; nothing consumes it
+// yet. 0 means unset and omits from the file.
 type assignmentEntry struct {
 	Slug         string           `json:"slug"`
 	Name         string           `json:"name"`
@@ -73,8 +76,20 @@ type assignmentEntry struct {
 	Due          string           `json:"due,omitempty"`
 	Mode         string           `json:"mode"`
 	Autograder   string           `json:"autograder"`
+	MaxGroupSize int              `json:"max_group_size,omitempty"`
 	Runtime      *runtimeRef      `json:"runtime,omitempty"`
+	Tests        []testSpec       `json:"tests,omitempty"`
 	MigratedFrom *migratedFromRef `json:"migrated_from,omitempty"`
+}
+
+// maxGroupSizeCap bounds max_group_size (when set; 0 = unset).
+const maxGroupSizeCap = 100
+
+func validateMaxGroupSize(n int) error {
+	if n < 0 || n > maxGroupSizeCap {
+		return fmt.Errorf("max_group_size %d must be between 1 and %d (or omitted)", n, maxGroupSizeCap)
+	}
+	return nil
 }
 
 // migratedFromRef records where an assignment originated when it
@@ -258,6 +273,17 @@ func upsertAssignment(entries []assignmentEntry, entry assignmentEntry) ([]assig
 	return append(entries, entry), false
 }
 
+// findAssignment returns the index of the entry with matching Slug
+// (case-sensitive, mirroring upsertAssignment) and whether it was found.
+func findAssignment(entries []assignmentEntry, slug string) (int, bool) {
+	for i := range entries {
+		if entries[i].Slug == slug {
+			return i, true
+		}
+	}
+	return -1, false
+}
+
 // removeAssignment drops by Slug (case-sensitive, mirroring
 // upsertAssignment). Returns the slice and whether a row was removed.
 func removeAssignment(entries []assignmentEntry, slug string) ([]assignmentEntry, bool) {
@@ -302,8 +328,16 @@ func validateAssignmentEntry(entry assignmentEntry) error {
 	if err := validateAutograderName(entry.Autograder); err != nil {
 		return err
 	}
+	if err := validateMaxGroupSize(entry.MaxGroupSize); err != nil {
+		return err
+	}
 	if entry.Runtime != nil {
 		if err := validateRuntime(*entry.Runtime); err != nil {
+			return err
+		}
+	}
+	if len(entry.Tests) > 0 {
+		if err := validateTests(entry.Tests); err != nil {
 			return err
 		}
 	}
@@ -345,8 +379,16 @@ func validateExistingEntry(entry assignmentEntry) error {
 	if err := validateShortName(entry.Autograder, "autograder"); err != nil {
 		return fmt.Errorf("entry %q: %w", entry.Slug, err)
 	}
+	if err := validateMaxGroupSize(entry.MaxGroupSize); err != nil {
+		return fmt.Errorf("entry %q: %w", entry.Slug, err)
+	}
 	if entry.Runtime != nil {
 		if err := validateRuntime(*entry.Runtime); err != nil {
+			return fmt.Errorf("entry %q: %w", entry.Slug, err)
+		}
+	}
+	if len(entry.Tests) > 0 {
+		if err := validateTests(entry.Tests); err != nil {
 			return fmt.Errorf("entry %q: %w", entry.Slug, err)
 		}
 	}

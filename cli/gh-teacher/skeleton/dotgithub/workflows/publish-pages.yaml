@@ -61,13 +61,28 @@ jobs:
             cp "$f" "_site/$f"
           done
 
+      - name: Materialize declarative tests
+        run: |
+          set -euo pipefail
+          # Translate each entry's `tests` block into
+          # <classroom>/autograders/<slug>/tests.json so the bundle step
+          # below tars it (with any sibling fixtures) for runner.py's
+          # interpreter. Must run BEFORE the bundle step. Guarded so an
+          # older skeleton still publishes everything else.
+          if [ -f .github/scripts/materialize_tests.py ]; then
+            python3 .github/scripts/materialize_tests.py
+          else
+            echo "::warning::.github/scripts/materialize_tests.py not found; skipping declarative-test materialization (re-run \`gh teacher init\` to update skeleton scripts)"
+          fi
+
       - name: Bundle per-assignment autograders
         run: |
           set -euo pipefail
           shopt -s nullglob
           # Per-assignment override directories live at
           # <classroom>/autograders/<slug>/ (autograder.py + any
-          # ancillary files: fixtures, helpers, framework configs).
+          # ancillary files: fixtures, helpers, framework configs, or a
+          # tests.json materialized from assignments.json above).
           # Bundle each into <classroom>/autograders/<slug>.tar.gz so
           # runner.py fetches one tarball at runtime (instead of
           # walking a directory listing Pages doesn't serve).

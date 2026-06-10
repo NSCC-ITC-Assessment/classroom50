@@ -101,10 +101,10 @@ func TestParseAssignments_RejectsInvalidAutograder(t *testing.T) {
 	}
 }
 
-func TestParseAssignments_RejectsTestsField(t *testing.T) {
-	// A hand-edited file carrying an unknown `tests:` field must
-	// surface a decode error rather than silently dropping the data
-	// on the next re-encode. DisallowUnknownFields gives us this.
+func TestParseAssignments_TestsRoundTrip(t *testing.T) {
+	// The declarative `tests` block (reintroduced atop the runner.py
+	// architecture) parses, preserves every field, and survives a
+	// re-encode/re-parse.
 	in := []byte(`{
   "schema": "classroom50/assignments/v1",
   "assignments": [
@@ -114,16 +114,109 @@ func TestParseAssignments_RejectsTestsField(t *testing.T) {
       "template": { "owner": "cs50", "repo": "hello-template", "branch": "main" },
       "mode": "individual",
       "autograder": "default",
-      "tests": []
+      "tests": [
+        {
+          "name": "compiles",
+          "type": "run",
+          "run": "gcc -o hello hello.c",
+          "timeout": 30,
+          "points": 1
+        },
+        {
+          "name": "prints Hello, world!",
+          "type": "io",
+          "setup": "gcc -o hello hello.c",
+          "run": "./hello",
+          "expected": "Hello, world!",
+          "comparison": "included",
+          "timeout": 10,
+          "points": 2
+        }
+      ]
+    }
+  ]
+}`)
+	file, err := parseAssignments(in)
+	if err != nil {
+		t.Fatalf("parseAssignments: %v", err)
+	}
+	tests := file.Assignments[0].Tests
+	if len(tests) != 2 {
+		t.Fatalf("expected 2 tests, got %d", len(tests))
+	}
+	if tests[0].Type != "run" || tests[0].Run != "gcc -o hello hello.c" || tests[0].Points != 1 {
+		t.Errorf("run test fields not parsed: %#v", tests[0])
+	}
+	if tests[1].Type != "io" || tests[1].Comparison != "included" || tests[1].Expected != "Hello, world!" {
+		t.Errorf("io test fields not parsed: %#v", tests[1])
+	}
+
+	// Re-encode and re-parse to confirm round-trip stability.
+	encoded, err := encodeAssignments(file)
+	if err != nil {
+		t.Fatalf("encodeAssignments: %v", err)
+	}
+	again, err := parseAssignments(encoded)
+	if err != nil {
+		t.Fatalf("re-parse: %v", err)
+	}
+	if !reflect.DeepEqual(again.Assignments[0].Tests, tests) {
+		t.Errorf("tests not stable across round-trip:\n got: %#v\nwant: %#v", again.Assignments[0].Tests, tests)
+	}
+}
+
+func TestParseAssignments_RejectsInvalidTest(t *testing.T) {
+	// A malformed test (unknown type) must fail the parse-path
+	// validator with the entry context attached.
+	in := []byte(`{
+  "schema": "classroom50/assignments/v1",
+  "assignments": [
+    {
+      "slug": "hello",
+      "name": "Hello",
+      "template": { "owner": "cs50", "repo": "hello-template", "branch": "main" },
+      "mode": "individual",
+      "autograder": "default",
+      "tests": [
+        { "name": "t1", "type": "diff", "run": "./hello", "points": 1 }
+      ]
     }
   ]
 }`)
 	_, err := parseAssignments(in)
 	if err == nil {
-		t.Fatalf("expected error for legacy tests: field, got nil")
+		t.Fatalf("expected error for invalid test type, got nil")
 	}
-	if !strings.Contains(err.Error(), "tests") {
-		t.Errorf("err should mention the unknown `tests` field, got %q", err)
+	if !strings.Contains(err.Error(), "type") {
+		t.Errorf("err should mention the invalid `type`, got %q", err)
+	}
+}
+
+func TestParseAssignments_RejectsUnknownTestField(t *testing.T) {
+	// DisallowUnknownFields recurses into the test objects, so a
+	// typo'd key (`compare` for `comparison`) surfaces as a decode
+	// error instead of silently dropping on the next re-encode.
+	in := []byte(`{
+  "schema": "classroom50/assignments/v1",
+  "assignments": [
+    {
+      "slug": "hello",
+      "name": "Hello",
+      "template": { "owner": "cs50", "repo": "hello-template", "branch": "main" },
+      "mode": "individual",
+      "autograder": "default",
+      "tests": [
+        { "name": "t1", "type": "io", "run": "./hello", "expected": "x", "compare": "exact", "points": 1 }
+      ]
+    }
+  ]
+}`)
+	_, err := parseAssignments(in)
+	if err == nil {
+		t.Fatalf("expected decode error for unknown test field, got nil")
+	}
+	if !strings.Contains(err.Error(), "compare") {
+		t.Errorf("err should name the offending field, got %q", err)
 	}
 }
 
@@ -381,6 +474,72 @@ func TestUpsertAssignment_CaseSensitive(t *testing.T) {
 	}
 	if len(updated) != 2 {
 		t.Errorf("expected append (no match), got len=%d", len(updated))
+	}
+}
+
+func TestMaxGroupSize_RoundTripsAndBounds(t *testing.T) {
+	// Accepted at the schema layer (for GUI clients / future group mode)
+	// even though nothing consumes it yet; 0 omits from the file.
+	body := `{
+  "schema": "classroom50/assignments/v1",
+  "assignments": [
+    {
+      "slug": "proj",
+      "name": "Project",
+      "template": { "owner": "o", "repo": "t", "branch": "main" },
+      "mode": "group",
+      "autograder": "default",
+      "max_group_size": 4
+    }
+  ]
+}`
+	file, err := parseAssignments([]byte(body))
+	if err != nil {
+		t.Fatalf("parseAssignments: %v", err)
+	}
+	if file.Assignments[0].MaxGroupSize != 4 {
+		t.Errorf("MaxGroupSize = %d, want 4", file.Assignments[0].MaxGroupSize)
+	}
+	encoded, err := encodeAssignments(file)
+	if err != nil {
+		t.Fatalf("encodeAssignments: %v", err)
+	}
+	if !strings.Contains(string(encoded), `"max_group_size": 4`) {
+		t.Errorf("max_group_size should round-trip, got:\n%s", encoded)
+	}
+
+	// Unset omits from the file.
+	file.Assignments[0].MaxGroupSize = 0
+	encoded, err = encodeAssignments(file)
+	if err != nil {
+		t.Fatalf("encodeAssignments: %v", err)
+	}
+	if strings.Contains(string(encoded), "max_group_size") {
+		t.Errorf("unset max_group_size should omit, got:\n%s", encoded)
+	}
+
+	// Out of bounds fails both validators.
+	bad := file.Assignments[0]
+	bad.MaxGroupSize = 9999
+	if err := validateAssignmentEntry(bad); err == nil || !strings.Contains(err.Error(), "max_group_size") {
+		t.Errorf("write-path validator should reject 9999, got %v", err)
+	}
+	if err := validateExistingEntry(bad); err == nil || !strings.Contains(err.Error(), "max_group_size") {
+		t.Errorf("parse-path validator should reject 9999, got %v", err)
+	}
+}
+
+func TestFindAssignment(t *testing.T) {
+	entries := []assignmentEntry{{Slug: "hello"}, {Slug: "intro"}}
+	if idx, ok := findAssignment(entries, "intro"); !ok || idx != 1 {
+		t.Errorf("expected (1, true) for intro, got (%d, %v)", idx, ok)
+	}
+	if _, ok := findAssignment(entries, "missing"); ok {
+		t.Errorf("missing slug should not be found")
+	}
+	// Case-sensitive, mirroring upsertAssignment.
+	if _, ok := findAssignment(entries, "Hello"); ok {
+		t.Errorf("lookup should be case-sensitive")
 	}
 }
 

@@ -28,6 +28,10 @@ on:
       - 'cli/gh-teacher/embed/**'
       - 'cli/gh-teacher/skeleton_tests/**'
       - 'cli/gh-teacher/autograders_tests/**'
+      # test_assignments_schema.py reads these, so schema/fixture edits
+      # must also trigger the parity suite.
+      - 'schemas/**'
+      - 'examples/declarative-tests/tests.json'
       - '.github/workflows/skeleton-scripts-ci.yaml'
   pull_request:
     paths:
@@ -37,6 +41,8 @@ on:
       - 'cli/gh-teacher/embed/**'
       - 'cli/gh-teacher/skeleton_tests/**'
       - 'cli/gh-teacher/autograders_tests/**'
+      - 'schemas/**'
+      - 'examples/declarative-tests/tests.json'
       - '.github/workflows/skeleton-scripts-ci.yaml'
 
 jobs:
@@ -51,7 +57,12 @@ jobs:
           python-version: '3.x'
 
       - name: Install test deps
-        run: python -m pip install --quiet pytest pyyaml
+        # pytest-json-report: the declarative grader's pytest-type tests
+        # invoke pytest as a subprocess and split points from its JSON
+        # report (see _grade_python in runner.py).
+        # jsonschema: validates schemas/assignments-v1.schema.json
+        # against the Go validators' shapes (test_assignments_schema.py).
+        run: python -m pip install --quiet pytest pyyaml pytest-json-report jsonschema
 
       - name: Run collect_scores tests
         run: python -m pytest cli/gh-teacher/skeleton_tests/ -v

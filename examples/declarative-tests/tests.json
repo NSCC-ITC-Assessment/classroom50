@@ -1,0 +1,60 @@
+[
+  {
+    "name": "imports",
+    "type": "run",
+    "run": "python3 -c \"import greet\"",
+    "points": 1
+  },
+  {
+    "name": "greets Alice (included)",
+    "type": "io",
+    "setup": "python3 -m py_compile greet.py",
+    "run": "python3 greet.py",
+    "input": "Alice\n",
+    "expected": "hello, Alice!",
+    "comparison": "included",
+    "points": 2
+  },
+  {
+    "name": "greets World (exact)",
+    "type": "io",
+    "run": "python3 greet.py",
+    "input": "World\n",
+    "expected": "hello, World!",
+    "comparison": "exact",
+    "points": 2
+  },
+  {
+    "name": "greets Bob (regex)",
+    "type": "io",
+    "run": "python3 greet.py",
+    "input": "Bob\n",
+    "expected": "^hello,\\s+Bob!",
+    "comparison": "regex",
+    "points": 1
+  },
+  {
+    "name": "greets from fixture files",
+    "type": "io",
+    "run": "python3 greet.py",
+    "input-file": "names.txt",
+    "expected-file": "expected-greetings.txt",
+    "comparison": "exact",
+    "points": 2
+  },
+  {
+    "name": "explicit exit code",
+    "type": "run",
+    "run": "python3 -c \"import sys; sys.exit(42)\"",
+    "exit-code": 42,
+    "points": 1
+  },
+  {
+    "name": "pytest suite",
+    "type": "python",
+    "setup": "pip install --quiet pytest pytest-json-report",
+    "run": "python3 -m pytest -q test_greet.py",
+    "timeout": 120,
+    "points": 4
+  }
+]

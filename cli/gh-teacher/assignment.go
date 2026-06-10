@@ -38,6 +38,7 @@ func assignmentCmd() *cobra.Command {
 	cmd.AddCommand(assignmentAddCmd())
 	cmd.AddCommand(assignmentRemoveCmd())
 	cmd.AddCommand(assignmentListCmd())
+	cmd.AddCommand(assignmentTestCmd())
 	return cmd
 }
 
@@ -52,6 +53,7 @@ func assignmentAddCmd() *cobra.Command {
 		mode        string
 		autograder  string
 		runtimeFile string
+		testsFile   string
 	)
 
 	cmd := &cobra.Command{
@@ -87,12 +89,15 @@ func assignmentAddCmd() *cobra.Command {
 			"`default`, which uses the universal shim embedded in\n" +
 			"gh-student — that shim `uses:` the autograde-runner workflow\n" +
 			"in the config repo.\n\n" +
-			"Per-assignment grading is NOT registered here — drop an\n" +
-			"autograder.py (entrypoint) plus any sibling fixtures at\n" +
-			"<classroom>/autograders/<slug>/ in the config repo, OR run\n" +
-			"`gh teacher autograder set-default <org> <classroom>` to\n" +
-			"install a classroom default at <classroom>/autograder.py\n" +
-			"that grades every assignment in the classroom. See the\n" +
+			"There are three ways to grade. (1) Declarative tests: pass\n" +
+			"--tests <file.json> here (or use `gh teacher assignment test\n" +
+			"add`) to describe io/run/python checks that the runner grades\n" +
+			"with no autograder.py. (2) A per-assignment autograder.py: drop\n" +
+			"an entrypoint plus any sibling fixtures at\n" +
+			"<classroom>/autograders/<slug>/ in the config repo (mutually\n" +
+			"exclusive with --tests). (3) A classroom default: run\n" +
+			"`gh teacher autograder set-default <org> <classroom>` to install\n" +
+			"<classroom>/autograder.py for every assignment. See the\n" +
 			"Autograders wiki page for the result.json contract and\n" +
 			"templates (pytest, check50, custom).",
 		Example: "  gh teacher assignment add cs50-fall-2026 cs-principles hello \\\n" +
@@ -153,6 +158,10 @@ func assignmentAddCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			tests, err := parseTestsFile(strings.TrimSpace(testsFile))
+			if err != nil {
+				return err
+			}
 
 			client, err := requireAuthClient(cmd)
 			if err != nil {
@@ -160,7 +169,7 @@ func assignmentAddCmd() *cobra.Command {
 			}
 			return runAssignmentAdd(client, cmd.OutOrStdout(), cmd.ErrOrStderr(),
 				org, classroom, slug, nameVal, strings.TrimSpace(description),
-				tmplArg, dueVal, modeVal, autograderVal, runtime)
+				tmplArg, dueVal, modeVal, autograderVal, runtime, tests)
 		},
 	}
 
@@ -171,6 +180,7 @@ func assignmentAddCmd() *cobra.Command {
 	cmd.Flags().StringVar(&mode, "mode", assignmentModeIndividual, "Assignment mode: only `individual` is supported (group assignments are planned for a future release)")
 	cmd.Flags().StringVar(&autograder, "autograder", defaultAutograderName, "Autograder workflow shim this assignment opts into; resolves to <classroom>/autograders/<name>.yaml in the config repo")
 	cmd.Flags().StringVar(&runtimeFile, "runtime", "", "Path to a JSON file describing the runtime environment (runs-on, python/node/java/go versions, apt packages, or container image), or `-` to read from stdin. Omit for ubuntu-latest + Python 3.12.")
+	cmd.Flags().StringVar(&testsFile, "tests", "", "Path to a JSON file with a bare array of declarative test specs (io/run/python), or `-` to read from stdin. Sets the assignment's `tests` block; mutually exclusive with a per-assignment autograder.py. See `gh teacher assignment test --help`.")
 	return cmd
 }
 
@@ -342,7 +352,7 @@ func assignmentsFilePath(classroom string) string {
 // delete of the referenced autograder loses cleanly on retry rather
 // than landing a dangling reference. Same-slug races are
 // last-writer-wins; both commits stay in history for `git revert`.
-func runAssignmentAdd(client *api.RESTClient, out, errOut io.Writer, org, classroom, slug, name, description string, tmpl templateArg, due, mode, autograder string, runtime *runtimeRef) error {
+func runAssignmentAdd(client *api.RESTClient, out, errOut io.Writer, org, classroom, slug, name, description string, tmpl templateArg, due, mode, autograder string, runtime *runtimeRef, tests []testSpec) error {
 	branch, err := resolveConfigRepoBranch(client, org)
 	if err != nil {
 		return err
@@ -362,6 +372,7 @@ func runAssignmentAdd(client *api.RESTClient, out, errOut io.Writer, org, classr
 		Mode:        mode,
 		Autograder:  autograder,
 		Runtime:     runtime,
+		Tests:       tests,
 	}
 	if err := validateAssignmentEntry(entry); err != nil {
 		return err
@@ -370,8 +381,10 @@ func runAssignmentAdd(client *api.RESTClient, out, errOut io.Writer, org, classr
 	var (
 		action          string
 		lastEncodedSize int
+		droppedTests    int
 	)
 	build := func(parentSHA string) (map[string]string, error) {
+		droppedTests = 0
 		// Verify the autograder shim exists at parent SHA before
 		// writing — otherwise the assignment lands successfully and
 		// every student's accept 404s on the Pages fetch later. The
@@ -389,9 +402,31 @@ func runAssignmentAdd(client *api.RESTClient, out, errOut io.Writer, org, classr
 			}
 		}
 
+		// Declarative tests and a hand-written per-assignment autograder.py
+		// are mutually exclusive (the runner prefers autograder.py, so the
+		// tests would silently never run). Probed at parentSHA so a
+		// concurrent autograder.py add loses cleanly on retry. The skeleton
+		// probe catches config repos that predate materialize_tests.py.
+		if len(entry.Tests) > 0 {
+			if err := ensureDeclarativeTestsSupported(client, org, parentSHA); err != nil {
+				return nil, err
+			}
+			if err := ensureNoPerAssignmentAutograder(client, org, classroom, slug, parentSHA); err != nil {
+				return nil, err
+			}
+		}
+
 		file, err := loadAssignments(client, org, classroom, parentSHA)
 		if err != nil {
 			return nil, err
+		}
+		// Upsert replaces the whole entry, so re-running add without
+		// --tests drops tests authored via `assignment test add`. Count
+		// them here for the post-commit warning. nil means the flag was
+		// omitted; an explicit empty array (`--tests` with `[]`) is a
+		// deliberate clear and shouldn't warn.
+		if idx, ok := findAssignment(file.Assignments, slug); ok && entry.Tests == nil {
+			droppedTests = len(file.Assignments[idx].Tests)
 		}
 		updated, replaced := upsertAssignment(file.Assignments, entry)
 		if replaced {
@@ -419,6 +454,11 @@ func runAssignmentAdd(client *api.RESTClient, out, errOut io.Writer, org, classr
 	_, _ = fmt.Fprintf(out, "%s/%s/%s: %s %s (template %s/%s@%s, autograder %s)\n",
 		org, configRepoName, assignmentsFilePath(classroom), action, slug,
 		resolved.Owner, resolved.Repo, resolved.Branch, entry.Autograder)
+	if droppedTests > 0 {
+		_, _ = fmt.Fprintf(errOut,
+			"Warning: replacing %q dropped its %d declarative test(s) — `assignment add` rewrites the whole entry. Pass --tests to keep them, or re-add with `gh teacher assignment test add`.\n",
+			slug, droppedTests)
+	}
 	// Heads-up if the encoded file is approaching the GitHub
 	// contents-API behavior change (~1 MiB encoded → encoding:"none",
 	// which would wedge future reads/writes). Diagnostic only;

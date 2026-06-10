@@ -166,8 +166,9 @@ def _classroom_yaml(classroom: str = "cs-test", assignment: str = "hello") -> st
     return f"classroom: {classroom}\nassignment: {assignment}\n"
 
 
-def _manifest(*, slug: str = "hello", runtime: dict | None = None) -> dict:
-    """Minimum assignments.json with one entry, optional runtime block."""
+def _manifest(*, slug: str = "hello", runtime: dict | None = None,
+              tests: list | None = None) -> dict:
+    """Minimum assignments.json with one entry, optional runtime/tests."""
     entry = {
         "slug": slug,
         "name": "Hello",
@@ -177,6 +178,8 @@ def _manifest(*, slug: str = "hello", runtime: dict | None = None) -> dict:
     }
     if runtime is not None:
         entry["runtime"] = runtime
+    if tests is not None:
+        entry["tests"] = tests
     return {
         "schema": "classroom50/assignments/v1",
         "assignments": [entry],
@@ -321,6 +324,172 @@ class TestFieldValidation:
         )
         assert rc != 0
         assert "runtime.container.user" in stderr
+
+
+# ---------------------------------------------------------------------------
+# Declarative tests block — re-validation mirroring tests.go
+# ---------------------------------------------------------------------------
+
+
+class TestDeclarativeTestsValidation:
+    """The setup job re-validates the `tests` block (mirroring
+    cli/gh-teacher/tests.go, like the runtime block's dual validation):
+    a hand-edited assignments.json must fail at setup with a clear
+    message, and nothing from `tests` may reach the job outputs."""
+
+    def test_valid_tests_pass_and_never_reach_outputs(self, inline_script, tmp_path):
+        rc, _stdout, _stderr, outputs = _run_validator(
+            inline_script, tmp_path,
+            classroom50_yaml=_classroom_yaml(),
+            manifest=_manifest(tests=[
+                {"name": "compiles", "type": "run",
+                 "run": "gcc -o hello hello.c", "timeout": 30, "points": 1},
+                {"name": "prints", "type": "io", "run": "./hello",
+                 "expected": "Hello, world!", "comparison": "included", "points": 2},
+                {"name": "pytest suite", "type": "python",
+                 "run": "python -m pytest -q", "timeout": 120, "points": 10},
+            ]),
+        )
+        assert rc == 0
+        assert outputs.get("runs-on") == "ubuntu-latest"
+        # Test specs are bundle data, never workflow outputs.
+        joined = "\n".join(f"{k}={v}" for k, v in outputs.items())
+        assert "gcc" not in joined
+        assert "tests" not in outputs
+
+    def test_tests_must_be_an_array(self, inline_script, tmp_path):
+        rc, _stdout, stderr, _outputs = _run_validator(
+            inline_script, tmp_path,
+            classroom50_yaml=_classroom_yaml(),
+            manifest=_manifest(tests={"name": "not-a-list"}),
+        )
+        assert rc != 0
+        assert "tests must be an array" in stderr
+
+    def test_unknown_test_key_rejected(self, inline_script, tmp_path):
+        # Mirrors Go's DisallowUnknownFields: a typo'd `compare` (it's
+        # `comparison`) fails loudly instead of being silently ignored.
+        rc, _stdout, stderr, _outputs = _run_validator(
+            inline_script, tmp_path,
+            classroom50_yaml=_classroom_yaml(),
+            manifest=_manifest(tests=[
+                {"name": "t", "type": "io", "run": "x",
+                 "expected": "y", "compare": "exact", "points": 1},
+            ]),
+        )
+        assert rc != 0
+        assert "unsupported keys" in stderr and "compare" in stderr
+
+    def test_invalid_type_rejected(self, inline_script, tmp_path):
+        rc, _stdout, stderr, _outputs = _run_validator(
+            inline_script, tmp_path,
+            classroom50_yaml=_classroom_yaml(),
+            manifest=_manifest(tests=[
+                {"name": "t", "type": "nope", "run": "x", "points": 1},
+            ]),
+        )
+        assert rc != 0
+        assert "type" in stderr and "nope" in stderr
+
+    def test_duplicate_names_rejected(self, inline_script, tmp_path):
+        rc, _stdout, stderr, _outputs = _run_validator(
+            inline_script, tmp_path,
+            classroom50_yaml=_classroom_yaml(),
+            manifest=_manifest(tests=[
+                {"name": "same", "type": "run", "run": "true", "points": 1},
+                {"name": "same", "type": "run", "run": "false", "points": 1},
+            ]),
+        )
+        assert rc != 0
+        assert "duplicate test name" in stderr
+
+    def test_io_missing_expected_rejected(self, inline_script, tmp_path):
+        # included/regex against an empty expected matches everything —
+        # the always-pass footgun tests.go also rejects.
+        rc, _stdout, stderr, _outputs = _run_validator(
+            inline_script, tmp_path,
+            classroom50_yaml=_classroom_yaml(),
+            manifest=_manifest(tests=[
+                {"name": "t", "type": "io", "run": "./hello",
+                 "comparison": "included", "points": 1},
+            ]),
+        )
+        assert rc != 0
+        assert "expected" in stderr
+
+    def test_io_only_field_on_run_test_rejected(self, inline_script, tmp_path):
+        rc, _stdout, stderr, _outputs = _run_validator(
+            inline_script, tmp_path,
+            classroom50_yaml=_classroom_yaml(),
+            manifest=_manifest(tests=[
+                {"name": "t", "type": "run", "run": "true",
+                 "expected": "oops", "points": 1},
+            ]),
+        )
+        assert rc != 0
+        assert "only valid for an io test" in stderr
+
+    def test_out_of_bounds_timeout_rejected(self, inline_script, tmp_path):
+        rc, _stdout, stderr, _outputs = _run_validator(
+            inline_script, tmp_path,
+            classroom50_yaml=_classroom_yaml(),
+            manifest=_manifest(tests=[
+                {"name": "t", "type": "run", "run": "true",
+                 "timeout": 9999, "points": 1},
+            ]),
+        )
+        assert rc != 0
+        assert "timeout" in stderr
+
+    def test_non_integer_points_rejected_cleanly(self, inline_script, tmp_path):
+        # No traceback: the isinstance guard catches it, like the
+        # runtime block's python-version check.
+        rc, _stdout, stderr, _outputs = _run_validator(
+            inline_script, tmp_path,
+            classroom50_yaml=_classroom_yaml(),
+            manifest=_manifest(tests=[
+                {"name": "t", "type": "run", "run": "true", "points": "many"},
+            ]),
+        )
+        assert rc != 0
+        assert "Traceback" not in stderr
+        assert "points" in stderr
+
+    def test_count_cap_rejected(self, inline_script, tmp_path):
+        too_many = [{"name": f"t{i}", "type": "run", "run": "true", "points": 1}
+                    for i in range(101)]
+        rc, _stdout, stderr, _outputs = _run_validator(
+            inline_script, tmp_path,
+            classroom50_yaml=_classroom_yaml(),
+            manifest=_manifest(tests=too_many),
+        )
+        assert rc != 0
+        assert "too many tests" in stderr
+
+    def test_name_length_is_byte_based(self, inline_script, tmp_path):
+        # Mirrors Go's len() on the UTF-8 string: 40 three-byte chars is
+        # 40 characters but 120 bytes, so it must be rejected.
+        rc, _stdout, stderr, _outputs = _run_validator(
+            inline_script, tmp_path,
+            classroom50_yaml=_classroom_yaml(),
+            manifest=_manifest(tests=[
+                {"name": "\u4e16" * 40, "type": "run", "run": "true", "points": 1},
+            ]),
+        )
+        assert rc != 0
+        assert "100 bytes" in stderr
+
+    def test_exit_code_on_io_test_rejected(self, inline_script, tmp_path):
+        rc, _stdout, stderr, _outputs = _run_validator(
+            inline_script, tmp_path,
+            classroom50_yaml=_classroom_yaml(),
+            manifest=_manifest(tests=[
+                {"name": "t", "type": "io", "run": "./hello", "expected": "hi",
+                 "comparison": "included", "exit-code": 0, "points": 1},
+            ]),
+        )
+        assert rc != 0
+        assert "exit-code" in stderr
 
 
 # ---------------------------------------------------------------------------

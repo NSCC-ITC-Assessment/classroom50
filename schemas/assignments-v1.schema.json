@@ -1,0 +1,222 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/foundation50/classroom50/main/schemas/assignments-v1.schema.json",
+  "title": "classroom50/assignments/v1",
+  "description": "Machine-readable schema for <classroom>/assignments.json, mirroring the authoritative Go validators in cli/gh-teacher (assignments_json.go, tests.go, runtime.go). Intended for non-CLI clients (e.g. the GUI) to validate before writing. Two rules JSON Schema cannot express: (1) test names must be UNIQUE within an assignment, and (2) name length is capped at 100 BYTES (UTF-8), not characters — enforce both client-side. Deliberate write-side strictness: the CLI's parser additionally tolerates and normalizes a few legacy shapes this schema rejects — a missing or empty `autograder` (normalized to \"default\") and `max_group_size: 0` (treated as unset) — clients should always write the normalized form, as the CLI does.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "assignments"],
+  "properties": {
+    "schema": { "const": "classroom50/assignments/v1" },
+    "assignments": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/assignment" }
+    }
+  },
+  "$defs": {
+    "shortName": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{1,38}$"
+    },
+    "assignment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["slug", "name", "template", "mode", "autograder"],
+      "properties": {
+        "slug": { "$ref": "#/$defs/shortName" },
+        "name": { "type": "string", "minLength": 1 },
+        "description": { "type": "string" },
+        "template": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["owner", "repo", "branch"],
+          "properties": {
+            "owner": { "type": "string", "minLength": 1 },
+            "repo": { "type": "string", "minLength": 1 },
+            "branch": { "type": "string", "minLength": 1 }
+          }
+        },
+        "due": {
+          "type": "string",
+          "description": "RFC 3339 timestamp with timezone, e.g. 2026-09-15T23:59:00-04:00. Stored verbatim."
+        },
+        "mode": {
+          "enum": ["individual", "group"],
+          "description": "`group` is accepted at the schema layer but not yet supported end-to-end."
+        },
+        "autograder": {
+          "$ref": "#/$defs/shortName",
+          "description": "Workflow-shim name; `default` for the universal shim. NOT the grading logic — that's autograder.py or `tests`."
+        },
+        "max_group_size": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100,
+          "description": "Accepted for group-mode entries (and persisted for clients); unused until group mode lands. Omit instead of 0."
+        },
+        "runtime": { "$ref": "#/$defs/runtime" },
+        "tests": {
+          "type": "array",
+          "maxItems": 100,
+          "items": { "$ref": "#/$defs/test" },
+          "description": "Declarative tests. Mutually exclusive with a per-assignment autograder.py at <classroom>/autograders/<slug>/ — probe before writing."
+        },
+        "migrated_from": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["source", "classroom_id", "assignment_id", "migrated_at"],
+          "properties": {
+            "source": { "type": "string" },
+            "classroom_id": { "type": "integer" },
+            "assignment_id": { "type": "integer" },
+            "original_slug": { "type": "string" },
+            "starter_repo": { "type": "string" },
+            "invite_link": { "type": "string" },
+            "migrated_at": { "type": "string" }
+          }
+        }
+      }
+    },
+    "runtime": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Omit entirely for the defaults (ubuntu-latest + Python 3.12). Never write empty-string fields.",
+      "properties": {
+        "runs-on": {
+          "enum": [
+            "ubuntu-latest", "ubuntu-24.04", "ubuntu-22.04", "ubuntu-20.04",
+            "macos-latest", "macos-14", "macos-13",
+            "windows-latest", "windows-2022", "windows-2019"
+          ]
+        },
+        "container": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["image"],
+          "properties": {
+            "image": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,255}$"
+            },
+            "user": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_][A-Za-z0-9_.-]{0,31}(:[A-Za-z0-9_][A-Za-z0-9_.-]{0,31})?$"
+            },
+            "credentials": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["username", "password"],
+              "properties": {
+                "username": { "type": "string", "minLength": 1 },
+                "password": {
+                  "type": "string",
+                  "pattern": "^\\$\\{\\{\\s*secrets\\.[A-Za-z_][A-Za-z0-9_]*\\s*\\}\\}$",
+                  "description": "Must be a ${{ secrets.NAME }} reference, never a raw token."
+                }
+              }
+            }
+          }
+        },
+        "python": { "$ref": "#/$defs/langVersion" },
+        "node": { "$ref": "#/$defs/langVersion" },
+        "java": { "$ref": "#/$defs/langVersion" },
+        "go": { "$ref": "#/$defs/langVersion" },
+        "apt": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^[a-z0-9][a-z0-9.+-]{0,63}$" }
+        }
+      },
+      "allOf": [
+        {
+          "if": { "required": ["container"] },
+          "then": {
+            "not": { "required": ["apt"] },
+            "properties": {
+              "runs-on": {
+                "enum": ["ubuntu-latest", "ubuntu-24.04", "ubuntu-22.04", "ubuntu-20.04"],
+                "description": "GitHub Actions runs containers on Ubuntu hosts only."
+              }
+            }
+          }
+        }
+      ]
+    },
+    "langVersion": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._+-]{1,32}$"
+    },
+    "test": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "type", "run"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+          "description": "Unique within the assignment (enforce client-side); <= 100 UTF-8 bytes; no control characters."
+        },
+        "type": { "enum": ["io", "run", "python"] },
+        "setup": { "type": "string" },
+        "run": { "type": "string", "minLength": 1 },
+        "input": { "type": "string" },
+        "input-file": { "type": "string" },
+        "expected": { "type": "string" },
+        "expected-file": { "type": "string" },
+        "comparison": { "enum": ["included", "exact", "regex"] },
+        "timeout": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 600,
+          "description": "Seconds, 1-600. 0 (or omitted) means the default of 10s."
+        },
+        "exit-code": { "type": "integer", "minimum": 0, "maximum": 255 },
+        "points": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1000,
+          "description": "Defaults to 0 (informational test) when omitted; the CLI always writes it."
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "type": { "const": "io" } } },
+          "then": {
+            "required": ["comparison"],
+            "not": { "required": ["exit-code"] }
+          },
+          "else": {
+            "allOf": [
+              { "not": { "required": ["input"] } },
+              { "not": { "required": ["input-file"] } },
+              { "not": { "required": ["expected"] } },
+              { "not": { "required": ["expected-file"] } },
+              { "not": { "required": ["comparison"] } }
+            ]
+          }
+        },
+        {
+          "if": { "properties": { "type": { "const": "python" } } },
+          "then": { "not": { "required": ["exit-code"] } }
+        },
+        { "not": { "required": ["input", "input-file"] } },
+        { "not": { "required": ["expected", "expected-file"] } },
+        {
+          "if": {
+            "properties": {
+              "type": { "const": "io" },
+              "comparison": { "enum": ["included", "regex"] }
+            }
+          },
+          "then": {
+            "anyOf": [
+              { "required": ["expected"], "properties": { "expected": { "minLength": 1 } } },
+              { "required": ["expected-file"], "properties": { "expected-file": { "minLength": 1 } } }
+            ]
+          }
+        }
+      ]
+    }
+  }
+}
