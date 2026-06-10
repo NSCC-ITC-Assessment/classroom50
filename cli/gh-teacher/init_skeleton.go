@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"embed"
 	"encoding/base64"
@@ -84,7 +85,11 @@ var errRefNotReady = errors.New("branch ref not fully propagated")
 var errMissingWorkflowScope = errors.New("auth token is missing the `workflow` OAuth scope, so init can't commit the skeleton's .github/workflows files; re-run `gh teacher login` (or `gh auth refresh -s admin:org,workflow`), then run init again")
 
 // commitSkeleton lands the embedded skeleton on defaultBranch in one
-// Tree commit; re-runs no-op via the probe file.
+// Tree commit. When the probe file shows a skeleton already landed, it
+// refreshes stale files instead (diff embedded vs repo, confirm, commit
+// only the changed paths) so re-running init picks up skeleton updates
+// — e.g. an org bootstrapped before declarative tests gains
+// materialize_tests.py and the updated runner/workflows.
 //
 // A just-created repo (auto_init, or one a prior run made seconds ago
 // then 422'd on) serves the git-data APIs before its ref propagates:
@@ -92,7 +97,7 @@ var errMissingWorkflowScope = errors.New("auth token is missing the `workflow` O
 // for the branch tip to settle, then retry the read+build for any lag
 // that slips through. Both run on every path -- "already exists" is
 // often a seconds-old repo.
-func commitSkeleton(client *api.RESTClient, out, errOut io.Writer, owner, repo, defaultBranch string) error {
+func commitSkeleton(client *api.RESTClient, in io.Reader, out, errOut io.Writer, owner, repo, defaultBranch string, assumeYes bool) error {
 	files, err := skeletonFiles(defaultBranch)
 	if err != nil {
 		return err
@@ -103,8 +108,7 @@ func commitSkeleton(client *api.RESTClient, out, errOut io.Writer, owner, repo, 
 		return err
 	}
 	if probe {
-		_, _ = fmt.Fprintf(out, "%s/%s: skeleton already present, skipping commit\n", owner, repo)
-		return nil
+		return refreshSkeleton(client, in, out, errOut, owner, repo, defaultBranch, files, assumeYes)
 	}
 
 	// Let auto_init's commit propagate first. Best-effort: the retry
@@ -132,6 +136,98 @@ func commitSkeleton(client *api.RESTClient, out, errOut io.Writer, owner, repo, 
 
 	_, _ = fmt.Fprintf(out, "%s/%s: skeleton committed (%d files)\n", owner, repo, len(entries))
 	return nil
+}
+
+// refreshSkeleton brings an already-bootstrapped config repo's skeleton
+// up to date: diff the embedded files against the repo, confirm with
+// the teacher (skeleton files are documented as user-editable, so an
+// overwrite resets local customizations), then commit only the stale
+// paths through the optimistic-rebase loop. Declining is not an error
+// — init continues with the rest of its steps.
+func refreshSkeleton(client *api.RESTClient, in io.Reader, out, errOut io.Writer, owner, repo, branch string, files map[string]string, assumeYes bool) error {
+	stale, err := diffSkeleton(client, owner, repo, branch, files)
+	if err != nil {
+		return err
+	}
+	if len(stale) == 0 {
+		_, _ = fmt.Fprintf(out, "%s/%s: skeleton up to date\n", owner, repo)
+		return nil
+	}
+
+	_, _ = fmt.Fprintf(errOut, "%s/%s: %d skeleton file(s) differ from this CLI's embedded version:\n", owner, repo, len(stale))
+	for _, p := range stale {
+		_, _ = fmt.Fprintf(errOut, "  %s\n", p)
+	}
+	if !assumeYes {
+		ok, err := confirmSkeletonRefresh(in, errOut)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			_, _ = fmt.Fprintf(out, "%s/%s: skeleton refresh declined, files left untouched (re-run with --yes to skip the prompt)\n", owner, repo)
+			return nil
+		}
+	}
+
+	// Re-diff inside the build closure so a rebase retry sees each
+	// attempt's parent state and never re-commits an already-current
+	// file. refreshed resets per attempt so the post-commit message
+	// reports what actually landed, not the pre-confirmation diff.
+	var refreshed int
+	build := func(parentSHA string) (map[string]string, error) {
+		refreshed = 0
+		changed, err := diffSkeleton(client, owner, repo, parentSHA, files)
+		if err != nil {
+			return nil, err
+		}
+		updates := make(map[string]string, len(changed))
+		for _, p := range changed {
+			updates[p] = files[p]
+		}
+		refreshed = len(changed)
+		return updates, nil
+	}
+	commitSHA, err := commitTree(client, owner, repo, branch, "Refresh classroom50 skeleton (gh teacher init)", build)
+	if err != nil {
+		return err
+	}
+	if commitSHA == "" {
+		// A concurrent writer refreshed the same files between the
+		// initial diff and the commit attempt; nothing left to land.
+		_, _ = fmt.Fprintf(out, "%s/%s: skeleton already refreshed by a concurrent writer, nothing to commit\n", owner, repo)
+		return nil
+	}
+	_, _ = fmt.Fprintf(out, "%s/%s: skeleton refreshed (%d file(s))\n", owner, repo, refreshed)
+	return nil
+}
+
+// diffSkeleton returns the sorted skeleton paths whose repo content at
+// `ref` is missing or differs from the embedded version.
+func diffSkeleton(client *api.RESTClient, owner, repo, ref string, files map[string]string) ([]string, error) {
+	var stale []string
+	for path, want := range files {
+		got, exists, err := readFileContents(client, owner, repo, path, ref)
+		if err != nil {
+			return nil, fmt.Errorf("read %s/%s/%s: %w", owner, repo, path, err)
+		}
+		if !exists || string(got) != want {
+			stale = append(stale, path)
+		}
+	}
+	sort.Strings(stale)
+	return stale, nil
+}
+
+// confirmSkeletonRefresh prompts on errOut and reads one line from in.
+// Only an explicit y/yes proceeds.
+func confirmSkeletonRefresh(in io.Reader, errOut io.Writer) (bool, error) {
+	_, _ = fmt.Fprint(errOut, "Overwrite them with the embedded versions? Local customizations to these files will be reset. [y/N]: ")
+	line, err := bufio.NewReader(in).ReadString('\n')
+	if err != nil && !errors.Is(err, io.EOF) {
+		return false, fmt.Errorf("read confirmation: %w", err)
+	}
+	answer := strings.ToLower(strings.TrimSpace(line))
+	return answer == "y" || answer == "yes", nil
 }
 
 // buildSkeletonCommit builds the skeleton tree+commit on the current

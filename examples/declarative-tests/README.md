@@ -58,7 +58,7 @@ export ORG=<your-test-org>
 ### 1. Bootstrap org + classroom
 
 ```sh
-gh teacher init "$ORG"                      # idempotent; updates skeleton scripts too
+gh teacher init "$ORG"                      # idempotent; offers to refresh stale skeleton files (--yes to skip the prompt)
 gh teacher classroom add "$ORG" cs-test --name "CS Test"
 ```
 

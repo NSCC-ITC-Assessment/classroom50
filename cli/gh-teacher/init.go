@@ -14,7 +14,10 @@ import (
 const configRepoName = "classroom50"
 
 func initCmd() *cobra.Command {
-	var confirmSvc bool
+	var (
+		confirmSvc  bool
+		skipConfirm bool
+	)
 
 	cmd := &cobra.Command{
 		Use:   "init <org>",
@@ -34,8 +37,12 @@ func initCmd() *cobra.Command {
 			"CI logs. The token only needs `Contents: read` on org repos\n" +
 			"matching <classroom>-*; the read-only scope keeps the blast\n" +
 			"radius small.\n\n" +
-			"Idempotent: re-running picks up where the prior run left off\n" +
-			"without destructive changes.",
+			"Idempotent: re-running picks up where the prior run left off.\n" +
+			"When the skeleton is already present, re-running also refreshes\n" +
+			"any skeleton files that differ from this CLI's embedded version\n" +
+			"(so orgs gain new features like declarative tests) — after a\n" +
+			"confirmation prompt, since hand-customized skeleton files would\n" +
+			"be reset. Pass --yes to skip that prompt (scripted runs only).",
 		Example: "  CLASSROOM50_COLLECT_TOKEN=ghp_xxx gh teacher init cs50-fall-2026\n" +
 			"  gh teacher init cs50-fall-2026   # interactive prompt for the token",
 		Args: cobra.ExactArgs(1),
@@ -93,7 +100,7 @@ func initCmd() *cobra.Command {
 				return err
 			}
 
-			if err := commitSkeleton(client, out, errOut, org, configRepoName, branch); err != nil {
+			if err := commitSkeleton(client, cmd.InOrStdin(), out, errOut, org, configRepoName, branch, skipConfirm); err != nil {
 				return err
 			}
 			if err := enablePages(client, out, errOut, org, configRepoName); err != nil {
@@ -128,5 +135,6 @@ func initCmd() *cobra.Command {
 	}
 
 	addServiceAccountConfirmFlag(cmd, &confirmSvc)
+	cmd.Flags().BoolVar(&skipConfirm, "yes", false, "Skip the skeleton-refresh confirmation prompt (scripted runs only)")
 	return cmd
 }
