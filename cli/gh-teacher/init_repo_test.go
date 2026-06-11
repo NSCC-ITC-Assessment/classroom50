@@ -247,6 +247,67 @@ func TestEnablePages_VisibilityPUTFailureWarnsButSucceeds(t *testing.T) {
 	}
 }
 
+func TestEnablePages_PlanWithoutVisibilityControlIsSuccess(t *testing.T) {
+	// On non-Enterprise plans the visibility PUT 400s with
+	// "Private pages is not enabled... All Pages will be public."
+	// — i.e. the site is already public, which is the state init
+	// wants. Must report success on stdout with no warning.
+	// Mirrors the Team-plan report in public issue #22.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodPost:
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{"url":"https://api.github.com/repos/o/r/pages","public":false}`))
+		case http.MethodPut:
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"message":"Private pages is not enabled for this repository. All Pages will be public.","documentation_url":"https://docs.github.com/rest/pages/pages#update-information-about-a-apiname-pages-site"}`))
+		}
+	}))
+	t.Cleanup(server.Close)
+	client := newTestRESTClient(t, server)
+
+	var out, errOut bytes.Buffer
+	if err := enablePages(client, &out, &errOut, "o", "r"); err != nil {
+		t.Fatalf("enablePages: %v", err)
+	}
+	if errOut.Len() != 0 {
+		t.Errorf("plan-default-public must not warn, got: %q", errOut.String())
+	}
+	if !strings.Contains(out.String(), "public (plan default") {
+		t.Errorf("stdout should report public-by-plan-default: %q", out.String())
+	}
+}
+
+func TestEnablePages_OtherBadRequestStillWarns(t *testing.T) {
+	// A 400 with any other message is a real failure — the
+	// plan-default carve-out must not swallow it.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodPost:
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{"url":"https://api.github.com/repos/o/r/pages","public":false}`))
+		case http.MethodPut:
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"message":"Something else went wrong."}`))
+		}
+	}))
+	t.Cleanup(server.Close)
+	client := newTestRESTClient(t, server)
+
+	var out, errOut bytes.Buffer
+	if err := enablePages(client, &out, &errOut, "o", "r"); err != nil {
+		t.Fatalf("enablePages should warn-and-continue on other 400s: %v", err)
+	}
+	if !strings.Contains(errOut.String(), "Warning:") {
+		t.Errorf("stderr missing `Warning:` on unrecognized 400: %q", errOut.String())
+	}
+	if strings.Contains(out.String(), "plan default") {
+		t.Errorf("stdout must not claim plan-default success on unrecognized 400: %q", out.String())
+	}
+}
+
 func TestEnablePages_POSTFailurePropagates(t *testing.T) {
 	// Non-409 POST failure must propagate: a 500 means Pages
 	// isn't actually configured, so silent continuation would

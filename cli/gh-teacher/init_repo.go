@@ -3,10 +3,12 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 
 	"github.com/cli/go-gh/v2/pkg/api"
 )
@@ -279,12 +281,27 @@ func enablePages(client *api.RESTClient, out, errOut io.Writer, owner, repo stri
 	return setPagesPublic(client, out, errOut, owner, repo)
 }
 
+// isPrivatePagesUnsupported reports whether err is the HTTP 400
+// GitHub returns when the org's plan has no Pages visibility control
+// at all: "Private pages is not enabled for this repository. All
+// Pages will be public." Visibility control is an Enterprise Cloud
+// feature — on every other plan (including Team, the free educator
+// tier) sites are unconditionally public, which is exactly the state
+// init wants, so this response is a success, not a warning.
+func isPrivatePagesUnsupported(err error) bool {
+	httpErr, ok := errors.AsType[*api.HTTPError](err)
+	return ok && httpErr.StatusCode == http.StatusBadRequest &&
+		strings.Contains(httpErr.Message, "Private pages is not enabled")
+}
+
 // setPagesPublic PUTs `{"public": true}` to /pages. The field
 // isn't in the public OpenAPI body schema but the endpoint
 // accepts it — same field the UI's Visibility radio drives. 204
-// → success on `out`; any other status emits a `Warning:` to
-// `errOut` and returns nil so a quirky org policy doesn't fail
-// the whole init.
+// → success on `out`; the plan-without-visibility-control 400
+// (see isPrivatePagesUnsupported) is also success — the site is
+// already public by plan default; any other status emits a
+// `Warning:` to `errOut` and returns nil so a quirky org policy
+// doesn't fail the whole init.
 func setPagesPublic(client *api.RESTClient, out, errOut io.Writer, owner, repo string) error {
 	body, err := json.Marshal(struct {
 		Public bool `json:"public"`
@@ -295,6 +312,11 @@ func setPagesPublic(client *api.RESTClient, out, errOut io.Writer, owner, repo s
 	path := fmt.Sprintf("repos/%s/%s/pages", url.PathEscape(owner), url.PathEscape(repo))
 	resp, err := client.Request(http.MethodPut, path, bytes.NewReader(body))
 	if err != nil {
+		if isPrivatePagesUnsupported(err) {
+			_, _ = fmt.Fprintf(out, "%s/%s: Pages visibility is public (plan default; visibility controls require GitHub Enterprise Cloud)\n",
+				owner, repo)
+			return nil
+		}
 		_, _ = fmt.Fprintf(errOut, "Warning: %s/%s: couldn't set Pages visibility to public (%v); toggle it manually at https://github.com/%s/%s/settings/pages → Visibility if students see 404s on the Pages URL\n",
 			owner, repo, err, owner, repo)
 		return nil
