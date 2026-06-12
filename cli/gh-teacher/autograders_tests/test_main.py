@@ -104,6 +104,7 @@ def harness(tmp_path, monkeypatch):
         autograder_writes: Callable[[], None] | None = None,
         autograder_rc: int = 0,
         subprocess_raises: OSError | None = None,
+        baseline: str | None = None,
     ) -> int:
         """Invoke runner.main() with stubbed fetch + subprocess."""
         def fake_fetch(url: str):
@@ -118,9 +119,14 @@ def harness(tmp_path, monkeypatch):
 
         monkeypatch.setattr(ag, "fetch_url", fake_fetch)
 
+        # Workspace isn't a git repo; tests set the baseline directly
+        # (real git behavior: test_runner.py::TestBaselineSha).
+        monkeypatch.setattr(ag, "baseline_sha", lambda workspace: baseline)
+
         def fake_subprocess_run(cmd, cwd, env, check):
             if subprocess_raises is not None:
                 raise subprocess_raises
+            state["exec_env"] = env
             if autograder_writes:
                 autograder_writes()
             # subprocess.CompletedProcess shim
@@ -276,6 +282,56 @@ class TestEntrypointResolution:
         assert "no autograder configured" in body
         assert "status=success" in output
         assert "no autograder configured" in output
+
+
+# ---------------------------------------------------------------------------
+# main() — review link (full diff from the student's baseline)
+# ---------------------------------------------------------------------------
+
+
+class TestReviewLink:
+    def _fake_writes(self, harness):
+        def writes():
+            (harness["workspace"] / "result.json").write_text(json.dumps(_v1_payload(
+                classroom="cs-test", assignment="hello", username="alice",
+                submission="submit/2026-06-01T14-32-05Z-a1b2c3d",
+            )))
+        return writes
+
+    def test_review_url_env_is_full_diff_when_baseline_known(self, harness):
+        rc = harness["run"](
+            bundle_response=_build_tarball({"hello/autograder.py": "# grader"}),
+            autograder_writes=self._fake_writes(harness),
+            baseline="base999",
+        )
+        assert rc == 0
+        assert harness["exec_env"]["REVIEW_URL"] == (
+            "https://github.com/cs-test/cs-test-hello-alice/compare/base999...abc123"
+        )
+
+    def test_review_url_env_falls_back_to_commit_view_without_baseline(self, harness):
+        rc = harness["run"](
+            bundle_response=_build_tarball({"hello/autograder.py": "# grader"}),
+            autograder_writes=self._fake_writes(harness),
+            baseline=None,
+        )
+        assert rc == 0
+        assert harness["exec_env"]["REVIEW_URL"] == (
+            "https://github.com/cs-test/cs-test-hello-alice/commit/abc123"
+        )
+
+    def test_error_result_carries_full_diff_review(self, harness):
+        # Synthesized error results carry the full diff too.
+        import urllib.error
+        rc = harness["run"](
+            fetch_raises=urllib.error.URLError("connection refused"),
+            baseline="base999",
+        )
+        assert rc == 0
+        result, _, _ = _read_outputs(harness)
+        assert result["review"] == (
+            "https://github.com/cs-test/cs-test-hello-alice/compare/base999...abc123"
+        )
 
 
 # ---------------------------------------------------------------------------

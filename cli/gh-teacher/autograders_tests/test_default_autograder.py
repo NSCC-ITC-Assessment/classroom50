@@ -154,6 +154,23 @@ class TestDefaultAutograder:
         assert (tmp_path / "result.json").is_file()
         assert (tmp_path / "release-body.md").is_file()
 
+    def test_review_prefers_review_url_env(self, tmp_path):
+        gh = tmp_path / "github_output"
+        gh.write_text("")
+        review = "https://github.com/cs-test/cs-test-hello-alice/compare/aaa...abc123"
+        _run(tmp_path, gh, env_overrides={"REVIEW_URL": review})
+        result = json.loads((tmp_path / "result.json").read_text())
+        assert result["review"] == review
+
+    def test_review_falls_back_to_commit_url_without_review_url(self, tmp_path):
+        # Older runners don't export REVIEW_URL; review stays at the
+        # commit view.
+        gh = tmp_path / "github_output"
+        gh.write_text("")
+        _run(tmp_path, gh, env_overrides={"REVIEW_URL": ""})
+        result = json.loads((tmp_path / "result.json").read_text())
+        assert result["review"] == BASE_ENV["COMMIT_URL"]
+
     def test_handles_missing_optional_env(self, tmp_path):
         # If the bootstrap somehow doesn't pass USERNAME / COMMIT_URL
         # (defensive — shouldn't happen in production), the default

@@ -35,6 +35,8 @@ username = os.environ.get("USERNAME", "")
 submission = os.environ.get("SUBMISSION_TAG", "")
 commit_url = os.environ.get("COMMIT_URL", "")
 release_url = os.environ.get("RELEASE_URL", "")
+# REVIEW_URL is absent on older runners; fall back to the commit view.
+review_url = os.environ.get("REVIEW_URL", "") or commit_url
 
 print(f"autograder: classroom={classroom!r} assignment={assignment!r} username={username!r}")
 
@@ -82,7 +84,7 @@ result = {
     "submission": submission,
     "commit":     commit_url,
     "release":    release_url,
-    "review":     commit_url,
+    "review":     review_url,
     "datetime":   datetime.datetime.now(datetime.timezone.utc)
                   .strftime("%Y-%m-%dT%H:%M:%SZ"),
     "score":      sum(t["score"] for t in tests),

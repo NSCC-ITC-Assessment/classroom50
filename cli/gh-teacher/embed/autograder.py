@@ -18,7 +18,8 @@ To replace this stub with real grading logic, run:
 
 Contract (see Autograders wiki page for full details):
   Reads env: CLASSROOM, ASSIGNMENT, USERNAME, SUBMISSION_TAG,
-             COMMIT_URL, RELEASE_URL, PAGES_BASE_URL, GITHUB_*
+             COMMIT_URL, RELEASE_URL, REVIEW_URL, PAGES_BASE_URL,
+             GITHUB_*
   Working dir: the student's repo checkout.
   Writes (in cwd):
     result.json       classroom50/result/v1 payload (REQUIRED)
@@ -46,6 +47,8 @@ username = os.environ.get("USERNAME", "")
 submission = os.environ.get("SUBMISSION_TAG", "")
 commit_url = os.environ.get("COMMIT_URL", "")
 release_url = os.environ.get("RELEASE_URL", "")
+# REVIEW_URL is absent on older runners; fall back to the commit view.
+review_url = os.environ.get("REVIEW_URL", "") or commit_url
 pages_base_url = os.environ.get("PAGES_BASE_URL", "")
 repository = os.environ.get("GITHUB_REPOSITORY", "")
 sha = os.environ.get("GITHUB_SHA", "")
@@ -61,6 +64,7 @@ print(f"  USERNAME          = {username}")
 print(f"  SUBMISSION_TAG    = {submission}")
 print(f"  COMMIT_URL        = {commit_url}")
 print(f"  RELEASE_URL       = {release_url}")
+print(f"  REVIEW_URL        = {review_url}")
 print(f"  PAGES_BASE_URL    = {pages_base_url}")
 print(f"  GITHUB_REPOSITORY = {repository}")
 print(f"  GITHUB_SHA        = {sha}")
@@ -78,7 +82,7 @@ result = {
     "submission": submission,
     "commit": commit_url,
     "release": release_url,
-    "review": commit_url,
+    "review": review_url,
     "datetime": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     "score": 0,
     "max-score": 0,

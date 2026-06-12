@@ -17,6 +17,7 @@ from __future__ import annotations
 import datetime
 import io
 import json
+import subprocess
 import tarfile
 import urllib.error
 
@@ -132,6 +133,128 @@ class TestUrlConstruction:
         assert "submit%2F2026-06-01T14-32-05Z" in result
         assert "/releases/tag/" in result
 
+    def test_compare_url(self):
+        assert ag.compare_url(
+            "https://github.com", "cs50/cs-principles-hello-alice", "base1", "head2"
+        ) == "https://github.com/cs50/cs-principles-hello-alice/compare/base1...head2"
+
+    def test_review_url_is_full_diff_when_baseline_known(self):
+        assert ag.review_url(
+            "https://github.com", "cs50/cs-principles-hello-alice", "base1", "head2"
+        ) == "https://github.com/cs50/cs-principles-hello-alice/compare/base1...head2"
+
+    def test_review_url_falls_back_to_commit_view_without_baseline(self):
+        # No usable history -> degrade to the commit view.
+        assert ag.review_url(
+            "https://github.com", "cs50/cs-principles-hello-alice", None, "head2"
+        ) == "https://github.com/cs50/cs-principles-hello-alice/commit/head2"
+
+    def test_review_url_falls_back_when_baseline_is_head(self):
+        # base == head renders an empty diff on GitHub.
+        assert ag.review_url(
+            "https://github.com", "cs50/cs-principles-hello-alice", "same", "same"
+        ) == "https://github.com/cs50/cs-principles-hello-alice/commit/same"
+
+
+# ---------------------------------------------------------------------------
+# baseline_sha
+# ---------------------------------------------------------------------------
+
+
+def _git(repo, *args):
+    return subprocess.run(
+        ["git", "-C", str(repo),
+         "-c", "user.name=t", "-c", "user.email=t@example.com",
+         *args],
+        capture_output=True, text=True, check=True,
+    )
+
+
+def _make_repo(path, subjects):
+    """A real git repo with one commit per subject. Returns the SHAs
+    in commit order (oldest first)."""
+    path.mkdir()
+    _git(path, "init", "-q", "-b", "main")
+    shas = []
+    for i, subject in enumerate(subjects):
+        (path / f"f{i}.txt").write_text(f"{i}\n")
+        _git(path, "add", "-A")
+        _git(path, "commit", "-q", "-m", subject)
+        shas.append(_git(path, "rev-parse", "HEAD").stdout.strip())
+    return shas
+
+
+class TestBaselineSha:
+    def test_accept_shaped_history_baselines_at_accept_commit(self, tmp_path):
+        # Canonical history: template commit, accept plumbing commit,
+        # submissions. Baseline = accept commit so the plumbing files
+        # don't diff as student work.
+        shas = _make_repo(tmp_path / "repo", [
+            "Initial commit",
+            ag.ACCEPT_COMMIT_SUBJECT,
+            "Submit hello",
+            "Submit hello",
+        ])
+        assert ag.baseline_sha(tmp_path / "repo") == shas[1]
+
+    def test_accept_commit_beyond_position_one_is_found(self, tmp_path):
+        # Today the accept commit is always second (template-generate
+        # squashes the starter); the scan keeps working if a future
+        # creation flow lands it later.
+        shas = _make_repo(tmp_path / "repo", [
+            "Initial commit",
+            "Starter follow-up",
+            ag.ACCEPT_COMMIT_SUBJECT,
+            "Submit hello",
+        ])
+        assert ag.baseline_sha(tmp_path / "repo") == shas[2]
+
+    def test_earliest_accept_subject_wins(self, tmp_path):
+        # A student commit reusing the accept subject later in history
+        # must not move the baseline forward (it would hide work from
+        # the review diff).
+        shas = _make_repo(tmp_path / "repo", [
+            "Initial commit",
+            ag.ACCEPT_COMMIT_SUBJECT,
+            "Submit hello",
+            ag.ACCEPT_COMMIT_SUBJECT,
+        ])
+        assert ag.baseline_sha(tmp_path / "repo") == shas[1]
+
+    def test_hand_created_repo_baselines_at_root_commit(self, tmp_path):
+        # Hand-created repo without the accept commit -> root commit.
+        shas = _make_repo(tmp_path / "repo", [
+            "Initial commit",
+            "Submit hello",
+        ])
+        assert ag.baseline_sha(tmp_path / "repo") == shas[0]
+
+    def test_single_commit_repo_baselines_at_that_commit(self, tmp_path):
+        # baseline == HEAD; review_url falls back to the commit view.
+        shas = _make_repo(tmp_path / "repo", ["Initial commit"])
+        assert ag.baseline_sha(tmp_path / "repo") == shas[0]
+
+    def test_non_repo_returns_none(self, tmp_path):
+        # Tarball-fallback checkout in git-less containers: no .git.
+        (tmp_path / "plain").mkdir()
+        assert ag.baseline_sha(tmp_path / "plain") is None
+
+    def test_shallow_clone_is_deepened(self, tmp_path):
+        # Older workflows check out at depth 1; baseline_sha must
+        # unshallow or the graft boundary would pose as the root.
+        shas = _make_repo(tmp_path / "src", [
+            "Initial commit",
+            ag.ACCEPT_COMMIT_SUBJECT,
+            "Submit hello",
+        ])
+        clone = tmp_path / "clone"
+        subprocess.run(
+            ["git", "clone", "-q", "--depth", "1",
+             f"file://{tmp_path / 'src'}", str(clone)],
+            capture_output=True, text=True, check=True,
+        )
+        assert ag.baseline_sha(clone) == shas[1]
+
 
 # ---------------------------------------------------------------------------
 # empty_result
@@ -165,10 +288,14 @@ class TestEmptyResult:
         assert result["tests"] == []
 
     def test_review_url_defaults_to_commit_link(self):
-        # Review URL points at the same commit by default — teachers
-        # can override by writing a non-empty result.json themselves.
+        # No review_link (history unavailable) -> commit view.
         result = ag.empty_result(when=self.WHEN, **self.BASE_KWARGS)
         assert result["review"] == result["commit"]
+
+    def test_review_link_used_when_provided(self):
+        review = "https://github.com/cs50/cs-principles-hello-alice/compare/base...abc"
+        result = ag.empty_result(when=self.WHEN, review_link=review, **self.BASE_KWARGS)
+        assert result["review"] == review
 
     def test_datetime_formatted_as_utc_iso8601(self):
         result = ag.empty_result(when=self.WHEN, **self.BASE_KWARGS)
@@ -754,6 +881,24 @@ class TestFinalizer:
         # result.json + release-body.md still written.
         assert (tmp_path / "result.json").is_file()
         assert (tmp_path / "release-body.md").is_file()
+
+    def test_review_link_threaded_into_error_result(self, tmp_path):
+        # Error paths carry the full-diff review link too.
+        review = "https://github.com/cs50/cs-principles-hello-alice/compare/base...abc"
+        f = ag.Finalizer(
+            workspace=tmp_path,
+            github_output=None,
+            classroom="cs-principles",
+            assignment="hello",
+            username="alice",
+            submission="submit/2026-06-01T14-32-05Z-a1b2c3d",
+            commit_link="https://github.com/cs50/cs-principles-hello-alice/commit/abc",
+            release_link="https://github.com/cs50/cs-principles-hello-alice/releases/tag/x",
+            review_link=review,
+        )
+        f.error("bundle fetch failed")
+        result = json.loads((tmp_path / "result.json").read_text())
+        assert result["review"] == review
 
     def test_no_autograder_synthesizes_vacuous_pass(self, tmp_path):
         # Lean-scaffold path: classroom hasn't run set-default and

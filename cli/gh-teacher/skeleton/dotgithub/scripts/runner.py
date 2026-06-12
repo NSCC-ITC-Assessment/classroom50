@@ -5,7 +5,8 @@ Fetched from the teacher's GitHub Pages site by the autograde-runner
 reusable workflow on every submission. Responsibilities:
 
   1. Read env (CLASSROOM, ASSIGNMENT, SUBMISSION_TAG, etc.)
-  2. Compute helper values (USERNAME, COMMIT_URL, RELEASE_URL)
+  2. Compute helper values (USERNAME, COMMIT_URL, RELEASE_URL,
+     REVIEW_URL)
   3. Download the per-assignment bundle from Pages, extract it
   4. Resolve the entrypoint:
        per-assignment <classroom>/autograders/<slug>/autograder.py
@@ -53,6 +54,9 @@ Additional env vars passed through to the entrypoint:
   USERNAME          student GitHub username (derived from repo name)
   COMMIT_URL        link to the graded commit on github.com
   RELEASE_URL       link to the submission release on github.com
+  REVIEW_URL        full diff (baseline...graded commit); equals
+                    COMMIT_URL when history is unavailable or there
+                    is nothing to compare (baseline == commit)
 """
 
 from __future__ import annotations
@@ -126,6 +130,14 @@ FETCH_ATTEMPTS = 3
 # is small but the same ceiling avoids a hostile asset.
 MAX_FETCH_BYTES = 10 * 1024 * 1024
 
+# Subject of the plumbing commit `gh student accept` adds after
+# templating (.classroom50.yaml + autograde shim). Mirrors
+# cli/gh-student/metadata.go (dropClassroomFiles) -- keep in lockstep.
+# baseline_sha skips past it so those files don't diff as student work.
+ACCEPT_COMMIT_SUBJECT = (
+    "Initialize .classroom50.yaml and autograde workflow (gh student accept)"
+)
+
 
 def runtime_root() -> pathlib.Path:
     """Pick a writable scratch dir for bundle extraction + entrypoint
@@ -170,6 +182,19 @@ def release_url(server_url: str, repository: str, submission_tag: str) -> str:
     return f"{server_url}/{repository}/releases/tag/{urllib.parse.quote(submission_tag, safe='')}"
 
 
+def compare_url(server_url: str, repository: str, base_sha: str, head_sha: str) -> str:
+    return f"{server_url}/{repository}/compare/{base_sha}...{head_sha}"
+
+
+def review_url(server_url: str, repository: str, base_sha: str | None, head_sha: str) -> str:
+    """Full diff from the student's baseline to the graded commit;
+    commit view when there's no usable baseline (history unavailable,
+    or baseline == head)."""
+    if base_sha and head_sha and base_sha != head_sha:
+        return compare_url(server_url, repository, base_sha, head_sha)
+    return commit_url(server_url, repository, head_sha)
+
+
 def bundle_url(pages_base_url: str, classroom: str, assignment: str) -> str:
     """The Pages URL for an assignment's bundle (autograder.py +
     sibling fixtures, packaged by publish-pages.yaml)."""
@@ -203,10 +228,12 @@ def make_result(
     score: int,
     max_score: int,
     tests: list[dict[str, Any]],
+    review_link: str | None = None,
 ) -> dict[str, Any]:
     """Build a v1-shaped result.json payload. Single source of the field
     layout shared by the error/vacuous paths (empty_result) and the
-    declarative grader (which passes real score/tests)."""
+    declarative grader (which passes real score/tests). review falls
+    back to the commit view when review_link is None."""
     return {
         "schema": RESULT_SCHEMA_V1,
         "classroom": classroom,
@@ -215,7 +242,7 @@ def make_result(
         "submission": submission,
         "commit": commit_link,
         "release": release_link,
-        "review": commit_link,
+        "review": review_link or commit_link,
         "datetime": when.strftime("%Y-%m-%dT%H:%M:%SZ"),
         "score": score,
         "max-score": max_score,
@@ -232,6 +259,7 @@ def empty_result(
     commit_link: str,
     release_link: str,
     when: datetime.datetime,
+    review_link: str | None = None,
 ) -> dict[str, Any]:
     """A v1-valid result.json payload with no tests (score 0/0).
 
@@ -250,6 +278,7 @@ def empty_result(
         score=0,
         max_score=0,
         tests=[],
+        review_link=review_link,
     )
 
 
@@ -387,6 +416,50 @@ def validate_result(data: Any, *, classroom: str, assignment: str) -> str | None
 # ---------------------------------------------------------------------------
 
 
+def baseline_sha(workspace: pathlib.Path) -> str | None:
+    """SHA of the commit the student started from: the `gh student
+    accept` plumbing commit (matched via ACCEPT_COMMIT_SUBJECT) when
+    present, else the root commit. Returns None when history is
+    unavailable -- no git binary, no .git (actions/checkout's tarball
+    fallback in git-less containers), or an un-deepenable shallow
+    clone -- and the caller falls back to the commit view."""
+
+    def git(*args: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            ["git", "-C", str(workspace), *args],
+            capture_output=True, text=True, timeout=120, check=False,
+        )
+
+    try:
+        shallow = git("rev-parse", "--is-shallow-repository")
+        if shallow.returncode != 0:
+            return None
+        if shallow.stdout.strip() == "true":
+            # Depth-1 checkout (workflows predating fetch-depth: 0):
+            # deepen, or the graft boundary would pose as the root.
+            # checkout's persisted credentials authenticate the fetch.
+            if git("fetch", "--quiet", "--unshallow", "origin").returncode != 0:
+                return None
+        log = git("log", "--reverse", "--first-parent", "--format=%H %s", "HEAD")
+        if log.returncode != 0:
+            return None
+        lines = [line for line in log.stdout.splitlines() if line.strip()]
+        if not lines:
+            return None
+        # Earliest match wins: a commit crafted later in history with
+        # the same subject can't move the baseline forward. (Today the
+        # accept commit is always position 1 -- the template-generate
+        # API squashes the starter into a single initial commit -- but
+        # scanning keeps this correct if the creation flow changes.)
+        for line in lines:
+            sha, _, subject = line.partition(" ")
+            if subject == ACCEPT_COMMIT_SUBJECT:
+                return sha
+        return lines[0].partition(" ")[0]
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
 def fetch_url(url: str) -> bytes | None:
     """GET `url`. 200 → bytes (≤ MAX_FETCH_BYTES), 404 → None,
     transient 5xx/network failures retried with exponential backoff."""
@@ -496,6 +569,7 @@ class Finalizer:
         submission: str,
         commit_link: str,
         release_link: str,
+        review_link: str | None = None,
     ):
         self.workspace = workspace
         self.github_output = github_output
@@ -505,6 +579,7 @@ class Finalizer:
         self.submission = submission
         self.commit_link = commit_link
         self.release_link = release_link
+        self.review_link = review_link
 
     def error(self, message: str) -> int:
         print(f"::error::{message}", file=sys.stderr)
@@ -516,6 +591,7 @@ class Finalizer:
             commit_link=self.commit_link,
             release_link=self.release_link,
             when=now_utc(),
+            review_link=self.review_link,
         )
         summary = f"classroom50 autograde: {message}"
         (self.workspace / RESULT_FILENAME).write_text(json.dumps(result, indent=2) + "\n")
@@ -541,6 +617,7 @@ class Finalizer:
             commit_link=self.commit_link,
             release_link=self.release_link,
             when=now_utc(),
+            review_link=self.review_link,
         )
         status, summary = derive_status_and_summary(result)
         print(f"runner: {summary}")
@@ -897,7 +974,8 @@ class DeclarativeGrader:
 
     def __init__(self, *, workspace: pathlib.Path, fixtures_dir: pathlib.Path,
                  classroom: str, assignment: str, username: str, submission: str,
-                 commit_link: str, release_link: str):
+                 commit_link: str, release_link: str,
+                 review_link: str | None = None):
         self.workspace = workspace
         self.fixtures_dir = fixtures_dir
         self.classroom = classroom
@@ -906,6 +984,7 @@ class DeclarativeGrader:
         self.submission = submission
         self.commit_link = commit_link
         self.release_link = release_link
+        self.review_link = review_link
 
     def grade(self, tests: list[dict[str, Any]]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
         """Run every test. Returns (result.json dict, outcomes) where the
@@ -925,6 +1004,7 @@ class DeclarativeGrader:
             score=sum(o["score"] for o in outcomes),
             max_score=sum(o["max-score"] for o in outcomes),
             tests=rows,
+            review_link=self.review_link,
         )
         return result, outcomes
 
@@ -950,6 +1030,7 @@ def run_declarative(tests_path: pathlib.Path, finalize: Finalizer,
         submission=finalize.submission,
         commit_link=finalize.commit_link,
         release_link=finalize.release_link,
+        review_link=finalize.review_link,
     )
     # Backstop: execute_test/load_tests handle the expected failures; the
     # broad catch guarantees the "grading outcomes always exit 0"
@@ -1003,11 +1084,16 @@ def main() -> int:
     username = username_from_repo(repository, classroom, assignment, actor)
     commit_link = commit_url(server_url, repository, sha)
     release_link = release_url(server_url, repository, submission)
+    base_sha = baseline_sha(workspace)
+    review_link = review_url(server_url, repository, base_sha, sha)
+    if base_sha is None:
+        print("runner: no baseline commit found; review link falls back to the commit view")
 
     print(
         f"runner: classroom={classroom!r} assignment={assignment!r} "
         f"submission={submission!r} username={username!r}"
     )
+    print(f"runner: review link {review_link}")
 
     finalize = Finalizer(
         workspace=workspace,
@@ -1018,6 +1104,7 @@ def main() -> int:
         submission=submission,
         commit_link=commit_link,
         release_link=release_link,
+        review_link=review_link,
     )
 
     # Reset the runtime root and clear stale outputs from any prior run.
@@ -1084,6 +1171,7 @@ def main() -> int:
     env["USERNAME"] = username
     env["COMMIT_URL"] = commit_link
     env["RELEASE_URL"] = release_link
+    env["REVIEW_URL"] = review_link
     try:
         proc = subprocess.run(
             [sys.executable, str(entrypoint)],

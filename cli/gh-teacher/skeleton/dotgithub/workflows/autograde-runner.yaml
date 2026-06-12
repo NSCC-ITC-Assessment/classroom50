@@ -394,6 +394,9 @@ jobs:
       - uses: actions/checkout@v6
         with:
           ref: ${{ needs.setup.outputs.submission-tag }}
+          # Full history -- runner.py needs the student's baseline
+          # commit for the full-diff review link.
+          fetch-depth: 0
 
       # === Language toolchains (driven by `runtime:` in assignments.json) ===
       - if: needs.setup.outputs.python != ''
