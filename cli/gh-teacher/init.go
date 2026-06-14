@@ -26,10 +26,12 @@ func initCmd() *cobra.Command {
 			"Performs in order: org plan check (Team/Enterprise required for\n" +
 			"GitHub Pages from a private repo), org-level member defaults\n" +
 			"(base permission = none, public repo creation disabled,\n" +
-			"members can create private repos), private repo creation\n" +
-			"with auto_init, single-commit skeleton drop, Pages enablement,\n" +
-			"branch protection on the default branch, workflow permissions,\n" +
-			"and the repo-level CLASSROOM50_COLLECT_TOKEN secret.\n\n" +
+			"members can create private repos), enabling GitHub Actions\n" +
+			"for the org if off, creating the private classroom50 config\n" +
+			"repo with auto_init (re-enabling Actions on it), single-commit\n" +
+			"skeleton drop, Pages enablement, branch protection on the\n" +
+			"default branch, workflow permissions, and the repo-level\n" +
+			"CLASSROOM50_COLLECT_TOKEN secret.\n\n" +
 			"The collect token is read from the CLASSROOM50_COLLECT_TOKEN\n" +
 			"environment variable, falling back to a hidden stdin prompt when\n" +
 			"run interactively. No --collect-token flag is offered: PAT values\n" +
