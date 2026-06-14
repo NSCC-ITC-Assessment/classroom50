@@ -866,3 +866,69 @@ class TestMain:
         err = capsys.readouterr().err
         assert "HTTP 599" in err
         assert "rotate-collect-token" not in err
+
+    def test_warns_when_zero_submissions_across_roster(self, tmp_path, monkeypatch, capsys):
+        # The 404 blind spot: a collect token that can't read the
+        # student repos makes collect_classroom report everyone as
+        # unsubmitted, so the run exits 0 with an empty gradebook and
+        # no signal. A non-empty roster x assignment set that yields
+        # zero readable submissions must warn so the silence isn't
+        # mistaken for "nobody submitted."
+        write_minimal_classroom(tmp_path)
+        monkeypatch.setenv("GITHUB_WORKSPACE", str(tmp_path))
+        monkeypatch.setenv("GITHUB_REPOSITORY_OWNER", "cs50")
+        monkeypatch.setenv("CLASSROOM50_COLLECT_TOKEN", "token")
+        monkeypatch.setattr(cs, "collect_classroom", lambda **kwargs: [])
+
+        assert cs.main() == 0
+        err = capsys.readouterr().err
+        assert "::warning::" in err
+        assert "collected 0 submissions" in err
+        assert "rotate-collect-token cs50" in err
+        # The gradebook is left untouched -- no false rows written.
+        scores = json.loads((tmp_path / "cs-principles" / "scores.json").read_text())
+        assert scores["submissions"] == {}
+
+    def test_no_warning_when_a_submission_is_collected(self, tmp_path, monkeypatch, capsys):
+        # At least one readable submission proves the token works --
+        # don't cry wolf.
+        write_minimal_classroom(tmp_path)
+        monkeypatch.setenv("GITHUB_WORKSPACE", str(tmp_path))
+        monkeypatch.setenv("GITHUB_REPOSITORY_OWNER", "cs50")
+        monkeypatch.setenv("CLASSROOM50_COLLECT_TOKEN", "token")
+        monkeypatch.setattr(
+            cs, "collect_classroom", lambda **kwargs: [make_result(username="alice")]
+        )
+
+        assert cs.main() == 0
+        assert "::warning::" not in capsys.readouterr().err
+
+    def test_no_warning_when_roster_is_empty(self, tmp_path, monkeypatch, capsys):
+        # A classroom with no students yet (header-only roster) has
+        # nothing to collect, so the zero-submission warning must stay
+        # quiet -- this is the roster guard, not a token problem.
+        write_minimal_classroom(tmp_path)
+        write_roster(tmp_path / "cs-principles" / "students.csv", [])
+        monkeypatch.setenv("GITHUB_WORKSPACE", str(tmp_path))
+        monkeypatch.setenv("GITHUB_REPOSITORY_OWNER", "cs50")
+        monkeypatch.setenv("CLASSROOM50_COLLECT_TOKEN", "token")
+        monkeypatch.setattr(cs, "collect_classroom", lambda **kwargs: [])
+
+        assert cs.main() == 0
+        assert "collected 0 submissions" not in capsys.readouterr().err
+
+    def test_no_warning_when_no_assignments_registered(self, tmp_path, monkeypatch, capsys):
+        # A classroom with no assignments registered yet also has
+        # nothing to collect -- the assignment-count guard keeps it
+        # quiet so an empty manifest isn't mistaken for a token problem.
+        write_minimal_classroom(tmp_path)
+        (tmp_path / "cs-principles" / "assignments.json").write_text(
+            json.dumps({"schema": cs.ASSIGNMENTS_SCHEMA_V1, "assignments": []})
+        )
+        monkeypatch.setenv("GITHUB_WORKSPACE", str(tmp_path))
+        monkeypatch.setenv("GITHUB_REPOSITORY_OWNER", "cs50")
+        monkeypatch.setenv("CLASSROOM50_COLLECT_TOKEN", "token")
+        monkeypatch.setattr(cs, "collect_classroom", lambda **kwargs: [])
+
+        assert cs.main() == 0
+        assert "collected 0 submissions" not in capsys.readouterr().err

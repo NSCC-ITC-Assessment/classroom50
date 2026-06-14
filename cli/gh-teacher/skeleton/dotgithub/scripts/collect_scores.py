@@ -145,6 +145,27 @@ def main() -> int:
                 )
             return 1
 
+        # A collect token that can't read the student repos returns
+        # 404 for every repo (GitHub hides repo existence), which is
+        # indistinguishable from "not submitted" -- so collect_classroom
+        # reports the whole roster as unsubmitted and the run still exits
+        # cleanly (the 401/403 hard-fail guard never trips). When a
+        # non-empty roster x non-empty assignment set yields zero readable
+        # submissions, that almost always means the token lacks access,
+        # not that the entire class submitted nothing. Warn -- but don't
+        # fail: an early-term run legitimately collects zero.
+        assignment_count = len(valid_assignment_slugs(assignments))
+        if assignment_count and roster and not updates:
+            emit_warning(
+                f"{classroom_short}: collected 0 submissions across "
+                f"{len(roster)} student(s) x {assignment_count} assignment(s). "
+                f"If you expected submissions, the CLASSROOM50_COLLECT_TOKEN may "
+                f"lack read access to the student repos (a fine-grained PAT "
+                f"returns 404 for repos outside its scope, which is "
+                f'indistinguishable from "not submitted"). Re-scope it to all '
+                f"org repos: gh teacher rotate-collect-token {org}"
+            )
+
         n_changes = apply_updates(scores, updates)
         try:
             save_scores(scores_path, scores)
@@ -265,6 +286,18 @@ def read_students_csv(path: pathlib.Path) -> list[dict[str, str]]:
 # Per-classroom collection ----------------------------------------------------
 
 
+def valid_assignment_slugs(assignments: dict[str, Any]) -> list[str]:
+    """Slugs worth collecting: non-empty strings, in manifest order.
+    The collect loop and main()'s zero-submission guard both read this
+    so they agree on what counts as a collectable assignment."""
+    slugs: list[str] = []
+    for entry in assignments.get("assignments") or []:
+        slug = entry.get("slug")
+        if isinstance(slug, str) and slug:
+            slugs.append(slug)
+    return slugs
+
+
 def collect_classroom(
     *,
     api_url: str,
@@ -280,11 +313,7 @@ def collect_classroom(
     main() converts them to exit 1.
     """
     results: list[dict[str, Any]] = []
-    for entry in assignments.get("assignments") or []:
-        slug = entry.get("slug")
-        if not isinstance(slug, str) or not slug:
-            continue
-
+    for slug in valid_assignment_slugs(assignments):
         submitted = 0
         for student in roster:
             username = student["username"]

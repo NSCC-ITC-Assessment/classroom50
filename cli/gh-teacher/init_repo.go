@@ -22,30 +22,60 @@ var plansThatSupportPrivatePages = map[string]bool{
 	"enterprise":    true,
 }
 
-// applyOrgMemberDefaults sets three org-level member policies in a
-// single PATCH /orgs/{org}:
-//
-//   - default_repository_permission: "none" — new members don't get
-//     implicit read access to other repos (existing members and
-//     their access are unaffected).
-//   - members_can_create_public_repositories: false — prevents
-//     members from accidentally publishing student work.
-//   - members_can_create_private_repositories: true, which `gh student
-//     accept` relies on to create each student's private repo; without
-//     it the teacher must flip the org setting by hand.
-//
-// 403/422 (enterprise-locked policy) warns to errOut with the
-// settings-page link; init still completes.
+// orgMemberDefaultSetting is one org-level member policy, kept
+// per-field so the 403/422 fallback can retry and warn about each
+// independently.
+type orgMemberDefaultSetting struct {
+	field string // JSON field on PATCH /orgs/{org}
+	value any    // desired value
+	desc  string // human description for success/warning lines
+	// manualFix: a UI state the teacher can actually reach -- plans
+	// gate the member-privileges page and some checkbox combos don't
+	// exist on every plan.
+	manualFix string
+}
+
+// orgMemberDefaultSettings: the three policies, in apply order.
+//   - default_repository_permission "none": new members get no
+//     implicit read access to other repos (existing access is
+//     unaffected).
+//   - members_can_create_public_repositories false: stops members
+//     accidentally publishing student work.
+//   - members_can_create_private_repositories true: gh student accept
+//     needs it to create each student's private repo.
+func orgMemberDefaultSettings() []orgMemberDefaultSetting {
+	return []orgMemberDefaultSetting{
+		{
+			field:     "default_repository_permission",
+			value:     "none",
+			desc:      `base repository permission "none"`,
+			manualFix: `set "Base permissions" to "No permission"`,
+		},
+		{
+			field:     "members_can_create_public_repositories",
+			value:     false,
+			desc:      "public repo creation disabled",
+			manualFix: `under "Repository creation", uncheck "Public" if your plan's settings page allows it`,
+		},
+		{
+			field:     "members_can_create_private_repositories",
+			value:     true,
+			desc:      "private repo creation enabled",
+			manualFix: `under "Repository creation", check "Private" — without it, gh student accept can't create student repos`,
+		},
+	}
+}
+
+// applyOrgMemberDefaults applies the policies in one combined PATCH
+// /orgs/{org}. On 403/422 (one plan-gated field fails the whole
+// PATCH) it falls back to one PATCH per policy, warning only for the
+// fields GitHub rejects. init completes either way.
 func applyOrgMemberDefaults(client *api.RESTClient, out, errOut io.Writer, org string) error {
-	body, err := json.Marshal(struct {
-		DefaultRepositoryPermission         string `json:"default_repository_permission"`
-		MembersCanCreatePublicRepositories  bool   `json:"members_can_create_public_repositories"`
-		MembersCanCreatePrivateRepositories bool   `json:"members_can_create_private_repositories"`
-	}{
-		DefaultRepositoryPermission:         "none",
-		MembersCanCreatePublicRepositories:  false,
-		MembersCanCreatePrivateRepositories: true,
-	})
+	combined := make(map[string]any, len(orgMemberDefaultSettings()))
+	for _, s := range orgMemberDefaultSettings() {
+		combined[s.field] = s.value
+	}
+	body, err := json.Marshal(combined)
 	if err != nil {
 		return fmt.Errorf("encode body: %w", err)
 	}
@@ -53,25 +83,54 @@ func applyOrgMemberDefaults(client *api.RESTClient, out, errOut io.Writer, org s
 	resp, err := client.Request(http.MethodPatch, path, bytes.NewReader(body))
 	if err != nil {
 		if isHTTPStatus(err, http.StatusForbidden) || isHTTPStatus(err, http.StatusUnprocessableEntity) {
-			_, _ = fmt.Fprintf(errOut, "Warning: %s: couldn't set org member defaults (%v); set them manually at https://github.com/organizations/%s/settings/member_privileges — Base permissions: No permission, and under Repository creation uncheck Public and check Private.\n",
-				org, err, org)
-			return nil
+			return applyOrgMemberDefaultsPerField(client, out, errOut, org)
 		}
 		return fmt.Errorf("PATCH %s: %w", path, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	_, _ = io.Copy(io.Discard, resp.Body)
-	switch resp.StatusCode {
-	case http.StatusOK:
-		_, _ = fmt.Fprintf(out, "%s: org member defaults set (base permission = none, public repo creation disabled, private repo creation enabled)\n", org)
-		return nil
-	case http.StatusForbidden, http.StatusUnprocessableEntity:
-		_, _ = fmt.Fprintf(errOut, "Warning: %s: PATCH /orgs/%s returned HTTP %d while tightening member defaults; set them manually at https://github.com/organizations/%s/settings/member_privileges\n",
-			org, org, resp.StatusCode, org)
-		return nil
-	default:
+	// go-gh returns non-2xx as err (handled above); this only
+	// catches a stray non-200 2xx.
+	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("PATCH %s: unexpected status %d", path, resp.StatusCode)
 	}
+	_, _ = fmt.Fprintf(out, "%s: org member defaults set (base permission = none, public repo creation disabled, private repo creation enabled)\n", org)
+	return nil
+}
+
+// applyOrgMemberDefaultsPerField is the 403/422 fallback: one PATCH
+// per policy so one rejected field can't sink the others. Rejected
+// fields warn (with GitHub's error and a reachable manual fix);
+// applied ones are summarized to out.
+func applyOrgMemberDefaultsPerField(client *api.RESTClient, out, errOut io.Writer, org string) error {
+	path := fmt.Sprintf("orgs/%s", url.PathEscape(org))
+	settingsURL := fmt.Sprintf("https://github.com/organizations/%s/settings/member_privileges", org)
+	var applied []string
+	for _, s := range orgMemberDefaultSettings() {
+		body, err := json.Marshal(map[string]any{s.field: s.value})
+		if err != nil {
+			return fmt.Errorf("encode body: %w", err)
+		}
+		resp, err := client.Request(http.MethodPatch, path, bytes.NewReader(body))
+		if err != nil {
+			if isHTTPStatus(err, http.StatusForbidden) || isHTTPStatus(err, http.StatusUnprocessableEntity) {
+				_, _ = fmt.Fprintf(errOut, "Warning: %s: couldn't set %s (%v); %s at %s\n",
+					org, s.desc, err, s.manualFix, settingsURL)
+				continue
+			}
+			return fmt.Errorf("PATCH %s: %w", path, err)
+		}
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			return fmt.Errorf("PATCH %s: unexpected status %d", path, resp.StatusCode)
+		}
+		applied = append(applied, s.desc)
+	}
+	if len(applied) > 0 {
+		_, _ = fmt.Fprintf(out, "%s: org member defaults set (%s)\n", org, strings.Join(applied, ", "))
+	}
+	return nil
 }
 
 // orgActionsPermissions is the subset of GET

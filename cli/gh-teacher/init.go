@@ -34,9 +34,9 @@ func initCmd() *cobra.Command {
 			"environment variable, falling back to a hidden stdin prompt when\n" +
 			"run interactively. No --collect-token flag is offered: PAT values\n" +
 			"on the command line leak via shell history, process listings, and\n" +
-			"CI logs. The token only needs `Contents: read` on org repos\n" +
-			"matching <classroom>-*; the read-only scope keeps the blast\n" +
-			"radius small.\n\n" +
+			"CI logs. The token needs `Contents: read` on all org repos:\n" +
+			"student repos are created on demand by accept, so an\n" +
+			"\"Only select repositories\" scope silently misses them.\n\n" +
 			"Idempotent: re-running picks up where the prior run left off.\n" +
 			"When the skeleton is already present, re-running also refreshes\n" +
 			"any skeleton files that differ from this CLI's embedded version\n" +

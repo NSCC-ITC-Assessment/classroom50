@@ -65,9 +65,19 @@ func TestApplyOrgMemberDefaults_HappyPath(t *testing.T) {
 }
 
 func TestApplyOrgMemberDefaults_ForbiddenWarnsButSucceeds(t *testing.T) {
-	// 403 (enterprise-locked policy) must warn-and-continue so
-	// the rest of init still runs.
+	// 403 on the combined PATCH (e.g. an enterprise-locked org)
+	// also falls back to per-field PATCHes. When every field is
+	// rejected, each warns independently with its own reachable
+	// manual fix -- never the old plan-impossible combined checkbox
+	// instruction -- warnings stay on stderr, and init still runs.
+	var (
+		mu    sync.Mutex
+		calls int
+	)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		calls++
+		mu.Unlock()
 		w.WriteHeader(http.StatusForbidden)
 		_, _ = w.Write([]byte(`{"message":"Resource not accessible by integration"}`))
 	}))
@@ -78,14 +88,35 @@ func TestApplyOrgMemberDefaults_ForbiddenWarnsButSucceeds(t *testing.T) {
 	if err := applyOrgMemberDefaults(client, &out, &errOut, "locked-org"); err != nil {
 		t.Fatalf("applyOrgMemberDefaults should not return an error on 403: %v", err)
 	}
-	if !strings.Contains(errOut.String(), "Warning:") {
-		t.Errorf("stderr missing `Warning:` prefix: %q", errOut.String())
+
+	mu.Lock()
+	defer mu.Unlock()
+	if calls != 4 {
+		t.Errorf("PATCH calls = %d, want 4 (combined + one per field)", calls)
+	}
+	if got := strings.Count(errOut.String(), "Warning:"); got != 3 {
+		t.Errorf("warnings = %d, want 3 (one per rejected field):\n%s", got, errOut.String())
+	}
+	for _, desc := range []string{
+		`base repository permission "none"`,
+		"public repo creation disabled",
+		"private repo creation enabled",
+	} {
+		if !strings.Contains(errOut.String(), desc) {
+			t.Errorf("warning should name policy %q: %q", desc, errOut.String())
+		}
 	}
 	if !strings.Contains(errOut.String(), "settings/member_privileges") {
 		t.Errorf("warning should point at the org settings page: %q", errOut.String())
 	}
+	if strings.Contains(errOut.String(), "uncheck Public and check Private") {
+		t.Errorf("warning must not suggest the plan-impossible checkbox combo: %q", errOut.String())
+	}
 	if strings.Contains(out.String(), "Warning") {
 		t.Errorf("warnings must not land on stdout, got: %q", out.String())
+	}
+	if strings.Contains(out.String(), "org member defaults set") {
+		t.Errorf("stdout must not claim success when every field was rejected: %q", out.String())
 	}
 }
 
@@ -105,6 +136,104 @@ func TestApplyOrgMemberDefaults_TransportFailurePropagates(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "PATCH") {
 		t.Errorf("error should mention PATCH: %v", err)
+	}
+}
+
+func TestApplyOrgMemberDefaults_UnprocessableFallsBackPerField(t *testing.T) {
+	// A 422 on the combined PATCH (one plan-gated field) must fall
+	// back to per-field PATCHes so the settable policies still
+	// apply, and the warning must name only the rejected one.
+	// Mirrors the Team-plan report in public issue #22.
+	var (
+		mu     sync.Mutex
+		bodies []map[string]any
+	)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var fields map[string]any
+		_ = json.Unmarshal(body, &fields)
+		mu.Lock()
+		bodies = append(bodies, fields)
+		mu.Unlock()
+		// Reject the combined PATCH and the public-repo-creation
+		// field; accept the other two single-field PATCHes.
+		_, rejected := fields["members_can_create_public_repositories"]
+		if len(fields) > 1 || rejected {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			_, _ = w.Write([]byte(`{"message":"Validation Failed"}`))
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	t.Cleanup(server.Close)
+	client := newTestRESTClient(t, server)
+
+	var out, errOut bytes.Buffer
+	if err := applyOrgMemberDefaults(client, &out, &errOut, "team-plan-org"); err != nil {
+		t.Fatalf("applyOrgMemberDefaults: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(bodies) != 4 {
+		t.Fatalf("PATCH calls = %d, want 4 (combined + one per field)", len(bodies))
+	}
+	for _, fields := range bodies[1:] {
+		if len(fields) != 1 {
+			t.Errorf("fallback PATCH should carry exactly one field, got %v", fields)
+		}
+	}
+	if got := strings.Count(errOut.String(), "Warning:"); got != 1 {
+		t.Errorf("warnings = %d, want exactly 1 (only the rejected field):\n%s", got, errOut.String())
+	}
+	if !strings.Contains(errOut.String(), "public repo creation disabled") {
+		t.Errorf("warning should name the rejected policy: %q", errOut.String())
+	}
+	if !strings.Contains(errOut.String(), "Validation Failed") {
+		t.Errorf("warning should quote GitHub's error message: %q", errOut.String())
+	}
+	if strings.Contains(errOut.String(), "uncheck Public and check Private") {
+		t.Errorf("warning must not suggest the plan-impossible checkbox combo: %q", errOut.String())
+	}
+	if !strings.Contains(out.String(), `base repository permission "none"`) ||
+		!strings.Contains(out.String(), "private repo creation enabled") {
+		t.Errorf("stdout should summarize the applied policies: %q", out.String())
+	}
+	if strings.Contains(out.String(), "public repo creation disabled") {
+		t.Errorf("stdout must not claim the rejected policy was applied: %q", out.String())
+	}
+}
+
+func TestApplyOrgMemberDefaults_FallbackTransportFailurePropagates(t *testing.T) {
+	// Non-policy failures during the per-field fallback must still
+	// propagate rather than warn-and-continue.
+	var calls int
+	var mu sync.Mutex
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		calls++
+		n := calls
+		mu.Unlock()
+		if n == 1 {
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			return
+		}
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	t.Cleanup(server.Close)
+	client := newTestRESTClient(t, server)
+
+	var out, errOut bytes.Buffer
+	if err := applyOrgMemberDefaults(client, &out, &errOut, "o"); err == nil {
+		t.Fatal("expected error on fallback PATCH 500, got nil")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if calls < 2 {
+		t.Fatalf("PATCH calls = %d, want >= 2 (the 500 must come from a fallback PATCH, not the combined one)", calls)
 	}
 }
 
