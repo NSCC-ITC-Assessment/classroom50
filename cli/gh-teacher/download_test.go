@@ -303,6 +303,7 @@ func TestWriteScoresCSV(t *testing.T) {
 					"datetime":   "2026-06-01T14:33:11Z",
 					"submission": "submit/2026-06-01T14-32-05Z",
 					"review":     "https://github.com/cs50/cs-principles-hello-alice/commit/abc",
+					"late":       false,
 				},
 				{
 					"usernames":  []any{"bob"},
@@ -311,6 +312,7 @@ func TestWriteScoresCSV(t *testing.T) {
 					"datetime":   "2026-06-01T15:00:00Z",
 					"submission": "submit/2026-06-01T14-59-00Z",
 					"review":     "https://github.com/cs50/cs-principles-hello-bob/commit/def",
+					"late":       true,
 					"override":   true,
 				},
 				{
@@ -341,10 +343,10 @@ func TestWriteScoresCSV(t *testing.T) {
 	}
 
 	want := strings.Join([]string{
-		"username,score,max_score,datetime,submission_tag,review_url,override",
-		"alice,18,30,2026-06-01T14:33:11Z,submit/2026-06-01T14-32-05Z,https://github.com/cs50/cs-principles-hello-alice/commit/abc,",
-		"Bob,25,30,2026-06-01T15:00:00Z,submit/2026-06-01T14-59-00Z,https://github.com/cs50/cs-principles-hello-bob/commit/def,true",
-		"carol,,,,,,",
+		"username,score,max_score,datetime,submission_tag,review_url,late,override",
+		"alice,18,30,2026-06-01T14:33:11Z,submit/2026-06-01T14-32-05Z,https://github.com/cs50/cs-principles-hello-alice/commit/abc,false,",
+		"Bob,25,30,2026-06-01T15:00:00Z,submit/2026-06-01T14-59-00Z,https://github.com/cs50/cs-principles-hello-bob/commit/def,true,true",
+		"carol,,,,,,,",
 		"",
 	}, "\n")
 	if string(got) != want {
@@ -365,7 +367,7 @@ func TestWriteScoresCSV_EmptyRoster(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read: %v", err)
 	}
-	want := "username,score,max_score,datetime,submission_tag,review_url,override\n"
+	want := "username,score,max_score,datetime,submission_tag,review_url,late,override\n"
 	if string(got) != want {
 		t.Fatalf("got %q, want %q", got, want)
 	}

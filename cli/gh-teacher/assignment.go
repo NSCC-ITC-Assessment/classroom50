@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 
@@ -146,7 +147,7 @@ func assignmentAddCmd() *cobra.Command {
 			if err := validateAutograderName(autograderVal); err != nil {
 				return err
 			}
-			dueVal, err := normalizeDueDate(strings.TrimSpace(due))
+			dueVal, dueMetaVal, err := normalizeDueDate(strings.TrimSpace(due))
 			if err != nil {
 				return err
 			}
@@ -169,14 +170,14 @@ func assignmentAddCmd() *cobra.Command {
 			}
 			return runAssignmentAdd(client, cmd.OutOrStdout(), cmd.ErrOrStderr(),
 				org, classroom, slug, nameVal, strings.TrimSpace(description),
-				tmplArg, dueVal, modeVal, autograderVal, runtime, tests)
+				tmplArg, dueVal, dueMetaVal, modeVal, autograderVal, runtime, tests)
 		},
 	}
 
 	cmd.Flags().StringVar(&name, "name", "", `Display name written into the assignment entry (e.g. "Hello") (required)`)
 	cmd.Flags().StringVar(&template, "template", "", "Template repo as <owner>/<repo> or <owner>/<repo>@<branch> (required)")
 	cmd.Flags().StringVar(&description, "description", "", "Optional one-line description")
-	cmd.Flags().StringVar(&due, "due", "", "Optional ISO-8601 due date (e.g. 2026-09-15T23:59:00-04:00)")
+	cmd.Flags().StringVar(&due, "due", "", "Optional due date (e.g. 2026-09-15T23:59:00-04:00); stored as UTC. Omit the offset to use the machine's local timezone")
 	cmd.Flags().StringVar(&mode, "mode", assignmentModeIndividual, "Assignment mode: only `individual` is supported (group assignments are planned for a future release)")
 	cmd.Flags().StringVar(&autograder, "autograder", defaultAutograderName, "Autograder workflow shim this assignment opts into; resolves to <classroom>/autograders/<name>.yaml in the config repo")
 	cmd.Flags().StringVar(&runtimeFile, "runtime", "", "Path to a JSON file describing the runtime environment (runs-on, python/node/java/go versions, apt packages, or container image), or `-` to read from stdin. Omit for ubuntu-latest + Python 3.12.")
@@ -352,7 +353,7 @@ func assignmentsFilePath(classroom string) string {
 // delete of the referenced autograder loses cleanly on retry rather
 // than landing a dangling reference. Same-slug races are
 // last-writer-wins; both commits stay in history for `git revert`.
-func runAssignmentAdd(client *api.RESTClient, out, errOut io.Writer, org, classroom, slug, name, description string, tmpl templateArg, due, mode, autograder string, runtime *runtimeRef, tests []testSpec) error {
+func runAssignmentAdd(client *api.RESTClient, out, errOut io.Writer, org, classroom, slug, name, description string, tmpl templateArg, due string, dueMetaVal *dueMeta, mode, autograder string, runtime *runtimeRef, tests []testSpec) error {
 	branch, err := resolveConfigRepoBranch(client, org)
 	if err != nil {
 		return err
@@ -369,6 +370,7 @@ func runAssignmentAdd(client *api.RESTClient, out, errOut io.Writer, org, classr
 		Description: description,
 		Template:    resolved,
 		Due:         due,
+		DueMeta:     dueMetaVal,
 		Mode:        mode,
 		Autograder:  autograder,
 		Runtime:     runtime,
@@ -570,17 +572,68 @@ func parseTemplateRef(raw string) (templateArg, error) {
 	}, nil
 }
 
-// normalizeDueDate validates an RFC 3339 timestamp and echoes it
-// back unchanged so the teacher's timezone offset round-trips.
-// Empty → no deadline (--due is optional).
-func normalizeDueDate(raw string) (string, error) {
+// normalizeDueDate turns a --due value into the stored UTC instant
+// plus its provenance (due_meta). Empty -> ("", nil, nil); --due is
+// optional. A value carrying an offset is converted to UTC; a
+// zone-less value is interpreted in the machine's local timezone
+// (auto-detected), then converted to UTC. The teacher's original
+// input and the applied offset/zone are preserved in due_meta so a
+// wrong-zone deadline stays auditable.
+func normalizeDueDate(raw string) (string, *dueMeta, error) {
 	if raw == "" {
-		return "", nil
+		return "", nil, nil
 	}
-	if _, err := time.Parse(time.RFC3339, raw); err != nil {
-		return "", fmt.Errorf("invalid --due %q: expected ISO-8601 / RFC 3339 (e.g. 2026-09-15T23:59:00-04:00): %w", raw, err)
+	loc, locErr := localDueLocation()
+	t, hadOffset, err := parseDueTime(raw, loc)
+	if err != nil {
+		return "", nil, fmt.Errorf("invalid --due: %w", err)
 	}
-	return raw, nil
+	if !hadOffset && locErr != nil {
+		// The value is zone-less, so the result depends entirely on
+		// the local zone -- but $TZ was set to something we couldn't
+		// resolve. Fail loudly rather than silently normalizing in a
+		// fallback zone and storing the wrong instant.
+		return "", nil, fmt.Errorf(
+			"invalid --due: %q has no timezone offset and the local timezone "+
+				"could not be resolved (%v); pass an explicit offset like -04:00", raw, locErr)
+	}
+	if hadOffset {
+		return t.UTC().Format(time.RFC3339), newDueMeta(raw, t, dueSourceExplicit), nil
+	}
+	meta := newDueMeta(raw, t, dueSourceAuto)
+	meta.Zone = dueZoneName(loc, t)
+	return t.UTC().Format(time.RFC3339), meta, nil
+}
+
+// localDueLocation resolves the machine's local timezone for
+// interpreting a zone-less --due. $TZ is preferred when set: it names
+// an IANA zone (e.g. "America/New_York") that round-trips a readable
+// name into due_meta.zone. When $TZ is set but unresolvable, return
+// the error (alongside time.Local) so the caller can refuse to guess
+// for a zone-less value; an empty $TZ falls back to time.Local with no
+// error (that's the legitimate auto-detect path).
+func localDueLocation() (*time.Location, error) {
+	if tz := strings.TrimSpace(os.Getenv("TZ")); tz != "" {
+		loc, err := time.LoadLocation(tz)
+		if err != nil {
+			return time.Local, fmt.Errorf("$TZ=%q: %w", tz, err)
+		}
+		return loc, nil
+	}
+	return time.Local, nil
+}
+
+// dueZoneName is the best-effort human-readable zone recorded in
+// due_meta when the offset was auto-detected. A named location (from
+// $TZ or a test injection) reports its IANA name; time.Local reports
+// "Local", so fall back to the abbreviation at that instant (e.g.
+// "EDT"). due_meta.offset is always exact regardless.
+func dueZoneName(loc *time.Location, t time.Time) string {
+	if name := loc.String(); name != "" && name != "Local" {
+		return name
+	}
+	abbr, _ := t.Zone()
+	return abbr
 }
 
 // validateTemplateRepo checks <owner>/<repo> exists and is a

@@ -239,6 +239,18 @@ class TestApplyUpdates:
         assert [s["usernames"][0] for s in bucket] == ["alice", "bob"]
         assert bucket[0]["score"] == 99
 
+    def test_adds_late_field_to_existing_matching_row(self):
+        # Upgrading the collector should refresh old rows when the
+        # only data change is the newly-derived lateness field.
+        existing = stored_row(username="alice")
+        scores = {"schema": cs.SCORES_SCHEMA_V1, "submissions": {"hello": [existing]}}
+        incoming = make_result(username="alice", late=False)
+
+        changes = cs.apply_updates(scores, [incoming])
+
+        assert changes == 1
+        assert scores["submissions"]["hello"][0]["late"] is False
+
 
 # validate_result -------------------------------------------------------------
 
@@ -366,6 +378,77 @@ class TestAssignmentRepoName:
             cs.assignment_repo_name("cs-principles", "hello-world", "ada-l")
             == "cs-principles-hello-world-ada-l"
         )
+
+
+# Due-date / lateness ---------------------------------------------------------
+
+
+class TestLateness:
+    @pytest.mark.parametrize("value", [
+        "2026-09-15T23:59:00-04:00",
+        "2026-09-15T23:59:00Z",
+        "2026-09-15T23:59:00.123Z",
+    ])
+    def test_parse_rfc3339_accepts_cli_shapes(self, value):
+        assert cs.parse_rfc3339(value) is not None
+
+    @pytest.mark.parametrize("value", [
+        "2026-09-15",
+        "2026-09-15T23:59:00",
+        "2026-09-15t23:59:00z",
+        "next Tuesday",
+        "",
+        None,
+    ])
+    def test_parse_rfc3339_rejects_ambiguous_shapes(self, value):
+        assert cs.parse_rfc3339(value) is None
+
+    def test_mark_late_compares_across_timezones(self):
+        due = cs.parse_rfc3339("2026-09-15T23:59:00-04:00")
+        assert due is not None
+
+        before = make_result(datetime="2026-09-16T03:58:59Z")
+        at_deadline = make_result(datetime="2026-09-16T03:59:00Z")
+        after = make_result(datetime="2026-09-16T03:59:01Z")
+
+        assert cs.mark_late(before, due) is True
+        assert before["late"] is False
+        assert cs.mark_late(at_deadline, due) is True
+        assert at_deadline["late"] is False
+        assert cs.mark_late(after, due) is True
+        assert after["late"] is True
+
+    def test_mark_late_leaves_unparseable_datetime_unmarked(self):
+        due = cs.parse_rfc3339("2026-09-15T23:59:00-04:00")
+        assert due is not None
+        payload = make_result(datetime="2026-09-16T03:59:01")
+
+        assert cs.mark_late(payload, due) is False
+        assert "late" not in payload
+
+    def test_collect_classroom_marks_lateness_on_payloads(self, monkeypatch):
+        def fake_latest(*args, **kwargs):
+            return {
+                "tag_name": "submit/2026-09-16T04-00-00Z",
+                "assets": [{"name": "result.json", "url": "https://api.github.com/assets/1"}],
+            }
+
+        def fake_download(*args, **kwargs):
+            return make_result(datetime="2026-09-16T04:00:00Z")
+
+        monkeypatch.setattr(cs, "latest_submit_release_or_none", fake_latest)
+        monkeypatch.setattr(cs, "download_result_asset", fake_download)
+
+        results = cs.collect_classroom(
+            api_url="https://api.github.com",
+            org="cs50",
+            classroom_short="cs-principles",
+            assignments={"assignments": [{"slug": "hello", "due": "2026-09-15T23:59:00-04:00"}]},
+            roster=[{"username": "alice", "github_id": "111"}],
+            collect_token="token",
+        )
+
+        assert results[0]["late"] is True
 
 
 # read_students_csv -----------------------------------------------------------

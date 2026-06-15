@@ -297,7 +297,7 @@ func TestRunAssignmentAdd_WithTestsPersists(t *testing.T) {
 	tests := []testSpec{{Name: "compiles", Type: "run", Run: "true", Points: 1}}
 	var stdout, stderr bytes.Buffer
 	err := runAssignmentAdd(client, &stdout, &stderr, "o", "cs-principles", "hello", "Hello", "",
-		templateArg{Owner: "cs50", Repo: "hello-template"}, "", "individual", "default", nil, tests)
+		templateArg{Owner: "cs50", Repo: "hello-template"}, "", nil, "individual", "default", nil, tests)
 	if err != nil {
 		t.Fatalf("runAssignmentAdd: %v", err)
 	}
@@ -314,7 +314,7 @@ func TestRunAssignmentAdd_TestsRejectedWithAutograder(t *testing.T) {
 	tests := []testSpec{{Name: "compiles", Type: "run", Run: "true", Points: 1}}
 	var stdout, stderr bytes.Buffer
 	err := runAssignmentAdd(client, &stdout, &stderr, "o", "cs-principles", "hello", "Hello", "",
-		templateArg{Owner: "cs50", Repo: "hello-template"}, "", "individual", "default", nil, tests)
+		templateArg{Owner: "cs50", Repo: "hello-template"}, "", nil, "individual", "default", nil, tests)
 	if err == nil || !strings.Contains(err.Error(), "mutually exclusive") {
 		t.Fatalf("expected mutual-exclusion error, got %v", err)
 	}
@@ -337,7 +337,7 @@ func TestRunAssignmentAdd_ReplaceWithoutTestsWarns(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 	err := runAssignmentAdd(client, &stdout, &stderr, "o", "cs-principles", "hello", "Hello", "",
-		templateArg{Owner: "cs50", Repo: "hello-template"}, "", "individual", "default", nil, nil)
+		templateArg{Owner: "cs50", Repo: "hello-template"}, "", nil, "individual", "default", nil, nil)
 	if err != nil {
 		t.Fatalf("runAssignmentAdd: %v", err)
 	}
@@ -358,7 +358,7 @@ func TestRunAssignmentAdd_ExplicitEmptyTestsClearsSilently(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 	err := runAssignmentAdd(client, &stdout, &stderr, "o", "cs-principles", "hello", "Hello", "",
-		templateArg{Owner: "cs50", Repo: "hello-template"}, "", "individual", "default", nil, []testSpec{})
+		templateArg{Owner: "cs50", Repo: "hello-template"}, "", nil, "individual", "default", nil, []testSpec{})
 	if err != nil {
 		t.Fatalf("runAssignmentAdd: %v", err)
 	}

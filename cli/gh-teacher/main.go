@@ -6,6 +6,12 @@ import (
 	"os/signal"
 	"syscall"
 
+	// Embed the IANA tz database so LoadLocation (due-date timezone
+	// detection in assignment.go) works on hosts without system
+	// zoneinfo -- otherwise a named $TZ silently falls back to
+	// time.Local and deadlines normalize to the wrong instant.
+	_ "time/tzdata"
+
 	"github.com/spf13/cobra"
 )
 

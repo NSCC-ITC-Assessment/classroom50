@@ -82,6 +82,41 @@ class TestSchemaAccepts:
         ]
         assert _errors(_manifest(_entry(tests=tests))) == []
 
+    @pytest.mark.parametrize("due", [
+        "2026-09-15T23:59:00-04:00",
+        "2026-09-15T23:59:00Z",
+        "2026-09-15T23:59:00.123Z",
+    ])
+    def test_due_rfc3339_shapes(self, due):
+        assert _errors(_manifest(_entry(due=due))) == []
+
+    def test_due_meta_auto_detected(self):
+        # Write-side provenance the CLI emits for a zone-less --due;
+        # `zone` present, `source` = auto-detected. collect-scores
+        # ignores it.
+        entry = _entry(
+            due="2026-09-16T03:59:00Z",
+            due_meta={
+                "input": "2026-09-15T23:59:00",
+                "zone": "America/New_York",
+                "offset": "-04:00",
+                "source": "auto-detected",
+            },
+        )
+        assert _errors(_manifest(entry)) == []
+
+    def test_due_meta_explicit_offset_omits_zone(self):
+        # An explicit offset carries no zone name, so `zone` is omitted.
+        entry = _entry(
+            due="2026-09-16T03:59:00Z",
+            due_meta={
+                "input": "2026-09-15T23:59:00-04:00",
+                "offset": "-04:00",
+                "source": "explicit-offset",
+            },
+        )
+        assert _errors(_manifest(entry)) == []
+
 
 class TestSchemaRejects:
     @pytest.mark.parametrize("bad_test", [
@@ -129,6 +164,36 @@ class TestSchemaRejects:
     def test_non_ubuntu_runs_on_forbidden_with_container(self):
         # Mirrors runtime.go: containers run on Ubuntu hosts only.
         entry = _entry(runtime={"container": {"image": "x"}, "runs-on": "windows-latest"})
+        assert _errors(_manifest(entry)) != []
+
+    @pytest.mark.parametrize("due", [
+        # Mirrors validateDueDate in assignments_json.go: date-only
+        # and timezone-less timestamps are ambiguous deadlines.
+        "2026-09-15",
+        "2026-09-15T23:59:00",
+        "2026-09-15T24:00:00Z",
+        "2026-09-15T23:60:00Z",
+        "2026-09-15T23:59:60Z",
+        "2026-09-15T23:59:00+24:00",
+        "2026-09-15t23:59:00z",
+        "next Tuesday",
+        "",
+    ])
+    def test_due_must_be_full_rfc3339(self, due):
+        assert _errors(_manifest(_entry(due=due))) != []
+
+    @pytest.mark.parametrize("due_meta", [
+        # Unknown key (additionalProperties: false).
+        {"input": "x", "offset": "-04:00", "source": "auto-detected", "tz": "x"},
+        # source outside the enum.
+        {"input": "x", "offset": "-04:00", "source": "guessed"},
+        # offset must be [+-]HH:MM, never a bare Z.
+        {"input": "x", "offset": "Z", "source": "explicit-offset"},
+        # Missing a required field (offset).
+        {"input": "x", "source": "migrated"},
+    ])
+    def test_bad_due_meta(self, due_meta):
+        entry = _entry(due="2026-09-16T03:59:00Z", due_meta=due_meta)
         assert _errors(_manifest(entry)) != []
 
     def test_wrong_schema_sentinel(self):

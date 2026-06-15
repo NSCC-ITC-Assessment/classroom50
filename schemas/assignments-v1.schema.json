@@ -38,7 +38,33 @@
         },
         "due": {
           "type": "string",
-          "description": "RFC 3339 timestamp with timezone, e.g. 2026-09-15T23:59:00-04:00. Stored verbatim."
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T([01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(\\.\\d+)?(Z|[+-]([01]\\d|2[0-3]):[0-5]\\d)$",
+          "description": "RFC 3339 timestamp. The CLI normalizes the teacher's input to a UTC instant (e.g. 2026-09-16T03:59:00Z) and records the original value/zone in `due_meta`; clients should write UTC too. The pattern still permits any offset so older files validate. Advisory: collect-scores compares it against each submission's datetime and marks rows `late` in scores.json; nothing enforces the deadline."
+        },
+        "due_meta": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["input", "offset", "source"],
+          "properties": {
+            "input": {
+              "type": "string",
+              "description": "The due value as supplied (--due flag or migrated source deadline), whitespace-trimmed but otherwise verbatim, before UTC normalization."
+            },
+            "zone": {
+              "type": "string",
+              "description": "Best-effort IANA/local zone name; present only when the offset was auto-detected (an explicit offset carries no zone name)."
+            },
+            "offset": {
+              "type": "string",
+              "pattern": "^[+-]([01]\\d|2[0-3]):[0-5]\\d$",
+              "description": "Zone offset applied at normalization, e.g. -04:00 (UTC is +00:00)."
+            },
+            "source": {
+              "enum": ["explicit-offset", "auto-detected", "migrated"],
+              "description": "How the offset was determined: from the input itself, auto-detected from the machine's local zone, or carried in from a migrated deadline."
+            }
+          },
+          "description": "Write-side provenance for `due`, for auditing a wrong-zone deadline. Advisory metadata only -- collect-scores reads `due`, never this."
         },
         "mode": {
           "enum": ["individual", "group"],

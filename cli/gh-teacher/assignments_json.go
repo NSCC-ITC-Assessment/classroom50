@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"regexp"
+	"time"
 )
 
 // Assignment modes accepted at the parse/write layer. `individual`
@@ -74,6 +76,7 @@ type assignmentEntry struct {
 	Description  string           `json:"description,omitempty"`
 	Template     templateRef      `json:"template"`
 	Due          string           `json:"due,omitempty"`
+	DueMeta      *dueMeta         `json:"due_meta,omitempty"`
 	Mode         string           `json:"mode"`
 	Autograder   string           `json:"autograder"`
 	MaxGroupSize int              `json:"max_group_size,omitempty"`
@@ -88,6 +91,109 @@ const maxGroupSizeCap = 100
 func validateMaxGroupSize(n int) error {
 	if n < 0 || n > maxGroupSizeCap {
 		return fmt.Errorf("max_group_size %d must be between 1 and %d (or omitted)", n, maxGroupSizeCap)
+	}
+	return nil
+}
+
+// dueMeta is the write-side provenance for `due`. Because `due` is
+// normalized to a UTC instant (losing the teacher's wall-clock and
+// offset), this records what was actually supplied so a wrong-zone
+// deadline can be audited after the fact. Advisory only --
+// collect_scores.py reads `due`, never this.
+//
+// Input is the supplied value (--due flag or migrated source
+// deadline), whitespace-trimmed but otherwise verbatim. Offset is the
+// zone offset applied at normalization (always [+-]HH:MM). Zone is the
+// best-effort IANA/local zone name, set only when the offset was
+// auto-detected (an explicit offset carries no zone name). Source
+// records how the zone was determined.
+type dueMeta struct {
+	Input  string `json:"input"`
+	Zone   string `json:"zone,omitempty"`
+	Offset string `json:"offset"`
+	Source string `json:"source"`
+}
+
+// due_meta.source values: the offset came from the input itself, was
+// auto-detected from the machine's local zone, or was carried in from
+// a migrated source deadline.
+const (
+	dueSourceExplicit = "explicit-offset"
+	dueSourceAuto     = "auto-detected"
+	dueSourceMigrated = "migrated"
+)
+
+// dueMetaOffsetRe matches the [+-]HH:MM offset shape written into
+// due_meta.offset -- kept in lockstep with the schema's due_meta.offset
+// pattern so validateDueMeta and a schema-validating client agree.
+var dueMetaOffsetRe = regexp.MustCompile(`^[+-]([01]\d|2[0-3]):[0-5]\d$`)
+
+// newDueMeta builds the provenance block shared by the --due and
+// migrate paths: the supplied input, the offset applied (read off t's
+// zone), and how that offset was determined. Callers set Zone
+// separately when it was auto-detected.
+func newDueMeta(input string, t time.Time, source string) *dueMeta {
+	return &dueMeta{Input: input, Offset: t.Format("-07:00"), Source: source}
+}
+
+// validateDueMeta checks a due_meta block's fields against the same
+// shape the JSON schema enforces, so a malformed block written by a
+// GUI or hand-edit is rejected by the CLI too (the schema is documented
+// as mirroring these validators). Presence is NOT required: files
+// written before due_meta existed carry `due` alone and must still
+// validate, so callers only invoke this when the block is present.
+func validateDueMeta(m *dueMeta) error {
+	if m.Input == "" {
+		return errors.New("due_meta.input must not be empty")
+	}
+	if !dueMetaOffsetRe.MatchString(m.Offset) {
+		return fmt.Errorf("due_meta.offset %q must be a [+-]HH:MM zone offset", m.Offset)
+	}
+	switch m.Source {
+	case dueSourceExplicit, dueSourceAuto, dueSourceMigrated:
+	default:
+		return fmt.Errorf("due_meta.source %q must be one of %q, %q, %q",
+			m.Source, dueSourceExplicit, dueSourceAuto, dueSourceMigrated)
+	}
+	return nil
+}
+
+// dueNaiveLayout is the RFC 3339 local-datetime shape with no zone.
+// When a teacher omits the offset, --due is parsed with this layout
+// in the machine's local timezone, then normalized to UTC.
+const dueNaiveLayout = "2006-01-02T15:04:05"
+
+// parseDueTime parses a due value as either a full RFC 3339 timestamp
+// (offset present -> hadOffset true) or a zone-less local datetime
+// interpreted in loc (hadOffset false). The returned time carries the
+// applied zone; callers normalize to UTC for storage. Sub-second
+// precision is accepted but dropped on the UTC re-format -- deadlines
+// don't need it.
+func parseDueTime(raw string, loc *time.Location) (parsed time.Time, hadOffset bool, err error) {
+	if parsed, err = time.Parse(time.RFC3339, raw); err == nil {
+		return parsed, true, nil
+	}
+	if parsed, err = time.ParseInLocation(dueNaiveLayout, raw, loc); err == nil {
+		return parsed, false, nil
+	}
+	return time.Time{}, false, fmt.Errorf(
+		"due %q is not a valid date/time; use an RFC 3339 timestamp "+
+			"(2026-09-15T23:59:00-04:00) or a local time (2026-09-15T23:59:00)", raw)
+}
+
+// validateDueDate guards the *stored* form: empty (no deadline) or an
+// RFC 3339 timestamp with an offset. The CLI always writes a UTC
+// instant, so this passes on anything it produces. It stays strict on
+// read -- a hand-edited zone-less value is rejected rather than guessed
+// at, since (unlike a fresh --due) there's no knowable machine zone to
+// attach. The naive-input tolerance lives only at the --due/migrate
+// boundary (parseDueTime), never here.
+func validateDueDate(due string) error {
+	if due == "" {
+		return nil
+	}
+	if _, err := time.Parse(time.RFC3339, due); err != nil {
+		return fmt.Errorf("due %q is not an RFC 3339 timestamp with timezone (e.g. 2026-09-15T23:59:00-04:00)", due)
 	}
 	return nil
 }
@@ -322,6 +428,14 @@ func validateAssignmentEntry(entry assignmentEntry) error {
 	if entry.Template.Branch == "" {
 		return errors.New("template branch must not be empty")
 	}
+	if err := validateDueDate(entry.Due); err != nil {
+		return err
+	}
+	if entry.DueMeta != nil {
+		if err := validateDueMeta(entry.DueMeta); err != nil {
+			return err
+		}
+	}
 	if entry.Autograder == "" {
 		return fmt.Errorf("autograder must not be empty (default is %q)", defaultAutograderName)
 	}
@@ -369,6 +483,14 @@ func validateExistingEntry(entry assignmentEntry) error {
 	}
 	if entry.Template.Branch == "" {
 		return fmt.Errorf("entry %q has empty template branch", entry.Slug)
+	}
+	if err := validateDueDate(entry.Due); err != nil {
+		return fmt.Errorf("entry %q: %w", entry.Slug, err)
+	}
+	if entry.DueMeta != nil {
+		if err := validateDueMeta(entry.DueMeta); err != nil {
+			return fmt.Errorf("entry %q: %w", entry.Slug, err)
+		}
 	}
 	// Empty Autograder normalizes to "default" so older entries
 	// still parse; the strict pattern check still runs because a

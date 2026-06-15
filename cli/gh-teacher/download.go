@@ -41,9 +41,9 @@ const (
 // CDN; short enough that a hang doesn't wedge the whole download.
 const assetDownloadTimeout = 30 * time.Second
 
-// scoresCSVHeader: stable column order. `override` is tri-state
+// scoresCSVHeader: stable column order. `late` and `override` are tri-state
 // ("true" / "false" / "") so spreadsheet readers can distinguish
-// an explicit override from a non-submission.
+// an explicit flag from a non-submission or older score row.
 var scoresCSVHeader = []string{
 	"username",
 	"score",
@@ -51,6 +51,7 @@ var scoresCSVHeader = []string{
 	"datetime",
 	"submission_tag",
 	"review_url",
+	"late",
 	"override",
 }
 
@@ -566,12 +567,12 @@ func writeScoresCSV(path string, scores scoresJSON, assignment string, roster []
 }
 
 // scoresCSVRow renders one row. Nil `sub` (non-submitter) blanks
-// out every column except username and returns "" for override so
-// spreadsheets can distinguish "no submission" from "submitted, no
-// override flag".
+// out every column except username and returns "" for late/override
+// so spreadsheets can distinguish "no submission" from "submitted,
+// no explicit flag".
 func scoresCSVRow(username string, sub map[string]any) []string {
 	if sub == nil {
-		return []string{username, "", "", "", "", "", ""}
+		return []string{username, "", "", "", "", "", "", ""}
 	}
 	return []string{
 		username,
@@ -580,6 +581,7 @@ func scoresCSVRow(username string, sub map[string]any) []string {
 		stringifyString(sub["datetime"]),
 		stringifyString(sub["submission"]),
 		stringifyString(sub["review"]),
+		stringifyOverride(sub["late"]),
 		stringifyOverride(sub["override"]),
 	}
 }

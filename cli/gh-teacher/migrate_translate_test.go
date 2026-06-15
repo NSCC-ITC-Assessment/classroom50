@@ -1,6 +1,7 @@
 package main
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -91,6 +92,9 @@ func TestAssignmentToEntry(t *testing.T) {
 		if entry.Due != "" {
 			t.Errorf("due = %q, want empty (source deadline was null)", entry.Due)
 		}
+		if entry.DueMeta != nil {
+			t.Errorf("due_meta = %#v, want nil (no deadline)", entry.DueMeta)
+		}
 		if entry.Autograder != defaultAutograderName {
 			t.Errorf("autograder = %q, want %q", entry.Autograder, defaultAutograderName)
 		}
@@ -138,7 +142,7 @@ func TestAssignmentToEntry(t *testing.T) {
 		}
 	})
 
-	t.Run("valid RFC-3339 deadline round-trips", func(t *testing.T) {
+	t.Run("valid RFC-3339 deadline normalizes to UTC with provenance", func(t *testing.T) {
 		deadline := "2026-09-15T23:59:00-04:00"
 		detail := classroomAssignmentDetail{
 			ID: 1, Slug: "ok", Title: "Ok", Type: "individual",
@@ -149,8 +153,12 @@ func TestAssignmentToEntry(t *testing.T) {
 		if err != nil {
 			t.Fatalf("assignmentToEntry: %v", err)
 		}
-		if entry.Due != deadline {
-			t.Errorf("due = %q, want %q (RFC 3339 verbatim)", entry.Due, deadline)
+		if entry.Due != "2026-09-16T03:59:00Z" {
+			t.Errorf("due = %q, want 2026-09-16T03:59:00Z (UTC-normalized)", entry.Due)
+		}
+		wantMeta := &dueMeta{Input: deadline, Offset: "-04:00", Source: dueSourceMigrated}
+		if !reflect.DeepEqual(entry.DueMeta, wantMeta) {
+			t.Errorf("due_meta = %#v, want %#v", entry.DueMeta, wantMeta)
 		}
 	})
 
@@ -169,6 +177,31 @@ func TestAssignmentToEntry(t *testing.T) {
 		}
 		if entry.Due != "" {
 			t.Errorf("due = %q, want empty (malformed deadline dropped)", entry.Due)
+		}
+		if entry.DueMeta != nil {
+			t.Errorf("due_meta = %#v, want nil (malformed deadline dropped)", entry.DueMeta)
+		}
+	})
+
+	t.Run("zone-less deadline is dropped, not guessed as UTC", func(t *testing.T) {
+		// A source deadline without an offset has no knowable zone;
+		// interpreting it as UTC would silently shift it, so it's
+		// dropped (like the old RFC-3339 reject).
+		deadline := "2026-09-15T23:59:00"
+		detail := classroomAssignmentDetail{
+			ID: 1, Slug: "ok", Title: "Ok", Type: "individual",
+			Deadline:        &deadline,
+			StarterCodeRepo: &classroomStarterCodeRepo{FullName: "x/x", DefaultBranch: "main"},
+		}
+		entry, err := assignmentToEntry(detail, 1, target, migratedAt)
+		if err != nil {
+			t.Fatalf("assignmentToEntry: %v", err)
+		}
+		if entry.Due != "" {
+			t.Errorf("due = %q, want empty (zone-less deadline dropped)", entry.Due)
+		}
+		if entry.DueMeta != nil {
+			t.Errorf("due_meta = %#v, want nil", entry.DueMeta)
 		}
 	})
 

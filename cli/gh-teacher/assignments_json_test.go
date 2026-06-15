@@ -308,6 +308,13 @@ func TestParseAssignments_Rejects(t *testing.T) {
 			wantErrPart: "slug",
 		},
 		{
+			// Hand-edited or web-UI-inserted due values must meet
+			// the same bar the --due flag enforces at write time.
+			name:        "entry with non-RFC-3339 due",
+			in:          `{"schema":"classroom50/assignments/v1","assignments":[{"slug":"hello","name":"Hello","template":{"owner":"cs50","repo":"hello-template","branch":"main"},"due":"2026-09-15","mode":"individual","autograder":"default"}]}`,
+			wantErrPart: "RFC 3339",
+		},
+		{
 			name:        "trailing content (e.g. botched merge)",
 			in:          `{"schema":"classroom50/assignments/v1","assignments":[]}{"schema":"classroom50/assignments/v1","assignments":[]}`,
 			wantErrPart: "after top-level value",
@@ -619,6 +626,21 @@ func TestValidateAssignmentEntry_Rejects(t *testing.T) {
 		{"empty template branch", func(e *assignmentEntry) { e.Template.Branch = "" }, "branch"},
 		{"empty autograder", func(e *assignmentEntry) { e.Autograder = "" }, "autograder"},
 		{"autograder traversal", func(e *assignmentEntry) { e.Autograder = "../etc/passwd" }, "autograder"},
+		{"due date-only", func(e *assignmentEntry) { e.Due = "2026-09-15" }, "RFC 3339"},
+		{"due missing timezone", func(e *assignmentEntry) { e.Due = "2026-09-15T23:59:00" }, "RFC 3339"},
+		{"due garbage", func(e *assignmentEntry) { e.Due = "next Tuesday" }, "RFC 3339"},
+		// due_meta, when present, must match the schema's shape — a
+		// GUI/hand-edit can't smuggle a malformed provenance block past
+		// the CLI while a schema-validating client would reject it.
+		{"due_meta empty input", func(e *assignmentEntry) {
+			e.DueMeta = &dueMeta{Input: "", Offset: "-04:00", Source: dueSourceExplicit}
+		}, "due_meta.input"},
+		{"due_meta bad offset", func(e *assignmentEntry) {
+			e.DueMeta = &dueMeta{Input: "x", Offset: "Z", Source: dueSourceExplicit}
+		}, "due_meta.offset"},
+		{"due_meta bad source", func(e *assignmentEntry) {
+			e.DueMeta = &dueMeta{Input: "x", Offset: "-04:00", Source: "guessed"}
+		}, "due_meta.source"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -633,4 +655,34 @@ func TestValidateAssignmentEntry_Rejects(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestValidateAssignmentEntry_DueMeta(t *testing.T) {
+	base := assignmentEntry{
+		Slug:       "hello",
+		Name:       "Hello",
+		Template:   templateRef{Owner: "cs50", Repo: "hello-template", Branch: "main"},
+		Mode:       "individual",
+		Autograder: "default",
+		Due:        "2026-09-16T03:59:00Z",
+	}
+
+	t.Run("due without due_meta validates (pre-due_meta files)", func(t *testing.T) {
+		// Back-compat: files written before due_meta existed carry
+		// `due` alone and must still validate.
+		if err := validateAssignmentEntry(base); err != nil {
+			t.Errorf("due-only entry should validate, got %v", err)
+		}
+	})
+
+	t.Run("well-formed due_meta validates", func(t *testing.T) {
+		e := base
+		e.DueMeta = &dueMeta{
+			Input: "2026-09-15T23:59:00", Zone: "America/New_York",
+			Offset: "-04:00", Source: dueSourceAuto,
+		}
+		if err := validateAssignmentEntry(e); err != nil {
+			t.Errorf("well-formed due_meta should validate, got %v", err)
+		}
+	})
 }

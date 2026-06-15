@@ -11,6 +11,10 @@ keyed by assignment slug, each value the list of that assignment's
 rows. A stored row is the validated `result.json` payload with the
 now-redundant `assignment` field dropped (it's the bucket key);
 everything else, including `schema` and `tests`, is kept verbatim.
+When the assignment has a `due` date in assignments.json, each row
+additionally carries `"late": true|false` (submission `datetime`
+vs. `due`). Advisory only — nothing enforces the deadline; late
+submissions are still collected and scored.
 
 Single writer per scores.json. Re-runs are idempotent: unchanged
 submissions are no-ops, and `"override": true` entries are
@@ -37,6 +41,7 @@ Exit codes:
 from __future__ import annotations
 
 import csv
+import datetime
 import json
 import os
 import pathlib
@@ -58,6 +63,11 @@ RESULT_SCHEMA_V1 = "classroom50/result/v1"
 # Trigger contract: only `submit/*` tag releases count as
 # submissions (created by autograde-runner.yaml on push to `main`).
 SUBMIT_TAG_PREFIX = "submit/"
+
+RFC3339_RE = re.compile(
+    r"^\d{4}-\d{2}-\d{2}T([01]\d|2[0-3]):[0-5]\d:[0-5]\d"
+    r"(\.\d+)?(Z|[+-]([01]\d|2[0-3]):[0-5]\d)$"
+)
 
 # Release asset name written by the autograde runner. Cross-binary
 # contract — keep aligned with autograde-runner.yaml and download.go.
@@ -288,8 +298,9 @@ def read_students_csv(path: pathlib.Path) -> list[dict[str, str]]:
 
 def valid_assignment_slugs(assignments: dict[str, Any]) -> list[str]:
     """Slugs worth collecting: non-empty strings, in manifest order.
-    The collect loop and main()'s zero-submission guard both read this
-    so they agree on what counts as a collectable assignment."""
+    main()'s zero-submission guard counts these; the collect loop
+    applies the same slug predicate inline (it also needs each entry's
+    `due`), so the two agree on what counts as a collectable assignment."""
     slugs: list[str] = []
     for entry in assignments.get("assignments") or []:
         slug = entry.get("slug")
@@ -313,7 +324,19 @@ def collect_classroom(
     main() converts them to exit 1.
     """
     results: list[dict[str, Any]] = []
-    for slug in valid_assignment_slugs(assignments):
+    for entry in assignments.get("assignments") or []:
+        slug = entry.get("slug")
+        if not isinstance(slug, str) or not slug:
+            continue
+
+        due_raw = entry.get("due")
+        due = parse_rfc3339(due_raw) if due_raw else None
+        if due_raw and due is None:
+            emit_warning(
+                f"{classroom_short}/{slug}: due = {due_raw!r} is not an RFC 3339 "
+                f"timestamp with timezone; skipping late-marking for this assignment"
+            )
+
         submitted = 0
         for student in roster:
             username = student["username"]
@@ -361,6 +384,13 @@ def collect_classroom(
                 emit_warning(f"{org}/{repo_name}: invalid result.json ({exc}); skipping")
                 continue
 
+            if due is not None and not mark_late(payload, due):
+                emit_warning(
+                    f"{org}/{repo_name}: result.json datetime = "
+                    f"{payload.get('datetime')!r} is not an RFC 3339 timestamp; "
+                    f"cannot mark lateness"
+                )
+
             results.append(payload)
             submitted += 1
 
@@ -374,6 +404,44 @@ def assignment_repo_name(classroom: str, assignment: str, username: str) -> str:
     `assignmentRepoName` in cli/gh-student/accept.go; changing the
     shape here without updating Go silently breaks the collect loop."""
     return f"{classroom.lower()}-{assignment.lower()}-{username.lower()}"
+
+
+# Due-date / lateness ---------------------------------------------------------
+
+
+def parse_rfc3339(value: Any) -> datetime.datetime | None:
+    """Parse an RFC 3339 timestamp into an aware datetime, or None
+    when it isn't one (non-string, unparseable, or missing a
+    timezone offset). Naive timestamps are rejected rather than
+    guessed at — lateness is a cross-timezone comparison, so an
+    ambiguous wall-clock time must not silently pick one.
+    """
+    if not isinstance(value, str) or not value:
+        return None
+    if not RFC3339_RE.fullmatch(value):
+        return None
+    try:
+        parsed = datetime.datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return None
+    return parsed
+
+
+def mark_late(payload: dict[str, Any], due: datetime.datetime) -> bool:
+    """Set payload["late"] by comparing the runner's submission
+    `datetime` (validated as a non-empty string, but not as a
+    timestamp) against the assignment's due date. Submitting exactly
+    at the deadline is on time. Returns False — leaving the payload
+    unmarked — when the timestamp doesn't parse; lateness is
+    advisory and must never drop a submission.
+    """
+    submitted = parse_rfc3339(payload.get("datetime"))
+    if submitted is None:
+        return False
+    payload["late"] = submitted > due
+    return True
 
 
 # scores.json read / write ----------------------------------------------------

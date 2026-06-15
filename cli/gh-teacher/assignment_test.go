@@ -1,6 +1,7 @@
 package main
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -63,28 +64,58 @@ func TestParseTemplateRef_Rejects(t *testing.T) {
 }
 
 func TestNormalizeDueDate(t *testing.T) {
+	// Pin the local zone so zone-less inputs normalize
+	// deterministically. localDueLocation() reads $TZ via
+	// LoadLocation, so this controls auto-detection regardless of the
+	// host's time.Local. 2026-09-15 is EDT (-04:00) in New York.
+	t.Setenv("TZ", "America/New_York")
+
 	cases := []struct {
-		name    string
-		in      string
-		wantOut string
-		wantErr bool
+		name     string
+		in       string
+		wantOut  string
+		wantMeta *dueMeta
+		wantErr  bool
 	}{
 		// --due is optional.
-		{"empty is optional", "", "", false},
-		// RFC 3339 with offset — canonical example.
-		{"with offset", "2026-09-15T23:59:00-04:00", "2026-09-15T23:59:00-04:00", false},
-		{"with Z (UTC)", "2026-09-15T23:59:00Z", "2026-09-15T23:59:00Z", false},
-		{"sub-second precision", "2026-09-15T23:59:00.123Z", "2026-09-15T23:59:00.123Z", false},
-		// Date-only rejected — "due Tuesday with no time" is
-		// ambiguous; require the full RFC 3339 timestamp.
-		{"date only", "2026-09-15", "", true},
-		{"garbage", "next Tuesday", "", true},
-		// RFC 3339 requires Z or ±HH:MM.
-		{"no timezone", "2026-09-15T23:59:00", "", true},
+		{name: "empty is optional", in: "", wantOut: "", wantMeta: nil},
+		// Explicit offset -> same instant, stored as UTC.
+		{
+			name:     "explicit offset normalizes to UTC",
+			in:       "2026-09-15T23:59:00-04:00",
+			wantOut:  "2026-09-16T03:59:00Z",
+			wantMeta: &dueMeta{Input: "2026-09-15T23:59:00-04:00", Offset: "-04:00", Source: dueSourceExplicit},
+		},
+		{
+			name:     "Z stays UTC",
+			in:       "2026-09-15T23:59:00Z",
+			wantOut:  "2026-09-15T23:59:00Z",
+			wantMeta: &dueMeta{Input: "2026-09-15T23:59:00Z", Offset: "+00:00", Source: dueSourceExplicit},
+		},
+		// Sub-second precision parses but is dropped on the UTC
+		// re-format -- deadlines don't need it.
+		{
+			name:     "sub-second precision is dropped",
+			in:       "2026-09-15T23:59:00.123Z",
+			wantOut:  "2026-09-15T23:59:00Z",
+			wantMeta: &dueMeta{Input: "2026-09-15T23:59:00.123Z", Offset: "+00:00", Source: dueSourceExplicit},
+		},
+		// Zone-less -> adopt the detected local zone, then UTC. This
+		// is the requirement-2 path; due_meta records the detection.
+		{
+			name:     "zone-less adopts detected local zone",
+			in:       "2026-09-15T23:59:00",
+			wantOut:  "2026-09-16T03:59:00Z",
+			wantMeta: &dueMeta{Input: "2026-09-15T23:59:00", Zone: "America/New_York", Offset: "-04:00", Source: dueSourceAuto},
+		},
+		// Date-only is ambiguous (which time of day?) -- still
+		// rejected; require a full timestamp.
+		{name: "date only is rejected", in: "2026-09-15", wantErr: true},
+		{name: "garbage is rejected", in: "next Tuesday", wantErr: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := normalizeDueDate(tc.in)
+			got, meta, err := normalizeDueDate(tc.in)
 			if tc.wantErr {
 				if err == nil {
 					t.Fatalf("expected error for %q, got nil", tc.in)
@@ -95,9 +126,36 @@ func TestNormalizeDueDate(t *testing.T) {
 				t.Fatalf("normalizeDueDate(%q): %v", tc.in, err)
 			}
 			if got != tc.wantOut {
-				t.Errorf("normalizeDueDate(%q) = %q, want %q", tc.in, got, tc.wantOut)
+				t.Errorf("normalizeDueDate(%q) out = %q, want %q", tc.in, got, tc.wantOut)
+			}
+			if !reflect.DeepEqual(meta, tc.wantMeta) {
+				t.Errorf("normalizeDueDate(%q) meta = %#v, want %#v", tc.in, meta, tc.wantMeta)
 			}
 		})
+	}
+}
+
+func TestNormalizeDueDate_UnresolvableTZ(t *testing.T) {
+	t.Setenv("TZ", "Definitely/NotAZone")
+
+	// Zone-less input depends entirely on the local zone, which can't
+	// be resolved -- must fail loudly, not silently normalize in a
+	// fallback zone (would store the wrong instant).
+	if _, _, err := normalizeDueDate("2026-09-15T23:59:00"); err == nil {
+		t.Error("expected error for zone-less --due when $TZ is unresolvable, got nil")
+	}
+
+	// An explicit offset doesn't need the local zone, so a bad $TZ
+	// must not block it.
+	got, meta, err := normalizeDueDate("2026-09-15T23:59:00-04:00")
+	if err != nil {
+		t.Fatalf("explicit-offset --due should ignore a bad $TZ, got %v", err)
+	}
+	if got != "2026-09-16T03:59:00Z" {
+		t.Errorf("out = %q, want 2026-09-16T03:59:00Z", got)
+	}
+	if meta == nil || meta.Source != dueSourceExplicit {
+		t.Errorf("meta = %#v, want explicit-offset provenance", meta)
 	}
 }
 

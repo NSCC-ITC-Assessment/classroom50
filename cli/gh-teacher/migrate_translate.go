@@ -71,13 +71,21 @@ func assignmentToEntry(
 		return assignmentEntry{}, fmt.Errorf("source assignment %d (%q) has unknown type %q (must be one of %v)", detail.ID, detail.Slug, detail.Type, assignmentModes)
 	}
 
-	// Deadline is nullable in source; an unparseable non-null
-	// value is dropped because `due` is advisory and shouldn't
-	// abort the migration.
+	// Deadline is nullable in source; a non-null value is dropped
+	// unless it parses as an RFC 3339 timestamp WITH an offset --
+	// `due` is advisory and shouldn't abort the migration, and a
+	// zone-less source value has no knowable zone to normalize from,
+	// so guessing UTC would silently shift the deadline. A valid
+	// deadline is normalized to a UTC instant, with the verbatim
+	// source value preserved in due_meta for the audit trail.
 	due := ""
+	var dueProvenance *dueMeta
 	if detail.Deadline != nil {
-		if _, err := time.Parse(time.RFC3339, *detail.Deadline); err == nil {
-			due = *detail.Deadline
+		// loc is unused for an offset-bearing value; the hadOffset
+		// guard below rejects the zone-less case outright.
+		if t, hadOffset, err := parseDueTime(*detail.Deadline, time.UTC); err == nil && hadOffset {
+			due = t.UTC().Format(time.RFC3339)
+			dueProvenance = newDueMeta(*detail.Deadline, t, dueSourceMigrated)
 		}
 	}
 
@@ -97,6 +105,7 @@ func assignmentToEntry(
 		Name:         detail.Title,
 		Template:     targetTemplate,
 		Due:          due,
+		DueMeta:      dueProvenance,
 		Mode:         detail.Type,
 		Autograder:   defaultAutograderName,
 		MigratedFrom: mig,
