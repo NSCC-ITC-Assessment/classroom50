@@ -5,7 +5,7 @@ A `gh` CLI extension targeted at students. Written in Go using [`go-gh`](https:/
 End-user documentation lives in the wiki — install, walkthrough, and full command reference:
 
 - [Installation](https://github.com/foundation50/classroom50/wiki/Installation)
-- [Student Guide](https://github.com/foundation50/classroom50/wiki/Student-Guide)
+- [CLI Student Guide](https://github.com/foundation50/classroom50/wiki/CLI-Student-Guide)
 - [`gh student` command reference](https://github.com/foundation50/classroom50/wiki/gh-student)
 
 **Document new features on the wiki** (source: [`wiki/`](../../wiki/)), not in this README. This file is for contributors building and testing the extension locally.

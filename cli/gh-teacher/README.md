@@ -5,7 +5,7 @@ A `gh` CLI extension targeted at instructors. Written in Go using [`go-gh`](http
 End-user documentation lives in the wiki — install, walkthrough, and full command reference:
 
 - [Installation](https://github.com/foundation50/classroom50/wiki/Installation)
-- [Teacher Guide](https://github.com/foundation50/classroom50/wiki/Teacher-Guide)
+- [CLI Teacher Guide](https://github.com/foundation50/classroom50/wiki/CLI-Teacher-Guide)
 - [`gh teacher` command reference](https://github.com/foundation50/classroom50/wiki/gh-teacher)
 
 **Document new features on the wiki** (source: [`wiki/`](../../wiki/)), not in this README. This file is for contributors building and testing the extension locally.
