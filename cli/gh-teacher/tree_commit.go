@@ -23,10 +23,23 @@ const rebaseAttempts = 5
 // isn't a descendant of the current branch tip. commitTree retries.
 var errNonFastForward = errors.New("non-fast-forward ref update")
 
+// commitChange describes the mutations for a single commit: Upserts
+// (path -> new content) are created or overwritten; Deletes
+// (repo-root-relative paths) are removed from the tree. An empty
+// change (no upserts, no deletes) is a no-op.
+type commitChange struct {
+	Upserts map[string]string
+	Deletes []string
+}
+
+func (c commitChange) isEmpty() bool {
+	return len(c.Upserts) == 0 && len(c.Deletes) == 0
+}
+
 // commitTree is the shared optimistic-update-with-rebase helper for
-// teacher-side writes to <org>/classroom50. build is invoked per
-// attempt with the parent commit SHA so it sees the current state
-// of every file it intends to modify.
+// teacher-side upserts to <org>/classroom50. It covers the common
+// upsert-only case where build returns a path -> content map; for
+// commits that also delete files, use commitTreeChange directly.
 //
 // Return shape:
 //   - ("<sha>", nil) — commit landed.
@@ -42,24 +55,52 @@ func commitTree(
 	owner, repo, branch, message string,
 	build func(parentSHA string) (map[string]string, error),
 ) (string, error) {
+	return commitTreeChange(client, owner, repo, branch, message,
+		func(parentSHA string) (commitChange, error) {
+			files, err := build(parentSHA)
+			if err != nil {
+				return commitChange{}, err
+			}
+			return commitChange{Upserts: files}, nil
+		})
+}
+
+// commitTreeChange is commitTree's deletion-aware core. build is
+// invoked per attempt with the parent commit SHA so it sees the
+// current state of every path it intends to upsert or delete.
+//
+// Return shape:
+//   - ("<sha>", nil) — commit landed.
+//   - ("", nil)      — build returned an empty change; no-op.
+//   - ("", err)      — failure (build can signal one via (_, err)).
+//
+// Reset any per-attempt accumulators at the top of each build call
+// so a retry doesn't see stale state.
+func commitTreeChange(
+	client *api.RESTClient,
+	owner, repo, branch, message string,
+	build func(parentSHA string) (commitChange, error),
+) (string, error) {
 	for attempt := 0; attempt < rebaseAttempts; attempt++ {
 		parentSHA, parentTreeSHA, err := refAndTree(client, owner, repo, branch)
 		if err != nil {
 			return "", err
 		}
 
-		files, err := build(parentSHA)
+		change, err := build(parentSHA)
 		if err != nil {
 			return "", err
 		}
-		if len(files) == 0 {
+		if change.isEmpty() {
 			return "", nil
 		}
 
-		entries, err := uploadBlobs(client, owner, repo, files)
+		entries, err := uploadBlobs(client, owner, repo, change.Upserts)
 		if err != nil {
 			return "", err
 		}
+		entries = append(entries, deletionEntries(change.Deletes)...)
+
 		treeSHA, err := createTree(client, owner, repo, parentTreeSHA, entries)
 		if err != nil {
 			return "", err

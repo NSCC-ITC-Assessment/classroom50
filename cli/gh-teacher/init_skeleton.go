@@ -332,11 +332,15 @@ func refAndTree(client *api.RESTClient, owner, repo, defaultBranch string) (comm
 	return refResp.Object.SHA, commitResp.Tree.SHA, nil
 }
 
+// treeEntry is one entry in a git Tree create request. SHA is a
+// pointer so a nil value marshals to `"sha":null`, which the Trees
+// API treats as "remove this path from base_tree" — see
+// deletionEntries. Upserts carry a non-nil blob SHA from uploadBlobs.
 type treeEntry struct {
-	Path string `json:"path"`
-	Mode string `json:"mode"`
-	Type string `json:"type"`
-	SHA  string `json:"sha"`
+	Path string  `json:"path"`
+	Mode string  `json:"mode"`
+	Type string  `json:"type"`
+	SHA  *string `json:"sha"`
 }
 
 // uploadBlobs creates one blob per file and returns the tree
@@ -368,14 +372,33 @@ func uploadBlobs(client *api.RESTClient, owner, repo string, files map[string]st
 		if err := client.Post(blobPath, bytes.NewReader(body), &blobResp); err != nil {
 			return nil, fmt.Errorf("POST %s (%s): %w", blobPath, p, err)
 		}
+		sha := blobResp.SHA
 		entries = append(entries, treeEntry{
 			Path: p,
 			Mode: "100644",
 			Type: "blob",
-			SHA:  blobResp.SHA,
+			SHA:  &sha,
 		})
 	}
 	return entries, nil
+}
+
+// deletionEntries builds tree entries that remove `paths` from
+// base_tree. A nil SHA marshals to `"sha":null`, which the git Trees
+// API treats as a deletion. Paths are sorted for a deterministic
+// payload. Git prunes any trees left empty by the deletions, so only
+// blob paths need listing.
+func deletionEntries(paths []string) []treeEntry {
+	if len(paths) == 0 {
+		return nil
+	}
+	sorted := append([]string(nil), paths...)
+	sort.Strings(sorted)
+	entries := make([]treeEntry, 0, len(sorted))
+	for _, p := range sorted {
+		entries = append(entries, treeEntry{Path: p, Mode: "100644", Type: "blob", SHA: nil})
+	}
+	return entries
 }
 
 func createTree(client *api.RESTClient, owner, repo, baseTreeSHA string, entries []treeEntry) (string, error) {
