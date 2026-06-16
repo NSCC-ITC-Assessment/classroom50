@@ -30,6 +30,7 @@ func main() {
 	root.AddCommand(logoutCmd())
 	root.AddCommand(acceptCmd())
 	root.AddCommand(inviteCmd())
+	root.AddCommand(groupCmd())
 	root.AddCommand(submitCmd())
 
 	// Signal-aware root context: subcommands see cmd.Context()

@@ -144,10 +144,20 @@ class TestSchemaRejects:
         assert _errors(_manifest(_entry(due_date="2026-09-15"))) != []
 
     def test_max_group_size_zero_must_be_omitted(self):
-        # Documented write-side strictness (see the schema description):
-        # the CLI's parser tolerates 0 as "unset", but clients should
-        # write the normalized form (omit the field).
+        # max_group_size: 0 is invalid everywhere — below the minimum of
+        # 2, and an individual entry must omit the field entirely.
         assert _errors(_manifest(_entry(max_group_size=0))) != []
+
+    def test_group_mode_requires_max_group_size(self):
+        # mode: group with no max_group_size is rejected by the
+        # mode<->size invariant (group requires it, >= 2).
+        assert _errors(_manifest(_entry(mode="group"))) != []
+        # size below the minimum (1) is rejected too.
+        assert _errors(_manifest(_entry(mode="group", max_group_size=1))) != []
+
+    def test_individual_mode_forbids_max_group_size(self):
+        # mode: individual must NOT carry max_group_size.
+        assert _errors(_manifest(_entry(max_group_size=3))) != []
 
     def test_autograder_must_be_written_explicitly(self):
         # Same documented strictness: the CLI's parser normalizes a

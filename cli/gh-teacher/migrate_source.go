@@ -75,6 +75,7 @@ type classroomAssignmentDetail struct {
 	InviteLink      string                    `json:"invite_link"`
 	Slug            string                    `json:"slug"`
 	Deadline        *string                   `json:"deadline"`
+	MaxTeams        *int                      `json:"max_teams"`
 	StarterCodeRepo *classroomStarterCodeRepo `json:"starter_code_repository"`
 	Classroom       classroomListItem         `json:"classroom"`
 }

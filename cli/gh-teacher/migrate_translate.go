@@ -100,6 +100,20 @@ func assignmentToEntry(
 		mig.StarterRepo = detail.StarterCodeRepo.FullName
 	}
 
+	// Group assignments must carry a usable max_group_size. Use the
+	// source classroom's max_teams when it reports a sane value (>= 2);
+	// otherwise fall back to the cap so a migration never fails on a
+	// missing/odd source value — the teacher can tighten it later via
+	// `gh teacher assignment add --mode group --max-group-size`.
+	maxGroupSize := 0
+	if detail.Type == assignmentModeGroup {
+		if detail.MaxTeams != nil && *detail.MaxTeams >= 2 && *detail.MaxTeams <= maxGroupSizeCap {
+			maxGroupSize = *detail.MaxTeams
+		} else {
+			maxGroupSize = maxGroupSizeCap
+		}
+	}
+
 	return assignmentEntry{
 		Slug:         detail.Slug,
 		Name:         detail.Title,
@@ -107,6 +121,7 @@ func assignmentToEntry(
 		Due:          due,
 		DueMeta:      dueProvenance,
 		Mode:         detail.Type,
+		MaxGroupSize: maxGroupSize,
 		Autograder:   defaultAutograderName,
 		MigratedFrom: mig,
 	}, nil

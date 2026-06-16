@@ -297,13 +297,29 @@ func TestRunAssignmentAdd_WithTestsPersists(t *testing.T) {
 	tests := []testSpec{{Name: "compiles", Type: "run", Run: "true", Points: 1}}
 	var stdout, stderr bytes.Buffer
 	err := runAssignmentAdd(client, &stdout, &stderr, "o", "cs-principles", "hello", "Hello", "",
-		templateArg{Owner: "cs50", Repo: "hello-template"}, "", nil, "individual", "default", nil, tests)
+		templateArg{Owner: "cs50", Repo: "hello-template"}, "", nil, "individual", 0, "default", nil, tests)
 	if err != nil {
 		t.Fatalf("runAssignmentAdd: %v", err)
 	}
 	got := decodeCommitted(t, fix).Assignments[0].Tests
 	if len(got) != 1 || got[0].Name != "compiles" {
 		t.Errorf("committed tests = %#v, want the --tests array", got)
+	}
+}
+
+func TestRunAssignmentAdd_GroupModePersists(t *testing.T) {
+	server, fix := newTestCmdServer(t, helloAssignments(""), false)
+	client := newTestRESTClient(t, server)
+
+	var stdout, stderr bytes.Buffer
+	err := runAssignmentAdd(client, &stdout, &stderr, "o", "cs-principles", "hello", "Hello", "",
+		templateArg{Owner: "cs50", Repo: "hello-template"}, "", nil, "group", 3, "default", nil, nil)
+	if err != nil {
+		t.Fatalf("runAssignmentAdd(group): %v", err)
+	}
+	entry := decodeCommitted(t, fix).Assignments[0]
+	if entry.Mode != "group" || entry.MaxGroupSize != 3 {
+		t.Errorf("committed entry = mode %q max_group_size %d, want group/3", entry.Mode, entry.MaxGroupSize)
 	}
 }
 
@@ -314,7 +330,7 @@ func TestRunAssignmentAdd_TestsRejectedWithAutograder(t *testing.T) {
 	tests := []testSpec{{Name: "compiles", Type: "run", Run: "true", Points: 1}}
 	var stdout, stderr bytes.Buffer
 	err := runAssignmentAdd(client, &stdout, &stderr, "o", "cs-principles", "hello", "Hello", "",
-		templateArg{Owner: "cs50", Repo: "hello-template"}, "", nil, "individual", "default", nil, tests)
+		templateArg{Owner: "cs50", Repo: "hello-template"}, "", nil, "individual", 0, "default", nil, tests)
 	if err == nil || !strings.Contains(err.Error(), "mutually exclusive") {
 		t.Fatalf("expected mutual-exclusion error, got %v", err)
 	}
@@ -337,7 +353,7 @@ func TestRunAssignmentAdd_ReplaceWithoutTestsWarns(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 	err := runAssignmentAdd(client, &stdout, &stderr, "o", "cs-principles", "hello", "Hello", "",
-		templateArg{Owner: "cs50", Repo: "hello-template"}, "", nil, "individual", "default", nil, nil)
+		templateArg{Owner: "cs50", Repo: "hello-template"}, "", nil, "individual", 0, "default", nil, nil)
 	if err != nil {
 		t.Fatalf("runAssignmentAdd: %v", err)
 	}
@@ -358,7 +374,7 @@ func TestRunAssignmentAdd_ExplicitEmptyTestsClearsSilently(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 	err := runAssignmentAdd(client, &stdout, &stderr, "o", "cs-principles", "hello", "Hello", "",
-		templateArg{Owner: "cs50", Repo: "hello-template"}, "", nil, "individual", "default", nil, []testSpec{})
+		templateArg{Owner: "cs50", Repo: "hello-template"}, "", nil, "individual", 0, "default", nil, []testSpec{})
 	if err != nil {
 		t.Fatalf("runAssignmentAdd: %v", err)
 	}
@@ -482,5 +498,42 @@ func TestRunAssignmentTestList_EmptyEmitsJSONArray(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "no declarative tests") {
 		t.Errorf("stderr = %q, want no-tests hint", stderr.String())
+	}
+}
+
+func TestValidateModeAndSizeFlags(t *testing.T) {
+	cases := []struct {
+		name         string
+		mode         string
+		maxGroupSize int
+		sizeProvided bool
+		wantMode     string
+		wantErrPart  string // "" = expect success
+	}{
+		{"individual default, no size", "", 0, false, "individual", ""},
+		{"explicit individual, no size", "individual", 0, false, "individual", ""},
+		{"individual with size rejected", "individual", 3, true, "", "only valid with --mode group"},
+		{"group with valid size", "group", 3, true, "group", ""},
+		{"group without size rejected", "group", 0, false, "", "must be >= 2"},
+		{"group with size 1 rejected", "group", 1, true, "", "must be >= 2"},
+		{"group above cap rejected", "group", 101, true, "", "max_group_size"},
+		{"unknown mode rejected", "team", 0, false, "", "invalid --mode"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			gotMode, err := validateModeAndSizeFlags(tc.mode, tc.maxGroupSize, tc.sizeProvided)
+			if tc.wantErrPart == "" {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				if gotMode != tc.wantMode {
+					t.Errorf("mode = %q, want %q", gotMode, tc.wantMode)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErrPart) {
+				t.Fatalf("err = %v, want substring %q", err, tc.wantErrPart)
+			}
+		})
 	}
 }

@@ -27,11 +27,12 @@ const pagesFetchTimeout = 15 * time.Second
 // unrecognized fields decode silently so future shape additions
 // work without a flag day.
 type assignmentEntry struct {
-	Slug       string      `json:"slug"`
-	Name       string      `json:"name"`
-	Mode       string      `json:"mode"`
-	Template   templateRef `json:"template"`
-	Autograder string      `json:"autograder"`
+	Slug         string      `json:"slug"`
+	Name         string      `json:"name"`
+	Mode         string      `json:"mode"`
+	MaxGroupSize int         `json:"max_group_size,omitempty"`
+	Template     templateRef `json:"template"`
+	Autograder   string      `json:"autograder"`
 }
 
 // defaultAutograderName is the fallback when entry.Autograder is

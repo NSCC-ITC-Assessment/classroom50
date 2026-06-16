@@ -182,10 +182,23 @@ func acceptOrgInvite(client *api.RESTClient, org string) (AcceptStatus, error) {
 	return AcceptStatus{StatusCode: http.StatusOK}, nil
 }
 
-// assignmentModeIndividual is the only mode `gh student accept`
-// supports; mirrors the teacher-side constant. Other modes surface
-// a clear "not yet supported" error.
+// assignmentModeIndividual and assignmentModeGroup are the modes
+// `gh student accept` supports; they mirror the teacher-side constants.
+// Both are accepted (the first accepter creates a group repo just like
+// an individual one); only an unrecognized mode surfaces an error.
 const assignmentModeIndividual = "individual"
+const assignmentModeGroup = "group"
+
+// checkAcceptableMode gates `gh student accept` by assignment mode.
+// Both individual and group are accepted (and an empty mode defaults to
+// individual); only an unrecognized mode is rejected. Pure helper so the
+// lifted group seam is unit-testable.
+func checkAcceptableMode(assignment, mode string) error {
+	if mode != "" && mode != assignmentModeIndividual && mode != assignmentModeGroup {
+		return fmt.Errorf("assignment %q has unsupported mode %q", assignment, mode)
+	}
+	return nil
+}
 
 func acceptAssignment(cmd *cobra.Command, client *api.RESTClient, out io.Writer, org, classroom, assignment string) error {
 	username, err := getAuthedUsername(client)
@@ -200,9 +213,11 @@ func acceptAssignment(cmd *cobra.Command, client *api.RESTClient, out io.Writer,
 	if err != nil {
 		return err
 	}
-	if entry.Mode != "" && entry.Mode != assignmentModeIndividual {
-		return fmt.Errorf("assignment %q is mode %q — group assignments are not yet supported",
-			assignment, entry.Mode)
+	// Group assignments are accepted normally by the first accepter:
+	// the repo is created under their name and teammates join it via
+	// `gh student group join`. Only an unknown mode is rejected.
+	if err := checkAcceptableMode(assignment, entry.Mode); err != nil {
+		return err
 	}
 	if entry.Template.Owner == "" || entry.Template.Repo == "" || entry.Template.Branch == "" {
 		return fmt.Errorf("assignment %q has an incomplete template ref (owner=%q repo=%q branch=%q) — ask your instructor to re-run `gh teacher assignment add`",

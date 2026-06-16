@@ -10,11 +10,9 @@ import (
 	"time"
 )
 
-// Assignment modes accepted at the parse/write layer. `individual`
-// is the end-to-end-working path; `group` is accepted at the schema
-// layer so migrate can losslessly record group assignments, but
-// `gh teacher assignment add --mode group` and `gh student accept`
-// still reject group at their own seams until group support lands.
+// Assignment modes accepted at the parse/write layer. Both are
+// end-to-end supported: `individual` (one repo per student) and
+// `group` (a shared repo a teammate joins, bounded by max_group_size).
 const (
 	assignmentModeIndividual = "individual"
 	assignmentModeGroup      = "group"
@@ -66,10 +64,10 @@ type assignmentsJSON struct {
 // default autograder.py > vacuous pass. See wiki/Autograders.md.
 // (An earlier `Tests` field was removed in PR #58 with the matrix
 // autograder; this is its declarative successor on runner.py.)
-// MaxGroupSize is accepted at the schema layer for group-mode entries
-// (mirroring how `mode: "group"` itself is accepted but behaviorally
-// unsupported) so GUI clients can persist it today; nothing consumes it
-// yet. 0 means unset and omits from the file.
+// MaxGroupSize bounds the collaborators on a group repo. Required
+// (>= 2) for group-mode entries; must be 0 (unset, omitted) for
+// individual. The limit is enforced within the CLI at join time —
+// direct GitHub-UI invites can exceed it (documented limitation).
 type assignmentEntry struct {
 	Slug         string           `json:"slug"`
 	Name         string           `json:"name"`
@@ -90,7 +88,7 @@ const maxGroupSizeCap = 100
 
 func validateMaxGroupSize(n int) error {
 	if n < 0 || n > maxGroupSizeCap {
-		return fmt.Errorf("max_group_size %d must be between 1 and %d (or omitted)", n, maxGroupSizeCap)
+		return fmt.Errorf("max_group_size %d out of range (0 = unset/individual, or 2..%d for group mode)", n, maxGroupSizeCap)
 	}
 	return nil
 }
@@ -445,6 +443,18 @@ func validateAssignmentEntry(entry assignmentEntry) error {
 	if err := validateMaxGroupSize(entry.MaxGroupSize); err != nil {
 		return err
 	}
+	// Mode/size relationship: a group assignment must carry a usable
+	// limit (>= 2); an individual one must not carry a size at all.
+	switch entry.Mode {
+	case assignmentModeGroup:
+		if entry.MaxGroupSize < 2 {
+			return fmt.Errorf("group assignment %q must set max_group_size >= 2 (got %d)", entry.Slug, entry.MaxGroupSize)
+		}
+	case assignmentModeIndividual:
+		if entry.MaxGroupSize != 0 {
+			return fmt.Errorf("individual assignment %q must not set max_group_size (got %d)", entry.Slug, entry.MaxGroupSize)
+		}
+	}
 	if entry.Runtime != nil {
 		if err := validateRuntime(*entry.Runtime); err != nil {
 			return err
@@ -503,6 +513,21 @@ func validateExistingEntry(entry assignmentEntry) error {
 	}
 	if err := validateMaxGroupSize(entry.MaxGroupSize); err != nil {
 		return fmt.Errorf("entry %q: %w", entry.Slug, err)
+	}
+	switch entry.Mode {
+	case assignmentModeGroup:
+		// Parse and write paths share the same strict invariant: a
+		// group assignment must carry a usable size (>= 2). Pre-launch,
+		// we don't preserve older files that predate group support, so
+		// the parser rejects an unset/too-small group size rather than
+		// tolerating it.
+		if entry.MaxGroupSize < 2 {
+			return fmt.Errorf("entry %q is group mode but max_group_size is %d (must be >= 2)", entry.Slug, entry.MaxGroupSize)
+		}
+	case assignmentModeIndividual:
+		if entry.MaxGroupSize != 0 {
+			return fmt.Errorf("entry %q is individual mode but sets max_group_size %d", entry.Slug, entry.MaxGroupSize)
+		}
 	}
 	if entry.Runtime != nil {
 		if err := validateRuntime(*entry.Runtime); err != nil {

@@ -485,8 +485,7 @@ func TestUpsertAssignment_CaseSensitive(t *testing.T) {
 }
 
 func TestMaxGroupSize_RoundTripsAndBounds(t *testing.T) {
-	// Accepted at the schema layer (for GUI clients / future group mode)
-	// even though nothing consumes it yet; 0 omits from the file.
+	// Group entries carry max_group_size (>= 2); 0 omits from the file.
 	body := `{
   "schema": "classroom50/assignments/v1",
   "assignments": [
@@ -587,19 +586,49 @@ func TestValidateAssignmentEntry_HappyPath(t *testing.T) {
 	}
 }
 
-// TestValidateAssignmentEntry_GroupMode: `mode: "group"` is now
-// schema-legal; the group-acceptance rejection lives at narrower
-// seams (assignment add --mode, student accept).
+// TestValidateAssignmentEntry_GroupMode: a group entry is schema-legal
+// when it carries a usable max_group_size (>= 2).
 func TestValidateAssignmentEntry_GroupMode(t *testing.T) {
 	entry := assignmentEntry{
-		Slug:       "team-project",
-		Name:       "Team Project",
-		Template:   templateRef{Owner: "cs50", Repo: "team-project-template", Branch: "main"},
-		Mode:       "group",
-		Autograder: "default",
+		Slug:         "team-project",
+		Name:         "Team Project",
+		Template:     templateRef{Owner: "cs50", Repo: "team-project-template", Branch: "main"},
+		Mode:         "group",
+		MaxGroupSize: 4,
+		Autograder:   "default",
 	}
 	if err := validateAssignmentEntry(entry); err != nil {
 		t.Errorf("validateAssignmentEntry(group): %v", err)
+	}
+}
+
+// TestValidateAssignmentEntry_GroupModeRequiresSize: group mode without
+// a usable size, and individual mode carrying a size, are both rejected.
+func TestValidateAssignmentEntry_GroupModeRequiresSize(t *testing.T) {
+	groupNoSize := assignmentEntry{
+		Slug: "team", Name: "Team",
+		Template:   templateRef{Owner: "cs50", Repo: "t", Branch: "main"},
+		Mode:       "group",
+		Autograder: "default",
+	}
+	if err := validateAssignmentEntry(groupNoSize); err == nil || !strings.Contains(err.Error(), "max_group_size") {
+		t.Errorf("group without size: got %v, want a max_group_size error", err)
+	}
+	// Parse path is strict too (no legacy tolerance pre-launch): a group
+	// entry with no/too-small size is rejected on read.
+	if err := validateExistingEntry(groupNoSize); err == nil || !strings.Contains(err.Error(), "max_group_size") {
+		t.Errorf("parse-path group without size: got %v, want a max_group_size error", err)
+	}
+
+	individualWithSize := assignmentEntry{
+		Slug: "solo", Name: "Solo",
+		Template:     templateRef{Owner: "cs50", Repo: "t", Branch: "main"},
+		Mode:         "individual",
+		MaxGroupSize: 3,
+		Autograder:   "default",
+	}
+	if err := validateAssignmentEntry(individualWithSize); err == nil || !strings.Contains(err.Error(), "max_group_size") {
+		t.Errorf("individual with size: got %v, want a max_group_size error", err)
 	}
 }
 

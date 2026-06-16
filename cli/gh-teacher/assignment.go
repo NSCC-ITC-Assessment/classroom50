@@ -43,18 +43,21 @@ func assignmentCmd() *cobra.Command {
 	return cmd
 }
 
-// assignmentAddCmd: `--mode` accepts only "individual"; the flag is
-// exposed so CI scripts can pin the value across CLI versions.
+// assignmentAddCmd: `--mode` accepts `individual` (default) or
+// `group`. Group mode requires `--max-group-size` (>= 2); the size is
+// enforced within the CLI when students join a group repo (direct
+// GitHub-UI invites can bypass it — a documented limitation).
 func assignmentAddCmd() *cobra.Command {
 	var (
-		name        string
-		template    string
-		description string
-		due         string
-		mode        string
-		autograder  string
-		runtimeFile string
-		testsFile   string
+		name         string
+		template     string
+		description  string
+		due          string
+		mode         string
+		maxGroupSize int
+		autograder   string
+		runtimeFile  string
+		testsFile    string
 	)
 
 	cmd := &cobra.Command{
@@ -133,12 +136,9 @@ func assignmentAddCmd() *cobra.Command {
 			if templateVal == "" {
 				return errors.New("--template is required (e.g. --template cs50/hello-template or --template cs50/hello-template@main)")
 			}
-			modeVal := strings.TrimSpace(mode)
-			if modeVal == "" {
-				modeVal = assignmentModeIndividual
-			}
-			if modeVal != assignmentModeIndividual {
-				return fmt.Errorf("invalid --mode %q: only `individual` is supported (group assignments are planned for a future release)", modeVal)
+			modeVal, err := validateModeAndSizeFlags(mode, maxGroupSize, cmd.Flags().Changed("max-group-size"))
+			if err != nil {
+				return err
 			}
 			autograderVal := strings.TrimSpace(autograder)
 			if autograderVal == "" {
@@ -170,7 +170,7 @@ func assignmentAddCmd() *cobra.Command {
 			}
 			return runAssignmentAdd(client, cmd.OutOrStdout(), cmd.ErrOrStderr(),
 				org, classroom, slug, nameVal, strings.TrimSpace(description),
-				tmplArg, dueVal, dueMetaVal, modeVal, autograderVal, runtime, tests)
+				tmplArg, dueVal, dueMetaVal, modeVal, maxGroupSize, autograderVal, runtime, tests)
 		},
 	}
 
@@ -178,7 +178,8 @@ func assignmentAddCmd() *cobra.Command {
 	cmd.Flags().StringVar(&template, "template", "", "Template repo as <owner>/<repo> or <owner>/<repo>@<branch> (required)")
 	cmd.Flags().StringVar(&description, "description", "", "Optional one-line description")
 	cmd.Flags().StringVar(&due, "due", "", "Optional due date (e.g. 2026-09-15T23:59:00-04:00); stored as UTC. Omit the offset to use the machine's local timezone")
-	cmd.Flags().StringVar(&mode, "mode", assignmentModeIndividual, "Assignment mode: only `individual` is supported (group assignments are planned for a future release)")
+	cmd.Flags().StringVar(&mode, "mode", assignmentModeIndividual, "Assignment mode: `individual` (default) or `group`. Group mode requires --max-group-size.")
+	cmd.Flags().IntVar(&maxGroupSize, "max-group-size", 0, "Maximum collaborators on a group repo (>= 2; required with --mode group). Enforced within the CLI when students join; direct GitHub-UI invites can bypass it.")
 	cmd.Flags().StringVar(&autograder, "autograder", defaultAutograderName, "Autograder workflow shim this assignment opts into; resolves to <classroom>/autograders/<name>.yaml in the config repo")
 	cmd.Flags().StringVar(&runtimeFile, "runtime", "", "Path to a JSON file describing the runtime environment (runs-on, python/node/java/go versions, apt packages, or container image), or `-` to read from stdin. Omit for ubuntu-latest + Python 3.12.")
 	cmd.Flags().StringVar(&testsFile, "tests", "", "Path to a JSON file with a bare array of declarative test specs (io/run/python), or `-` to read from stdin. Sets the assignment's `tests` block; mutually exclusive with a per-assignment autograder.py. See `gh teacher assignment test --help`.")
@@ -353,7 +354,37 @@ func assignmentsFilePath(classroom string) string {
 // delete of the referenced autograder loses cleanly on retry rather
 // than landing a dangling reference. Same-slug races are
 // last-writer-wins; both commits stay in history for `git revert`.
-func runAssignmentAdd(client *api.RESTClient, out, errOut io.Writer, org, classroom, slug, name, description string, tmpl templateArg, due string, dueMetaVal *dueMeta, mode, autograder string, runtime *runtimeRef, tests []testSpec) error {
+// validateModeAndSizeFlags normalizes/validates the --mode and
+// --max-group-size flag pair for `assignment add`. Returns the resolved
+// mode. Group mode requires --max-group-size (>= 2, within the cap);
+// individual mode must not set it (sizeProvided guards the explicit
+// case). Extracted as a pure function so the flag contract is
+// unit-testable without executing the full command.
+func validateModeAndSizeFlags(mode string, maxGroupSize int, sizeProvided bool) (string, error) {
+	modeVal := strings.TrimSpace(mode)
+	if modeVal == "" {
+		modeVal = assignmentModeIndividual
+	}
+	if !isValidAssignmentMode(modeVal) {
+		return "", fmt.Errorf("invalid --mode %q: expected one of %s", modeVal, strings.Join(assignmentModes, ", "))
+	}
+	switch modeVal {
+	case assignmentModeGroup:
+		if maxGroupSize < 2 {
+			return "", fmt.Errorf("--max-group-size must be >= 2 for a group assignment (got %d)", maxGroupSize)
+		}
+		if err := validateMaxGroupSize(maxGroupSize); err != nil {
+			return "", err
+		}
+	default:
+		if sizeProvided {
+			return "", errors.New("--max-group-size is only valid with --mode group")
+		}
+	}
+	return modeVal, nil
+}
+
+func runAssignmentAdd(client *api.RESTClient, out, errOut io.Writer, org, classroom, slug, name, description string, tmpl templateArg, due string, dueMetaVal *dueMeta, mode string, maxGroupSize int, autograder string, runtime *runtimeRef, tests []testSpec) error {
 	branch, err := resolveConfigRepoBranch(client, org)
 	if err != nil {
 		return err
@@ -365,16 +396,17 @@ func runAssignmentAdd(client *api.RESTClient, out, errOut io.Writer, org, classr
 	}
 
 	entry := assignmentEntry{
-		Slug:        slug,
-		Name:        name,
-		Description: description,
-		Template:    resolved,
-		Due:         due,
-		DueMeta:     dueMetaVal,
-		Mode:        mode,
-		Autograder:  autograder,
-		Runtime:     runtime,
-		Tests:       tests,
+		Slug:         slug,
+		Name:         name,
+		Description:  description,
+		Template:     resolved,
+		Due:          due,
+		DueMeta:      dueMetaVal,
+		Mode:         mode,
+		MaxGroupSize: maxGroupSize,
+		Autograder:   autograder,
+		Runtime:      runtime,
+		Tests:        tests,
 	}
 	if err := validateAssignmentEntry(entry); err != nil {
 		return err

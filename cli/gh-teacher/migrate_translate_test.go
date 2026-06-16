@@ -123,12 +123,14 @@ func TestAssignmentToEntry(t *testing.T) {
 		}
 	})
 
-	t.Run("group mode passes the schema layer", func(t *testing.T) {
+	t.Run("group mode maps max_teams to max_group_size", func(t *testing.T) {
+		maxTeams := 4
 		detail := classroomAssignmentDetail{
-			ID:    1,
-			Slug:  "team-project",
-			Title: "Team Project",
-			Type:  "group",
+			ID:       1,
+			Slug:     "team-project",
+			Title:    "Team Project",
+			Type:     "group",
+			MaxTeams: &maxTeams,
 			StarterCodeRepo: &classroomStarterCodeRepo{
 				FullName: "src/team-project", DefaultBranch: "main",
 			},
@@ -139,6 +141,23 @@ func TestAssignmentToEntry(t *testing.T) {
 		}
 		if entry.Mode != "group" {
 			t.Errorf("mode = %q, want %q (preserved losslessly)", entry.Mode, "group")
+		}
+		if entry.MaxGroupSize != 4 {
+			t.Errorf("max_group_size = %d, want 4 (mapped from source max_teams)", entry.MaxGroupSize)
+		}
+	})
+
+	t.Run("group mode without usable max_teams falls back to the cap", func(t *testing.T) {
+		detail := classroomAssignmentDetail{
+			ID: 1, Slug: "team-project", Title: "Team Project", Type: "group",
+			StarterCodeRepo: &classroomStarterCodeRepo{FullName: "src/team-project", DefaultBranch: "main"},
+		}
+		entry, err := assignmentToEntry(detail, 1, target, migratedAt)
+		if err != nil {
+			t.Fatalf("assignmentToEntry(group, no max_teams): %v", err)
+		}
+		if entry.MaxGroupSize != maxGroupSizeCap {
+			t.Errorf("max_group_size = %d, want the cap %d as fallback", entry.MaxGroupSize, maxGroupSizeCap)
 		}
 	})
 
