@@ -12,7 +12,7 @@ import (
 // GitHub Classroom imports), replacing those per-call-site hand-rolled
 // loops. (The uncapped org-repos walks in download.go/teardown.go are
 // deliberately not migrated yet — adopting the page cap there is a
-// separate behavior change; see TECH_DEBT #007.)
+// separate behavior change.)
 //
 //   - pageURL(page) builds the request path for a 1-based page number
 //     (callers own per_page/page formatting and any query prefix).
