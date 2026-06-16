@@ -20,6 +20,7 @@ func rosterCmd() *cobra.Command {
 		Short: "Manage the classroom roster (students.csv)",
 		Long: "Manage student rows in <org>/classroom50/<classroom>/students.csv.\n\n" +
 			"Subcommands:\n" +
+			"  list    print the roster (table, --json, or --quiet username-only)\n" +
 			"  add     append or upsert one student (resolves github_id, invites to org)\n" +
 			"  remove  remove one student from the roster (does NOT touch org membership)\n" +
 			"  import  bulk upsert from a local CSV (5-column input accepted; github_id auto-filled)\n\n" +
@@ -30,6 +31,7 @@ func rosterCmd() *cobra.Command {
 			"numeric github_id (resolved via GET /users/{username}) so a\n" +
 			"username change mid-class doesn't desynchronize records.",
 	}
+	cmd.AddCommand(rosterListCmd())
 	cmd.AddCommand(rosterAddCmd())
 	cmd.AddCommand(rosterRemoveCmd())
 	cmd.AddCommand(rosterImportCmd())
