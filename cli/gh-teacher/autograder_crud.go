@@ -83,15 +83,8 @@ func autograderShowCmd() *cobra.Command {
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cmd.SilenceUsage = true
-			org := strings.TrimSpace(args[0])
-			classroom := strings.TrimSpace(args[1])
-			if org == "" {
-				return errors.New("org must not be empty")
-			}
-			if classroom == "" {
-				return errors.New("classroom short-name must not be empty")
-			}
-			if err := validateShortName(classroom, "classroom"); err != nil {
+			org, classroom, err := parseOrgClassroom(args)
+			if err != nil {
 				return err
 			}
 			client, err := requireAuthClient(cmd)
@@ -210,15 +203,8 @@ func autograderListCmd() *cobra.Command {
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cmd.SilenceUsage = true
-			org := strings.TrimSpace(args[0])
-			classroom := strings.TrimSpace(args[1])
-			if org == "" {
-				return errors.New("org must not be empty")
-			}
-			if classroom == "" {
-				return errors.New("classroom short-name must not be empty")
-			}
-			if err := validateShortName(classroom, "classroom"); err != nil {
+			org, classroom, err := parseOrgClassroom(args)
+			if err != nil {
 				return err
 			}
 			client, err := requireAuthClient(cmd)
@@ -342,15 +328,8 @@ func autograderRemoveCmd() *cobra.Command {
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cmd.SilenceUsage = true
-			org := strings.TrimSpace(args[0])
-			classroom := strings.TrimSpace(args[1])
-			if org == "" {
-				return errors.New("org must not be empty")
-			}
-			if classroom == "" {
-				return errors.New("classroom short-name must not be empty")
-			}
-			if err := validateShortName(classroom, "classroom"); err != nil {
+			org, classroom, err := parseOrgClassroom(args)
+			if err != nil {
 				return err
 			}
 			client, err := requireAuthClient(cmd)

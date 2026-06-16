@@ -174,32 +174,24 @@ func collectOrgMembers(client *api.RESTClient, org string) ([]memberListEntry, e
 // silently dropping the pending set, since "no pending invites" and
 // "can't read invites" are very different operator signals.
 func collectOrgInvitations(client *api.RESTClient, org string) ([]memberListEntry, error) {
-	var entries []memberListEntry
 	base := fmt.Sprintf("orgs/%s/invitations", url.PathEscape(org))
-	for page := 1; page <= memberPagesMax; page++ {
-		path := fmt.Sprintf("%s?per_page=%d&page=%d", base, memberAPIPerPage, page)
-		var batch []struct {
-			Login string `json:"login"`
-			ID    int64  `json:"id"`
-			Role  string `json:"role"`
-		}
-		if err := client.Get(path, &batch); err != nil {
-			return nil, classifyMembershipReadError(path, fmt.Sprintf("%s pending invitations", org), err)
-		}
-		for _, inv := range batch {
-			entries = append(entries, memberListEntry{
-				Login:    inv.Login,
-				Kind:     memberKindOrgInvitation,
-				Role:     normalizeInviteRole(inv.Role),
-				GitHubID: inv.ID,
-			})
-		}
-		if len(batch) < memberAPIPerPage {
-			break
-		}
-		if page == memberPagesMax {
-			return nil, fmt.Errorf("collectOrgInvitations(%s): hit %d-page safety cap", org, memberPagesMax)
-		}
+	subject := fmt.Sprintf("%s pending invitations", org)
+	invites, err := paginateAll[orgInvitation](client, memberAPIPerPage, memberPagesMax,
+		func(page int) string {
+			return fmt.Sprintf("%s?per_page=%d&page=%d", base, memberAPIPerPage, page)
+		},
+		func(path string, err error) error { return classifyMembershipReadError(path, subject, err) })
+	if err != nil {
+		return nil, err
+	}
+	entries := make([]memberListEntry, 0, len(invites))
+	for _, inv := range invites {
+		entries = append(entries, memberListEntry{
+			Login:    inv.Login,
+			Kind:     memberKindOrgInvitation,
+			Role:     normalizeInviteRole(inv.Role),
+			GitHubID: inv.ID,
+		})
 	}
 	return entries, nil
 }
@@ -221,43 +213,49 @@ func normalizeInviteRole(role string) string {
 // runMemberListRepo lists collaborators on a repo with their
 // permission level (role_name). Read-only.
 func runMemberListRepo(client *api.RESTClient, out, errOut io.Writer, owner, repo string, asJSON, quiet bool) error {
-	var entries []memberListEntry
 	base := fmt.Sprintf("repos/%s/%s/collaborators", url.PathEscape(owner), url.PathEscape(repo))
-	for page := 1; page <= memberPagesMax; page++ {
-		path := fmt.Sprintf("%s?per_page=%d&page=%d", base, memberAPIPerPage, page)
-		var batch []struct {
-			Login    string `json:"login"`
-			ID       int64  `json:"id"`
-			RoleName string `json:"role_name"`
-		}
-		if err := client.Get(path, &batch); err != nil {
-			return classifyMembershipReadError(path, owner+"/"+repo, err)
-		}
-		for _, c := range batch {
-			entries = append(entries, memberListEntry{
-				Login:    c.Login,
-				Kind:     memberKindCollaborator,
-				Role:     c.RoleName, // raw permission level; "" rendered as "(unknown)" only in the table
-				GitHubID: c.ID,
-			})
-		}
-		if len(batch) < memberAPIPerPage {
-			break
-		}
-		if page == memberPagesMax {
-			return fmt.Errorf("runMemberListRepo(%s/%s): hit %d-page safety cap", owner, repo, memberPagesMax)
-		}
+	subject := owner + "/" + repo
+	collabs, err := paginateAll[repoCollaborator](client, memberAPIPerPage, memberPagesMax,
+		func(page int) string {
+			return fmt.Sprintf("%s?per_page=%d&page=%d", base, memberAPIPerPage, page)
+		},
+		func(path string, err error) error { return classifyMembershipReadError(path, subject, err) })
+	if err != nil {
+		return err
+	}
+	entries := make([]memberListEntry, 0, len(collabs))
+	for _, c := range collabs {
+		entries = append(entries, memberListEntry{
+			Login:    c.Login,
+			Kind:     memberKindCollaborator,
+			Role:     c.RoleName, // raw permission level; "" rendered as "(unknown)" only in the table
+			GitHubID: c.ID,
+		})
 	}
 	sort.SliceStable(entries, func(i, j int) bool {
 		return strings.ToLower(entries[i].Login) < strings.ToLower(entries[j].Login)
 	})
-	return renderMemberList(out, errOut, owner+"/"+repo, entries, asJSON, quiet)
+	return renderMemberList(out, errOut, subject, entries, asJSON, quiet)
 }
 
 // memberAccount is the shared shape of a GET .../members element.
 type memberAccount struct {
 	Login string `json:"login"`
 	ID    int64  `json:"id"`
+}
+
+// orgInvitation is one GET /orgs/{org}/invitations element.
+type orgInvitation struct {
+	Login string `json:"login"`
+	ID    int64  `json:"id"`
+	Role  string `json:"role"`
+}
+
+// repoCollaborator is one GET /repos/{o}/{r}/collaborators element.
+type repoCollaborator struct {
+	Login    string `json:"login"`
+	ID       int64  `json:"id"`
+	RoleName string `json:"role_name"`
 }
 
 // paginateMembers walks a members listing endpoint (page/per_page)
@@ -269,19 +267,11 @@ func paginateMembers(client *api.RESTClient, base, subject string) ([]memberAcco
 	if strings.Contains(base, "?") {
 		sep = "&"
 	}
-	var all []memberAccount
-	for page := 1; page <= memberPagesMax; page++ {
-		path := fmt.Sprintf("%s%sper_page=%d&page=%d", base, sep, memberAPIPerPage, page)
-		var batch []memberAccount
-		if err := client.Get(path, &batch); err != nil {
-			return nil, classifyMembershipReadError(path, subject, err)
-		}
-		all = append(all, batch...)
-		if len(batch) < memberAPIPerPage {
-			return all, nil
-		}
-	}
-	return nil, fmt.Errorf("paginateMembers(%s): hit %d-page safety cap", subject, memberPagesMax)
+	return paginateAll[memberAccount](client, memberAPIPerPage, memberPagesMax,
+		func(page int) string {
+			return fmt.Sprintf("%s%sper_page=%d&page=%d", base, sep, memberAPIPerPage, page)
+		},
+		func(path string, err error) error { return classifyMembershipReadError(path, subject, err) })
 }
 
 // classifyMembershipReadError maps the common failure statuses of the
@@ -299,21 +289,18 @@ func classifyMembershipReadError(path, subject string, err error) error {
 	case http.StatusNotFound:
 		return fmt.Errorf("%s: not found or not accessible", subject)
 	case http.StatusForbidden:
-		// Distinguish missing scope from not-an-admin, as
-		// classifyOrgInviteError does. Absent header (fine-grained PAT)
-		// -> generic.
-		scopes := httpErr.Headers.Get("X-OAuth-Scopes")
-		switch {
-		case scopes == "":
-			return fmt.Errorf("%s: forbidden -- ensure your token has the admin:org scope (`gh teacher login`) and that you have access", subject)
-		case !hasOrgAdminScope(scopes):
-			return errors.New("missing admin:org OAuth scope; run `gh teacher login` to grant it")
-		default:
+		switch classifyOrgForbidden(httpErr) {
+		case orgForbiddenScopeMissing:
+			return errMissingOrgAdminScope
+		case orgForbiddenNotAdmin:
 			return fmt.Errorf("%s: forbidden -- you may not have admin access to read it", subject)
+		default:
+			return fmt.Errorf("%s: forbidden -- ensure your token has the admin:org scope (`gh teacher login`) and that you have access", subject)
 		}
 	}
 	return fmt.Errorf("GET %s: %w", path, err)
 }
+
 func renderMemberList(out, errOut io.Writer, target string, entries []memberListEntry, asJSON, quiet bool) error {
 	if asJSON {
 		if entries == nil {

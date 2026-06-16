@@ -106,45 +106,19 @@ func getClassroom(client *api.RESTClient, id int64) (classroomDetail, error) {
 // listClassrooms walks `GET /classrooms` with page/per_page
 // pagination, capped at classroomMigrateSourcePagesMax.
 func listClassrooms(client *api.RESTClient) ([]classroomListItem, error) {
-	var all []classroomListItem
-	for page := 1; page <= classroomMigrateSourcePagesMax; page++ {
-		path := fmt.Sprintf("classrooms?per_page=%d&page=%d", classroomAPIPerPage, page)
-		var batch []classroomListItem
-		if err := client.Get(path, &batch); err != nil {
-			return nil, fmt.Errorf("GET %s: %w", path, err)
-		}
-		if len(batch) == 0 {
-			return all, nil
-		}
-		all = append(all, batch...)
-		if len(batch) < classroomAPIPerPage {
-			return all, nil
-		}
-	}
-	return nil, fmt.Errorf("listClassrooms: hit %d-page safety cap (>%d classrooms) — unexpected; file an issue",
-		classroomMigrateSourcePagesMax, classroomMigrateSourcePagesMax*classroomAPIPerPage)
+	return paginateAll[classroomListItem](client, classroomAPIPerPage, classroomMigrateSourcePagesMax,
+		func(page int) string {
+			return fmt.Sprintf("classrooms?per_page=%d&page=%d", classroomAPIPerPage, page)
+		}, nil)
 }
 
 // listClassroomAssignments walks `GET /classrooms/{id}/assignments`
 // with the same pagination + cap as listClassrooms.
 func listClassroomAssignments(client *api.RESTClient, classroomID int64) ([]classroomAssignmentListItem, error) {
-	var all []classroomAssignmentListItem
-	for page := 1; page <= classroomMigrateSourcePagesMax; page++ {
-		path := fmt.Sprintf("classrooms/%d/assignments?per_page=%d&page=%d", classroomID, classroomAPIPerPage, page)
-		var batch []classroomAssignmentListItem
-		if err := client.Get(path, &batch); err != nil {
-			return nil, fmt.Errorf("GET %s: %w", path, err)
-		}
-		if len(batch) == 0 {
-			return all, nil
-		}
-		all = append(all, batch...)
-		if len(batch) < classroomAPIPerPage {
-			return all, nil
-		}
-	}
-	return nil, fmt.Errorf("listClassroomAssignments(%d): hit %d-page safety cap",
-		classroomID, classroomMigrateSourcePagesMax)
+	return paginateAll[classroomAssignmentListItem](client, classroomAPIPerPage, classroomMigrateSourcePagesMax,
+		func(page int) string {
+			return fmt.Sprintf("classrooms/%d/assignments?per_page=%d&page=%d", classroomID, classroomAPIPerPage, page)
+		}, nil)
 }
 
 // getClassroomAssignment calls `GET /assignments/{id}`; 404 → an

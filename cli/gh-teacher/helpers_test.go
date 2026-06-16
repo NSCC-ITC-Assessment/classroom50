@@ -131,3 +131,36 @@ func TestValidateShortName_LabelFlowsIntoError(t *testing.T) {
 		})
 	}
 }
+
+func TestParseOrgClassroom(t *testing.T) {
+	t.Run("trims and returns valid args", func(t *testing.T) {
+		org, classroom, err := parseOrgClassroom([]string{"  cs50-fall-2026 ", " cs-principles "})
+		if err != nil {
+			t.Fatalf("parseOrgClassroom: %v", err)
+		}
+		if org != "cs50-fall-2026" || classroom != "cs-principles" {
+			t.Errorf("got (%q, %q), want trimmed (cs50-fall-2026, cs-principles)", org, classroom)
+		}
+	})
+
+	t.Run("empty org rejected", func(t *testing.T) {
+		_, _, err := parseOrgClassroom([]string{"   ", "cs-principles"})
+		if err == nil || !strings.Contains(err.Error(), "org must not be empty") {
+			t.Fatalf("err = %v, want 'org must not be empty'", err)
+		}
+	})
+
+	t.Run("empty classroom rejected", func(t *testing.T) {
+		_, _, err := parseOrgClassroom([]string{"cs50-fall-2026", "  "})
+		if err == nil || !strings.Contains(err.Error(), "classroom short-name must not be empty") {
+			t.Fatalf("err = %v, want 'classroom short-name must not be empty'", err)
+		}
+	})
+
+	t.Run("invalid classroom short-name rejected via validateShortName", func(t *testing.T) {
+		_, _, err := parseOrgClassroom([]string{"cs50-fall-2026", "Bad_Name!"})
+		if err == nil || !strings.Contains(err.Error(), shortNamePatternDescription) {
+			t.Fatalf("err = %v, want the short-name pattern error", err)
+		}
+	})
+}

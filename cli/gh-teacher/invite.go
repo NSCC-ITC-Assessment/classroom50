@@ -172,16 +172,13 @@ func classifyOrgInviteError(client *api.RESTClient, org, username, path string, 
 			return errors.New("authentication failed; run `gh teacher login` to (re)authenticate")
 
 		case http.StatusForbidden:
-			// X-OAuth-Scopes distinguishes missing scope from
-			// not-an-admin; absent (fine-grained PAT) → generic.
-			scopes := httpErr.Headers.Get("X-OAuth-Scopes")
-			switch {
-			case scopes == "":
-				return fmt.Errorf("forbidden: ensure your token has the admin:org scope (`gh teacher login`) and that you are an admin of %s", org)
-			case !hasOrgAdminScope(scopes):
-				return errors.New("missing admin:org OAuth scope; run `gh teacher login` to grant it")
-			default:
+			switch classifyOrgForbidden(httpErr) {
+			case orgForbiddenScopeMissing:
+				return errMissingOrgAdminScope
+			case orgForbiddenNotAdmin:
 				return fmt.Errorf("you must be an admin of %s to invite members", org)
+			default:
+				return fmt.Errorf("forbidden: ensure your token has the admin:org scope (`gh teacher login`) and that you are an admin of %s", org)
 			}
 
 		case http.StatusNotFound:
@@ -208,6 +205,41 @@ func classifyOrgInviteError(client *api.RESTClient, org, username, path string, 
 	}
 	return fmt.Errorf("POST %s: %w", path, err)
 }
+
+// orgForbiddenKind classifies a 403 from an org/repo endpoint by what
+// the X-OAuth-Scopes header reveals, so callers can phrase their own
+// message without each re-inspecting the header. orgForbiddenScopeMissing
+// means a classic PAT/OAuth token that lacks admin:org; orgForbiddenNotAdmin
+// means the token has the scope but the caller isn't an org admin;
+// orgForbiddenGeneric covers the absent-header case (e.g. a fine-grained
+// PAT, which doesn't emit X-OAuth-Scopes).
+type orgForbiddenKind int
+
+const (
+	orgForbiddenGeneric orgForbiddenKind = iota
+	orgForbiddenScopeMissing
+	orgForbiddenNotAdmin
+)
+
+// classifyOrgForbidden inspects an *api.HTTPError's X-OAuth-Scopes
+// header. Shared by classifyOrgInviteError (POST) and
+// classifyMembershipReadError (GET) so the admin:org scope-vs-admin
+// distinction stays identical across the invite and read paths.
+func classifyOrgForbidden(httpErr *api.HTTPError) orgForbiddenKind {
+	scopes := httpErr.Headers.Get("X-OAuth-Scopes")
+	switch {
+	case scopes == "":
+		return orgForbiddenGeneric
+	case !hasOrgAdminScope(scopes):
+		return orgForbiddenScopeMissing
+	default:
+		return orgForbiddenNotAdmin
+	}
+}
+
+// errMissingOrgAdminScope is the shared message for the scope-missing
+// case (identical across invite and read paths).
+var errMissingOrgAdminScope = errors.New("missing admin:org OAuth scope; run `gh teacher login` to grant it")
 
 // hasOrgAdminScope: X-OAuth-Scopes contains admin:org.
 func hasOrgAdminScope(scopes string) bool {

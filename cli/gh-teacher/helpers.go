@@ -10,6 +10,27 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// parseOrgClassroom trims and validates the common `<org> <classroom>`
+// argument pair shared by the autograder read/delete subcommands:
+// both must be non-empty and the classroom must satisfy
+// validateShortName. Returns the trimmed values or the first error,
+// using the established per-field messages so command behavior is
+// unchanged.
+func parseOrgClassroom(args []string) (org, classroom string, err error) {
+	org = strings.TrimSpace(args[0])
+	classroom = strings.TrimSpace(args[1])
+	if org == "" {
+		return "", "", errors.New("org must not be empty")
+	}
+	if classroom == "" {
+		return "", "", errors.New("classroom short-name must not be empty")
+	}
+	if err := validateShortName(classroom, "classroom"); err != nil {
+		return "", "", err
+	}
+	return org, classroom, nil
+}
+
 // isHTTPStatus reports whether err is a *api.HTTPError with the
 // given status code. Collapses the err → *api.HTTPError → StatusCode
 // pattern used to distinguish 404/409/422 from transport errors.

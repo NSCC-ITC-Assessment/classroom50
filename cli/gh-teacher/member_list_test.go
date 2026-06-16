@@ -15,13 +15,14 @@ import (
 // array a given endpoint returns; the handler also honors role=admin
 // filtering and page/per_page pagination so the walk logic is covered.
 type memberMock struct {
-	orgMembers      []map[string]any // GET /orgs/{org}/members (all)
-	orgAdmins       []map[string]any // GET /orgs/{org}/members?role=admin
-	orgInvitations  []map[string]any // GET /orgs/{org}/invitations
-	invitationsErr  int              // if non-zero, /invitations returns this status
-	membersErr      int              // if non-zero, /members returns this status
-	collaborators   []map[string]any // GET /repos/{o}/{r}/collaborators
-	collaboratorErr int              // if non-zero, /collaborators returns this status
+	orgMembers       []map[string]any // GET /orgs/{org}/members (all)
+	orgAdmins        []map[string]any // GET /orgs/{org}/members?role=admin
+	orgInvitations   []map[string]any // GET /orgs/{org}/invitations
+	invitationsErr   int              // if non-zero, /invitations returns this status
+	invitationScopes string           // X-OAuth-Scopes header on the /invitations error (drives 403 classification)
+	membersErr       int              // if non-zero, /members returns this status
+	collaborators    []map[string]any // GET /repos/{o}/{r}/collaborators
+	collaboratorErr  int              // if non-zero, /collaborators returns this status
 }
 
 func (m *memberMock) handler(t *testing.T) http.Handler {
@@ -41,6 +42,9 @@ func (m *memberMock) handler(t *testing.T) http.Handler {
 	})
 	mux.HandleFunc("/orgs/o/invitations", func(w http.ResponseWriter, r *http.Request) {
 		if m.invitationsErr != 0 {
+			if m.invitationScopes != "" {
+				w.Header().Set("X-OAuth-Scopes", m.invitationScopes)
+			}
 			http.Error(w, "forbidden", m.invitationsErr)
 			return
 		}
@@ -189,18 +193,35 @@ func TestRunMemberListOrg_EmptyAndJSONArray(t *testing.T) {
 }
 
 func TestRunMemberListOrg_InvitationsForbidden(t *testing.T) {
-	mock := &memberMock{
-		orgMembers:     []map[string]any{acct("alice", 1)},
-		invitationsErr: http.StatusForbidden,
+	cases := []struct {
+		name   string
+		scopes string // X-OAuth-Scopes on the 403
+		want   string // substring the error must contain
+	}{
+		// No header (e.g. fine-grained PAT) -> generic: points at the scope + access.
+		{"generic (no scopes header)", "", "admin:org"},
+		// Has other scopes but not admin:org -> scope-missing sentinel.
+		{"scope missing", "repo, read:org", "missing admin:org OAuth scope"},
+		// Has admin:org but still 403 -> not an admin of the org.
+		{"has scope, not admin", "repo, admin:org", "you may not have admin access"},
 	}
-	server := httptest.NewServer(mock.handler(t))
-	t.Cleanup(server.Close)
-	client := newTestRESTClient(t, server)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			mock := &memberMock{
+				orgMembers:       []map[string]any{acct("alice", 1)},
+				invitationsErr:   http.StatusForbidden,
+				invitationScopes: tc.scopes,
+			}
+			server := httptest.NewServer(mock.handler(t))
+			t.Cleanup(server.Close)
+			client := newTestRESTClient(t, server)
 
-	var out, errOut bytes.Buffer
-	err := runMemberListOrg(client, &out, &errOut, "o", false, false)
-	if err == nil || !strings.Contains(err.Error(), "admin:org") {
-		t.Fatalf("err = %v, want an admin:org scope hint on a 403 from /invitations", err)
+			var out, errOut bytes.Buffer
+			err := runMemberListOrg(client, &out, &errOut, "o", false, false)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("err = %v, want substring %q", err, tc.want)
+			}
+		})
 	}
 }
 
