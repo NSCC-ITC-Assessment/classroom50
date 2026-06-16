@@ -11,6 +11,276 @@ import (
 	"testing"
 )
 
+func TestEnsureClassroomRulesets_CreatesBoth(t *testing.T) {
+	// No existing rulesets → one POST per ruleset, with the expected
+	// rule types, ref/repo conditions, and org-admin bypass.
+	var (
+		mu       sync.Mutex
+		posted   []orgRulesetBody
+		listHits int
+	)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		if r.URL.Path != "/orgs/cs50-fall-2026/rulesets" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		switch r.Method {
+		case http.MethodGet:
+			listHits++
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`[]`))
+		case http.MethodPost:
+			var body orgRulesetBody
+			raw, _ := io.ReadAll(r.Body)
+			if err := json.Unmarshal(raw, &body); err != nil {
+				t.Errorf("bad POST body: %v", err)
+			}
+			posted = append(posted, body)
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{"id": 1}`))
+		default:
+			t.Errorf("unexpected method: %s", r.Method)
+		}
+	}))
+	t.Cleanup(server.Close)
+	client := newTestRESTClient(t, server)
+
+	var out, errOut bytes.Buffer
+	ready, err := ensureClassroomRulesets(client, &out, &errOut, "cs50-fall-2026")
+	if err != nil {
+		t.Fatalf("ensureClassroomRulesets: %v", err)
+	}
+	if !ready {
+		t.Errorf("ready = false, want true when both rulesets are created")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if listHits != 1 {
+		t.Errorf("list calls = %d, want 1", listHits)
+	}
+	if len(posted) != 2 {
+		t.Fatalf("POSTs = %d, want 2: %#v", len(posted), posted)
+	}
+	byName := map[string]orgRulesetBody{}
+	for _, rs := range posted {
+		byName[rs.Name] = rs
+		if rs.Target != "branch" || rs.Enforcement != "active" {
+			t.Errorf("%s: target/enforcement = %q/%q", rs.Name, rs.Target, rs.Enforcement)
+		}
+		if len(rs.BypassActors) != 1 || rs.BypassActors[0].ActorType != "OrganizationAdmin" || rs.BypassActors[0].BypassMode != "always" {
+			t.Errorf("%s: bypass actors = %#v, want one always OrganizationAdmin", rs.Name, rs.BypassActors)
+		}
+		if len(rs.Conditions.RepositoryName.Include) != 1 || rs.Conditions.RepositoryName.Include[0] != "~ALL" {
+			t.Errorf("%s: repo condition = %#v, want ~ALL", rs.Name, rs.Conditions.RepositoryName)
+		}
+	}
+
+	main, ok := byName[rulesetNameSubmissionHistory]
+	if !ok {
+		t.Fatalf("missing %q ruleset", rulesetNameSubmissionHistory)
+	}
+	if got := ruleTypes(main.Rules); !equalStringSet(got, []string{"non_fast_forward", "deletion"}) {
+		t.Errorf("submission-history rules = %v, want non_fast_forward+deletion", got)
+	}
+	if main.Conditions.RefName.Include[0] != "~DEFAULT_BRANCH" {
+		t.Errorf("submission-history ref = %v, want ~DEFAULT_BRANCH", main.Conditions.RefName.Include)
+	}
+
+	fb, ok := byName[rulesetNameFeedbackBase]
+	if !ok {
+		t.Fatalf("missing %q ruleset", rulesetNameFeedbackBase)
+	}
+	if got := ruleTypes(fb.Rules); !equalStringSet(got, []string{"update", "deletion"}) {
+		t.Errorf("feedback-base rules = %v, want update+deletion (creation left allowed)", got)
+	}
+	if fb.Conditions.RefName.Include[0] != "refs/heads/"+feedbackBaseBranch {
+		t.Errorf("feedback-base ref = %v, want refs/heads/%s", fb.Conditions.RefName.Include, feedbackBaseBranch)
+	}
+	if errOut.Len() != 0 {
+		t.Errorf("happy path should leave stderr empty, got: %q", errOut.String())
+	}
+}
+
+func TestEnsureClassroomRulesets_UpdatesExisting(t *testing.T) {
+	// Both rulesets already present (by name) → reconcile in place: a
+	// PUT per ruleset to /rulesets/{id}, no POST. This is what repairs a
+	// stale ruleset left by an older CLI on a re-run.
+	var (
+		mu        sync.Mutex
+		posts     int
+		putPaths  []string
+		putBodies []orgRulesetBody
+	)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		switch r.Method {
+		case http.MethodGet:
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`[{"id":11,"name":"` + rulesetNameSubmissionHistory + `"},{"id":22,"name":"` + rulesetNameFeedbackBase + `"}]`))
+		case http.MethodPut:
+			putPaths = append(putPaths, r.URL.Path)
+			var body orgRulesetBody
+			raw, _ := io.ReadAll(r.Body)
+			_ = json.Unmarshal(raw, &body)
+			putBodies = append(putBodies, body)
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{}`))
+		case http.MethodPost:
+			posts++
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{}`))
+		default:
+			t.Errorf("unexpected method: %s", r.Method)
+		}
+	}))
+	t.Cleanup(server.Close)
+	client := newTestRESTClient(t, server)
+
+	var out, errOut bytes.Buffer
+	ready, err := ensureClassroomRulesets(client, &out, &errOut, "cs50-fall-2026")
+	if err != nil {
+		t.Fatalf("ensureClassroomRulesets: %v", err)
+	}
+	if !ready {
+		t.Errorf("ready = false, want true when rulesets reconcile cleanly")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if posts != 0 {
+		t.Errorf("POSTs = %d, want 0 (both already present, so update not create)", posts)
+	}
+	wantPaths := map[string]bool{
+		"/orgs/cs50-fall-2026/rulesets/11": true,
+		"/orgs/cs50-fall-2026/rulesets/22": true,
+	}
+	if len(putPaths) != 2 {
+		t.Fatalf("PUTs = %v, want 2 (one per ruleset, by id)", putPaths)
+	}
+	for _, p := range putPaths {
+		if !wantPaths[p] {
+			t.Errorf("unexpected PUT path %q (want /rulesets/11 and /rulesets/22)", p)
+		}
+	}
+	if !strings.Contains(out.String(), "updated to current definition") {
+		t.Errorf("stdout should note the rulesets were updated: %q", out.String())
+	}
+	// The reconcile must PUT the *current* definition — pin that the
+	// feedback-base ruleset is repaired to target the `feedback` branch
+	// (the whole point: a stale ruleset gets the corrected ref).
+	for i, b := range putBodies {
+		if b.Name == rulesetNameFeedbackBase {
+			if len(b.Conditions.RefName.Include) != 1 || b.Conditions.RefName.Include[0] != "refs/heads/"+feedbackBaseBranch {
+				t.Errorf("PUT[%d] feedback-base ref = %v, want refs/heads/%s", i, b.Conditions.RefName.Include, feedbackBaseBranch)
+			}
+		}
+		if b.Name == rulesetNameSubmissionHistory {
+			if len(b.Conditions.RefName.Include) != 1 || b.Conditions.RefName.Include[0] != "~DEFAULT_BRANCH" {
+				t.Errorf("PUT[%d] submission-history ref = %v, want ~DEFAULT_BRANCH", i, b.Conditions.RefName.Include)
+			}
+		}
+	}
+}
+
+func TestEnsureClassroomRulesets_CreateForbiddenWarnsButSucceeds(t *testing.T) {
+	// List succeeds (empty) but POST is 403 (plan/policy lock) → warn
+	// per ruleset, never error, so init keeps going.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`[]`))
+			return
+		}
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"message":"Upgrade your plan"}`))
+	}))
+	t.Cleanup(server.Close)
+	client := newTestRESTClient(t, server)
+
+	var out, errOut bytes.Buffer
+	ready, err := ensureClassroomRulesets(client, &out, &errOut, "cs50-fall-2026")
+	if err != nil {
+		t.Fatalf("should not error on 403: %v", err)
+	}
+	if ready {
+		t.Errorf("ready = true, want false when ruleset creation is rejected")
+	}
+	if got := strings.Count(errOut.String(), "Warning:"); got != 2 {
+		t.Errorf("warnings = %d, want 2 (one per ruleset):\n%s", got, errOut.String())
+	}
+	if !strings.Contains(errOut.String(), "settings/rules") {
+		t.Errorf("warning should point at the org rules settings page: %q", errOut.String())
+	}
+}
+
+func TestEnsureClassroomRulesets_ListFailsWarnsButSucceeds(t *testing.T) {
+	// Can't even list rulesets (e.g. plan without org rulesets) → one
+	// warning, no POSTs, no error.
+	var (
+		mu    sync.Mutex
+		posts int
+	)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		if r.Method == http.MethodPost {
+			posts++
+		}
+		mu.Unlock()
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"message":"Not Found"}`))
+	}))
+	t.Cleanup(server.Close)
+	client := newTestRESTClient(t, server)
+
+	var out, errOut bytes.Buffer
+	ready, err := ensureClassroomRulesets(client, &out, &errOut, "cs50-fall-2026")
+	if err != nil {
+		t.Fatalf("should not error when listing fails: %v", err)
+	}
+	if ready {
+		t.Errorf("ready = true, want false when listing rulesets fails")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if posts != 0 {
+		t.Errorf("POSTs = %d, want 0 when list fails", posts)
+	}
+	if !strings.Contains(errOut.String(), "could not list org rulesets") {
+		t.Errorf("warning should explain the list failure: %q", errOut.String())
+	}
+}
+
+// ruleTypes extracts the rule .Type values for set comparison.
+func ruleTypes(rules []rulesetRule) []string {
+	out := make([]string, len(rules))
+	for i, r := range rules {
+		out[i] = r.Type
+	}
+	return out
+}
+
+// equalStringSet compares two string slices ignoring order.
+func equalStringSet(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	seen := map[string]int{}
+	for _, s := range a {
+		seen[s]++
+	}
+	for _, s := range b {
+		seen[s]--
+	}
+	for _, n := range seen {
+		if n != 0 {
+			return false
+		}
+	}
+	return true
+}
+
 func TestApplyOrgMemberDefaults_HappyPath(t *testing.T) {
 	// Pin all three field values on a single PATCH so a refactor
 	// can't silently flip a default.
@@ -1050,5 +1320,125 @@ func TestEnsureRepoActionsEnabled_EnableUnavailableWarns(t *testing.T) {
 	}
 	if !strings.Contains(errOut.String(), "couldn't enable Actions") {
 		t.Errorf("stderr should report the enable failure, got: %q", errOut.String())
+	}
+}
+
+func TestEnsureOrgCanCreatePRs_AlreadyEnabledIsNoOp(t *testing.T) {
+	var (
+		mu    sync.Mutex
+		calls int
+	)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		calls++
+		if r.Method != http.MethodGet {
+			t.Errorf("unexpected %s (no write expected when already enabled)", r.Method)
+		}
+		if r.URL.Path != "/orgs/cs50-fall-2026/actions/permissions/workflow" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"default_workflow_permissions":"write","can_approve_pull_request_reviews":true}`))
+	}))
+	t.Cleanup(server.Close)
+	client := newTestRESTClient(t, server)
+
+	var out, errOut bytes.Buffer
+	ready, err := ensureOrgCanCreatePRs(client, &out, &errOut, "cs50-fall-2026")
+	if err != nil {
+		t.Fatalf("ensureOrgCanCreatePRs: %v", err)
+	}
+	if !ready {
+		t.Errorf("ready = false, want true when already allowed")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if calls != 1 {
+		t.Errorf("calls = %d, want 1 (GET only, no PUT)", calls)
+	}
+	if !strings.Contains(out.String(), "already allowed") {
+		t.Errorf("stdout missing already-allowed line, got: %q", out.String())
+	}
+	if errOut.Len() != 0 {
+		t.Errorf("no-op path should leave stderr empty, got: %q", errOut.String())
+	}
+}
+
+func TestEnsureOrgCanCreatePRs_EnablesWhenOff(t *testing.T) {
+	var (
+		mu      sync.Mutex
+		gotPUT  bool
+		putBody map[string]any
+	)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		if r.URL.Path != "/orgs/cs50-fall-2026/actions/permissions/workflow" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		switch r.Method {
+		case http.MethodGet:
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"default_workflow_permissions":"write","can_approve_pull_request_reviews":false}`))
+		case http.MethodPut:
+			gotPUT = true
+			_ = json.NewDecoder(r.Body).Decode(&putBody)
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			t.Errorf("unexpected method %s", r.Method)
+		}
+	}))
+	t.Cleanup(server.Close)
+	client := newTestRESTClient(t, server)
+
+	var out, errOut bytes.Buffer
+	ready, err := ensureOrgCanCreatePRs(client, &out, &errOut, "cs50-fall-2026")
+	if err != nil {
+		t.Fatalf("ensureOrgCanCreatePRs: %v", err)
+	}
+	if !ready {
+		t.Errorf("ready = false, want true after enabling the toggle")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if !gotPUT {
+		t.Fatal("expected a PUT to enable the toggle, got none")
+	}
+	if putBody["can_approve_pull_request_reviews"] != true {
+		t.Errorf("PUT did not set can_approve_pull_request_reviews=true, body: %v", putBody)
+	}
+	if putBody["default_workflow_permissions"] != "write" {
+		t.Errorf("PUT did not preserve default_workflow_permissions=write, body: %v", putBody)
+	}
+	if !strings.Contains(out.String(), "enabled Actions to create pull requests") {
+		t.Errorf("stdout missing enabled line, got: %q", out.String())
+	}
+}
+
+func TestEnsureOrgCanCreatePRs_ForbiddenWarnsButSucceeds(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"default_workflow_permissions":"write","can_approve_pull_request_reviews":false}`))
+		case http.MethodPut:
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(`{"message":"Forbidden"}`))
+		}
+	}))
+	t.Cleanup(server.Close)
+	client := newTestRESTClient(t, server)
+
+	var out, errOut bytes.Buffer
+	ready, err := ensureOrgCanCreatePRs(client, &out, &errOut, "cs50-fall-2026")
+	if err != nil {
+		t.Fatalf("expected nil (warn-and-continue), got: %v", err)
+	}
+	if ready {
+		t.Errorf("ready = true, want false when the toggle PUT is rejected")
+	}
+	if !strings.Contains(errOut.String(), "couldn't enable Actions-created pull requests") {
+		t.Errorf("stderr missing warning, got: %q", errOut.String())
 	}
 }

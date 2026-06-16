@@ -297,7 +297,7 @@ func TestRunAssignmentAdd_WithTestsPersists(t *testing.T) {
 	tests := []testSpec{{Name: "compiles", Type: "run", Run: "true", Points: 1}}
 	var stdout, stderr bytes.Buffer
 	err := runAssignmentAdd(client, &stdout, &stderr, "o", "cs-principles", "hello", "Hello", "",
-		templateArg{Owner: "cs50", Repo: "hello-template"}, "", nil, "individual", 0, "default", nil, tests)
+		templateArg{Owner: "cs50", Repo: "hello-template"}, "", nil, "individual", 0, "default", nil, tests, false)
 	if err != nil {
 		t.Fatalf("runAssignmentAdd: %v", err)
 	}
@@ -313,7 +313,7 @@ func TestRunAssignmentAdd_GroupModePersists(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 	err := runAssignmentAdd(client, &stdout, &stderr, "o", "cs-principles", "hello", "Hello", "",
-		templateArg{Owner: "cs50", Repo: "hello-template"}, "", nil, "group", 3, "default", nil, nil)
+		templateArg{Owner: "cs50", Repo: "hello-template"}, "", nil, "group", 3, "default", nil, nil, false)
 	if err != nil {
 		t.Fatalf("runAssignmentAdd(group): %v", err)
 	}
@@ -330,7 +330,7 @@ func TestRunAssignmentAdd_TestsRejectedWithAutograder(t *testing.T) {
 	tests := []testSpec{{Name: "compiles", Type: "run", Run: "true", Points: 1}}
 	var stdout, stderr bytes.Buffer
 	err := runAssignmentAdd(client, &stdout, &stderr, "o", "cs-principles", "hello", "Hello", "",
-		templateArg{Owner: "cs50", Repo: "hello-template"}, "", nil, "individual", 0, "default", nil, tests)
+		templateArg{Owner: "cs50", Repo: "hello-template"}, "", nil, "individual", 0, "default", nil, tests, false)
 	if err == nil || !strings.Contains(err.Error(), "mutually exclusive") {
 		t.Fatalf("expected mutual-exclusion error, got %v", err)
 	}
@@ -353,7 +353,7 @@ func TestRunAssignmentAdd_ReplaceWithoutTestsWarns(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 	err := runAssignmentAdd(client, &stdout, &stderr, "o", "cs-principles", "hello", "Hello", "",
-		templateArg{Owner: "cs50", Repo: "hello-template"}, "", nil, "individual", 0, "default", nil, nil)
+		templateArg{Owner: "cs50", Repo: "hello-template"}, "", nil, "individual", 0, "default", nil, nil, false)
 	if err != nil {
 		t.Fatalf("runAssignmentAdd: %v", err)
 	}
@@ -374,7 +374,7 @@ func TestRunAssignmentAdd_ExplicitEmptyTestsClearsSilently(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 	err := runAssignmentAdd(client, &stdout, &stderr, "o", "cs-principles", "hello", "Hello", "",
-		templateArg{Owner: "cs50", Repo: "hello-template"}, "", nil, "individual", 0, "default", nil, []testSpec{})
+		templateArg{Owner: "cs50", Repo: "hello-template"}, "", nil, "individual", 0, "default", nil, []testSpec{}, false)
 	if err != nil {
 		t.Fatalf("runAssignmentAdd: %v", err)
 	}

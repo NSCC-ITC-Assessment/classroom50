@@ -416,13 +416,16 @@ def validate_result(data: Any, *, classroom: str, assignment: str) -> str | None
 # ---------------------------------------------------------------------------
 
 
-def baseline_sha(workspace: pathlib.Path) -> str | None:
-    """SHA of the commit the student started from: the `gh student
-    accept` plumbing commit (matched via ACCEPT_COMMIT_SUBJECT) when
-    present, else the root commit. Returns None when history is
-    unavailable -- no git binary, no .git (actions/checkout's tarball
-    fallback in git-less containers), or an un-deepenable shallow
-    clone -- and the caller falls back to the commit view."""
+def _baseline_scan(workspace: pathlib.Path) -> tuple[str | None, str]:
+    """Resolve the student's baseline commit and how it was found.
+
+    Returns (sha, source) where source is:
+      - "accept": matched the `gh student accept` plumbing commit
+        (ACCEPT_COMMIT_SUBJECT) — a trusted baseline.
+      - "root":   fell back to the repo's root commit (no accept commit
+        in history) — a best-effort baseline.
+      - "none":   history unavailable (sha is None).
+    """
 
     def git(*args: str) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
@@ -433,19 +436,19 @@ def baseline_sha(workspace: pathlib.Path) -> str | None:
     try:
         shallow = git("rev-parse", "--is-shallow-repository")
         if shallow.returncode != 0:
-            return None
+            return None, "none"
         if shallow.stdout.strip() == "true":
             # Depth-1 checkout (workflows predating fetch-depth: 0):
             # deepen, or the graft boundary would pose as the root.
             # checkout's persisted credentials authenticate the fetch.
             if git("fetch", "--quiet", "--unshallow", "origin").returncode != 0:
-                return None
+                return None, "none"
         log = git("log", "--reverse", "--first-parent", "--format=%H %s", "HEAD")
         if log.returncode != 0:
-            return None
+            return None, "none"
         lines = [line for line in log.stdout.splitlines() if line.strip()]
         if not lines:
-            return None
+            return None, "none"
         # Earliest match wins: a commit crafted later in history with
         # the same subject can't move the baseline forward. (Today the
         # accept commit is always position 1 -- the template-generate
@@ -454,10 +457,33 @@ def baseline_sha(workspace: pathlib.Path) -> str | None:
         for line in lines:
             sha, _, subject = line.partition(" ")
             if subject == ACCEPT_COMMIT_SUBJECT:
-                return sha
-        return lines[0].partition(" ")[0]
+                return sha, "accept"
+        return lines[0].partition(" ")[0], "root"
     except (OSError, subprocess.SubprocessError):
-        return None
+        return None, "none"
+
+
+def baseline_sha(workspace: pathlib.Path) -> str | None:
+    """SHA of the commit the student started from: the `gh student
+    accept` plumbing commit (matched via ACCEPT_COMMIT_SUBJECT) when
+    present, else the root commit. Returns None when history is
+    unavailable -- no git binary, no .git (actions/checkout's tarball
+    fallback in git-less containers), or an un-deepenable shallow
+    clone -- and the caller falls back to the commit view. Used for the
+    review compare link, which tolerates the root-commit fallback."""
+    return _baseline_scan(workspace)[0]
+
+
+def feedback_base_sha(workspace: pathlib.Path) -> str | None:
+    """Trusted baseline for the Feedback PR's frozen base branch: the
+    `gh student accept` plumbing commit, or None. Unlike baseline_sha,
+    this does NOT fall back to the root commit -- the feedback base is
+    frozen into a long-lived branch and reviewed as authoritative, so an
+    unmatched accept commit (unusual/tampered history, or a future
+    creation flow) must skip the PR rather than freeze a wrong base."""
+    sha, source = _baseline_scan(workspace)
+    return sha if source == "accept" else None
+
 
 
 def fetch_url(url: str) -> bytes | None:
@@ -541,6 +567,21 @@ def append_outputs(github_output_path: str | None, status: str, summary: str) ->
     with open(github_output_path, "a") as fh:
         fh.write(f"status={status}\n")
         fh.write(f"summary={safe_summary}\n")
+
+
+def append_sha_outputs(
+    github_output_path: str | None, base_sha: str | None, head_sha: str
+) -> None:
+    """Write `baseline-sha` and `head-sha` to $GITHUB_OUTPUT for the
+    Feedback PR step. `baseline-sha` is omitted (left empty) when there's
+    no usable baseline, which the workflow step treats as "skip". SHAs
+    are `[0-9a-f]{40}` so they can't inject extra output lines."""
+    if not github_output_path:
+        return
+    with open(github_output_path, "a") as fh:
+        fh.write(f"head-sha={head_sha}\n")
+        if base_sha:
+            fh.write(f"baseline-sha={base_sha}\n")
 
 
 def now_utc() -> datetime.datetime:
@@ -1088,6 +1129,22 @@ def main() -> int:
     review_link = review_url(server_url, repository, base_sha, sha)
     if base_sha is None:
         print("runner: no baseline commit found; review link falls back to the commit view")
+
+    # Hand the baseline + graded SHAs to the workflow so the post-grade
+    # step can open/refresh the Feedback PR (issue #86) without
+    # recomputing git state. Emitted unconditionally and early so the
+    # step runs even when grading fails (teachers review failing work
+    # too). The step itself is the gate: it opens the PR only when the
+    # assignment opted in (feedback-pr) and there's a diff to show
+    # (baseline-sha != head-sha) -- mirroring review_url's compare-vs-
+    # commit choice. The Feedback PR base uses the *trusted* baseline
+    # (the matched accept commit, never the root-commit fallback): the
+    # base is frozen into a long-lived branch, so an unmatched baseline
+    # skips the PR rather than freezing a wrong/oversized base.
+    fb_base_sha = feedback_base_sha(workspace)
+    append_sha_outputs(github_output, fb_base_sha, sha)
+    if fb_base_sha is None:
+        print("runner: no trusted baseline (accept commit) found; Feedback PR step will skip")
 
     print(
         f"runner: classroom={classroom!r} assignment={assignment!r} "

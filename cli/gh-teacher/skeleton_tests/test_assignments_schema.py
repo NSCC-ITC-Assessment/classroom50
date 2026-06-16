@@ -68,6 +68,16 @@ class TestSchemaAccepts:
         tests = [{"name": "t", "type": "run", "run": "x", "exit-code": 42, "points": 1}]
         assert _errors(_manifest(_entry(tests=tests))) == []
 
+    def test_feedback_pr_flag_accepted(self):
+        # feedback_pr is a CLI-written boolean (gh teacher assignment add
+        # --feedback-pr); the schema must accept it given the assignment
+        # object is additionalProperties:false.
+        assert _errors(_manifest(_entry(feedback_pr=True))) == []
+        assert _errors(_manifest(_entry(feedback_pr=False))) == []
+
+    def test_feedback_pr_must_be_boolean(self):
+        assert _errors(_manifest(_entry(feedback_pr="yes"))) != []
+
     def test_container_with_ubuntu_runs_on(self):
         entry = _entry(runtime={"container": {"image": "x"}, "runs-on": "ubuntu-22.04"})
         assert _errors(_manifest(entry)) == []

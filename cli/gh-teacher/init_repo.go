@@ -197,6 +197,73 @@ func ensureOrgActionsEnabled(client *api.RESTClient, out, errOut io.Writer, org 
 	return nil
 }
 
+// orgWorkflowPermissions is the subset of
+// /orgs/{org}/actions/permissions/workflow that we read/write.
+type orgWorkflowPermissions struct {
+	DefaultWorkflowPermissions   string `json:"default_workflow_permissions"`
+	CanApprovePullRequestReviews bool   `json:"can_approve_pull_request_reviews"`
+}
+
+// ensureOrgCanCreatePRs turns on the org-level "Allow GitHub Actions to
+// create and approve pull requests" setting. The opt-in Feedback PR
+// (issue #86) is opened by each student repo's autograde workflow using
+// GITHUB_TOKEN; even with `pull-requests: write`, GitHub rejects the
+// creation unless can_approve_pull_request_reviews is enabled -- and it
+// defaults off. Student repos inherit this from the org at creation
+// time, and a `maintain` collaborator can't set it per-repo, so the org
+// is the only place to enable it. Preserves default_workflow_permissions
+// (only the PR toggle is ours to change). 403/409 (enterprise-locked) ->
+// warn and continue, matching ensureOrgActionsEnabled.
+//
+// Trade-off (no narrower lever): GitHub's single org field couples
+// "create" and "approve" -- there is no create-only toggle, so enabling
+// it also lets Actions *approve* PRs org-wide. This is safe for the
+// Classroom50 model as shipped: the config repo's default branch has no
+// required-review gate (applyBranchProtection sets
+// required_pull_request_reviews=null), and student assignment repos have
+// none either, so a self-approval grants no merge a student couldn't
+// already perform. The residual is that if a teacher *later* adds a
+// required-review rule to a repo in this org, a student-controlled
+// workflow token could satisfy it via self-approval -- documented in the
+// wiki so that choice is made knowingly.
+func ensureOrgCanCreatePRs(client *api.RESTClient, out, errOut io.Writer, org string) (bool, error) {
+	path := fmt.Sprintf("orgs/%s/actions/permissions/workflow", url.PathEscape(org))
+
+	var current orgWorkflowPermissions
+	if err := client.Get(path, &current); err != nil {
+		_, _ = fmt.Fprintf(errOut, "Warning: %s: GET /actions/permissions/workflow failed (%v); GitHub Actions may be blocked from opening Feedback PRs. Enable \"Allow GitHub Actions to create and approve pull requests\" at https://github.com/organizations/%s/settings/actions\n", org, err, org)
+		return false, nil
+	}
+	if current.CanApprovePullRequestReviews {
+		_, _ = fmt.Fprintf(out, "%s: Actions already allowed to create pull requests\n", org)
+		return true, nil
+	}
+
+	body, err := json.Marshal(orgWorkflowPermissions{
+		DefaultWorkflowPermissions:   current.DefaultWorkflowPermissions,
+		CanApprovePullRequestReviews: true,
+	})
+	if err != nil {
+		return false, fmt.Errorf("encode body: %w", err)
+	}
+
+	resp, err := client.Request(http.MethodPut, path, bytes.NewReader(body))
+	if err != nil {
+		if isHTTPStatus(err, http.StatusForbidden) || isHTTPStatus(err, http.StatusConflict) {
+			_, _ = fmt.Fprintf(errOut, "Warning: %s: couldn't enable Actions-created pull requests (%v); the opt-in Feedback PR won't open until an org admin turns on \"Allow GitHub Actions to create and approve pull requests\" at https://github.com/organizations/%s/settings/actions\n", org, err, org)
+			return false, nil
+		}
+		return false, fmt.Errorf("PUT %s: %w", path, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	_, _ = io.Copy(io.Discard, resp.Body)
+	if resp.StatusCode != http.StatusNoContent {
+		return false, fmt.Errorf("PUT %s: unexpected status %d", path, resp.StatusCode)
+	}
+	_, _ = fmt.Fprintf(out, "%s: enabled Actions to create pull requests (for Feedback PRs)\n", org)
+	return true, nil
+}
+
 // repoActionsPermissions is the subset of GET
 // /repos/{owner}/{repo}/actions/permissions that we read.
 type repoActionsPermissions struct {
@@ -422,6 +489,226 @@ func applyBranchProtection(client *api.RESTClient, out io.Writer, owner, repo, b
 	}
 	_, _ = fmt.Fprintf(out, "%s/%s: branch protection applied to %s (no force-push, no delete)\n", owner, repo, branch)
 	return nil
+}
+
+// feedbackBaseBranch is the frozen PR base the Feedback PR feature
+// (issue #86) pins at each student repo's baseline commit. Kept in
+// lockstep with the autograde-runner workflow's BASE_BRANCH.
+const feedbackBaseBranch = "feedback"
+
+// Stable ruleset names so re-running init is idempotent —
+// ensureClassroomRulesets reconciles an existing ruleset (matched by
+// name) in place rather than creating a duplicate.
+const (
+	rulesetNameSubmissionHistory = "classroom50-protect-submission-history"
+	rulesetNameFeedbackBase      = "classroom50-feedback-base-lock"
+)
+
+// orgRulesetBody is the POST /orgs/{org}/rulesets payload. Only the
+// fields we set are modeled.
+type orgRulesetBody struct {
+	Name         string               `json:"name"`
+	Target       string               `json:"target"`
+	Enforcement  string               `json:"enforcement"`
+	Conditions   rulesetConditions    `json:"conditions"`
+	BypassActors []rulesetBypassActor `json:"bypass_actors"`
+	Rules        []rulesetRule        `json:"rules"`
+}
+
+type rulesetConditions struct {
+	RefName        refPatternCondition `json:"ref_name"`
+	RepositoryName refPatternCondition `json:"repository_name"`
+}
+
+// refPatternCondition is GitHub's include/exclude shape, reused for
+// both ref_name and repository_name. "~ALL" (repos) and
+// "~DEFAULT_BRANCH" (refs) are the documented wildcards.
+type refPatternCondition struct {
+	Include []string `json:"include"`
+	Exclude []string `json:"exclude"`
+}
+
+// rulesetBypassActor lets an actor skip the rules. OrganizationAdmin
+// (actor_id 1) is the org-owner role — the teacher — so they can merge
+// the Feedback PR (the grading-done signal) and force-push/delete in a
+// pinch while students (maintain, no bypass) cannot.
+type rulesetBypassActor struct {
+	ActorID    int    `json:"actor_id"`
+	ActorType  string `json:"actor_type"`
+	BypassMode string `json:"bypass_mode"`
+}
+
+type rulesetRule struct {
+	Type string `json:"type"`
+}
+
+// ensureClassroomRulesets installs two org-level branch rulesets that
+// auto-cover every current and future repo in the org (the student
+// assignment repos), powering the Feedback PR feature (issue #86):
+//
+//  1. submission history — on `main`: block force-push + deletion so a
+//     student can't rewrite or erase their submission history; normal
+//     fast-forward submits still go through, so the teacher always sees
+//     the full version history.
+//  2. feedback-base lock — on the `feedback` branch: restrict
+//     updates + block deletion so students (maintain collaborators)
+//     can't merge or move the frozen PR base. Branch *creation* is left
+//     allowed so the autograde runner's GITHUB_TOKEN can create the
+//     branch once; org admins bypass, so the teacher can merge the PR.
+//
+// Org-level rulesets need an org-admin token — gh teacher authenticates
+// as the org owner — whereas the workflow GITHUB_TOKEN has no
+// administration scope, which is why this lives here, not in the
+// runner. Idempotent **and reconciling**: a ruleset that already exists
+// (by name) is updated in place to the current definition, so re-running
+// init repairs a stale ruleset left by an older CLI (e.g. one targeting
+// the wrong branch pattern) rather than skipping it. Warn-and-continue
+// on any failure (a plan without org rulesets, or a policy lock) so a
+// quirky org doesn't fail the whole init — mirrors the other org-setup
+// helpers.
+func ensureClassroomRulesets(client *api.RESTClient, out, errOut io.Writer, org string) (bool, error) {
+	existing, err := listOrgRulesets(client, org)
+	if err != nil {
+		_, _ = fmt.Fprintf(errOut, "Warning: %s: could not list org rulesets (%v); skipping Feedback PR branch protections. Apply them manually at https://github.com/organizations/%s/settings/rules if students can force-push submissions or merge feedback PRs.\n",
+			org, err, org)
+		return false, nil
+	}
+
+	adminBypass := []rulesetBypassActor{{ActorID: 1, ActorType: "OrganizationAdmin", BypassMode: "always"}}
+	allRepos := refPatternCondition{Include: []string{"~ALL"}, Exclude: []string{}}
+
+	rulesets := []orgRulesetBody{
+		{
+			Name:        rulesetNameSubmissionHistory,
+			Target:      "branch",
+			Enforcement: "active",
+			Conditions: rulesetConditions{
+				// ~DEFAULT_BRANCH follows each repo's actual default branch
+				// rather than hardcoding `main`, so the protection still
+				// covers repos whose default branch was renamed by org
+				// policy — and matches the branch the Feedback PR opens
+				// against (the runner resolves defaultBranchRef.name).
+				RefName:        refPatternCondition{Include: []string{"~DEFAULT_BRANCH"}, Exclude: []string{}},
+				RepositoryName: allRepos,
+			},
+			BypassActors: adminBypass,
+			// non_fast_forward blocks force-push; deletion blocks delete.
+			// Neither blocks a normal fast-forward submit.
+			Rules: []rulesetRule{{Type: "non_fast_forward"}, {Type: "deletion"}},
+		},
+		{
+			Name:        rulesetNameFeedbackBase,
+			Target:      "branch",
+			Enforcement: "active",
+			Conditions: rulesetConditions{
+				RefName:        refPatternCondition{Include: []string{"refs/heads/" + feedbackBaseBranch}, Exclude: []string{}},
+				RepositoryName: allRepos,
+			},
+			BypassActors: adminBypass,
+			// `update` restricts pushes/merges to bypass actors (only the
+			// teacher merges); `deletion` blocks delete. Creation is left
+			// allowed so the runner can land the branch once.
+			Rules: []rulesetRule{{Type: "update"}, {Type: "deletion"}},
+		},
+	}
+
+	allReady := true
+	for _, rs := range rulesets {
+		if id, ok := existing[rs.Name]; ok {
+			// Reconcile: PUT the current definition over the existing
+			// ruleset so a re-run picks up a changed branch pattern/rules
+			// (e.g. an older CLI's stale ruleset) instead of skipping it.
+			if err := updateOrgRuleset(client, org, id, rs); err != nil {
+				_, _ = fmt.Fprintf(errOut, "Warning: %s: could not update org ruleset %q (%v); review it at https://github.com/organizations/%s/settings/rules — a stale ruleset may %s.\n",
+					org, rs.Name, err, org, rulesetMissDescription(rs.Name))
+				allReady = false
+				continue
+			}
+			_, _ = fmt.Fprintf(out, "%s: org ruleset %q updated to current definition\n", org, rs.Name)
+			continue
+		}
+		if err := createOrgRuleset(client, org, rs); err != nil {
+			_, _ = fmt.Fprintf(errOut, "Warning: %s: could not create org ruleset %q (%v); apply it manually at https://github.com/organizations/%s/settings/rules — without it students could %s.\n",
+				org, rs.Name, err, org, rulesetMissDescription(rs.Name))
+			allReady = false
+			continue
+		}
+		_, _ = fmt.Fprintf(out, "%s: org ruleset %q created\n", org, rs.Name)
+	}
+	return allReady, nil
+}
+
+// listOrgRulesets returns existing org rulesets as a name->ID map so
+// ensureClassroomRulesets can decide between creating (POST) a new
+// ruleset and updating (PUT by ID) an existing one to reconcile drift.
+// Paginated so an org with many rulesets doesn't hide the Classroom 50
+// entries (which would make the reconcile re-POST and 422).
+func listOrgRulesets(client *api.RESTClient, org string) (map[string]int64, error) {
+	type orgRuleset struct {
+		ID   int64  `json:"id"`
+		Name string `json:"name"`
+	}
+	rulesets, err := paginateAll[orgRuleset](client, 100, 100,
+		func(page int) string {
+			return fmt.Sprintf("orgs/%s/rulesets?per_page=100&page=%d", url.PathEscape(org), page)
+		}, nil)
+	if err != nil {
+		return nil, err
+	}
+	ids := make(map[string]int64, len(rulesets))
+	for _, r := range rulesets {
+		ids[r.Name] = r.ID
+	}
+	return ids, nil
+}
+
+// createOrgRuleset POSTs a single ruleset.
+func createOrgRuleset(client *api.RESTClient, org string, body orgRulesetBody) error {
+	payload, err := json.Marshal(body)
+	if err != nil {
+		return fmt.Errorf("encode ruleset %q: %w", body.Name, err)
+	}
+	path := fmt.Sprintf("orgs/%s/rulesets", url.PathEscape(org))
+	if err := client.Post(path, bytes.NewReader(payload), nil); err != nil {
+		return fmt.Errorf("POST %s: %w", path, err)
+	}
+	return nil
+}
+
+// updateOrgRuleset PUTs the full definition over an existing ruleset by
+// ID, so re-running init reconciles a stale ruleset (e.g. one created by
+// an older CLI that targeted the wrong branch pattern) to the current
+// definition rather than leaving it as-is.
+func updateOrgRuleset(client *api.RESTClient, org string, id int64, body orgRulesetBody) error {
+	payload, err := json.Marshal(body)
+	if err != nil {
+		return fmt.Errorf("encode ruleset %q: %w", body.Name, err)
+	}
+	path := fmt.Sprintf("orgs/%s/rulesets/%d", url.PathEscape(org), id)
+	resp, err := client.Request(http.MethodPut, path, bytes.NewReader(payload))
+	if err != nil {
+		return fmt.Errorf("PUT %s: %w", path, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	_, _ = io.Copy(io.Discard, resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("PUT %s: unexpected status %d", path, resp.StatusCode)
+	}
+	return nil
+}
+
+// rulesetMissDescription explains, per ruleset, what a teacher loses if
+// it couldn't be created — surfaced in the warning so the manual-fix
+// hint is actionable.
+func rulesetMissDescription(name string) string {
+	switch name {
+	case rulesetNameSubmissionHistory:
+		return "force-push or delete their submission history on main"
+	case rulesetNameFeedbackBase:
+		return "merge or move the feedback PR themselves"
+	default:
+		return "bypass intended branch protections"
+	}
 }
 
 // setWorkflowPermissions raises the default GITHUB_TOKEN to write.

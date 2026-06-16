@@ -87,6 +87,10 @@
           "items": { "$ref": "#/$defs/test" },
           "description": "Declarative tests. Mutually exclusive with a per-assignment autograder.py at <classroom>/autograders/<slug>/ — probe before writing."
         },
+        "feedback_pr": {
+          "type": "boolean",
+          "description": "Opt the assignment into the Feedback Pull Request: the autograde runner opens one long-lived PR per student repo (base = a frozen branch at the baseline commit, head = the default branch) for inline instructor review of the full starter→submission diff. Defaults to false; omitted when unset."
+        },
         "migrated_from": {
           "type": "object",
           "additionalProperties": false,

@@ -68,6 +68,13 @@ type assignmentsJSON struct {
 // (>= 2) for group-mode entries; must be 0 (unset, omitted) for
 // individual. The limit is enforced within the CLI at join time —
 // direct GitHub-UI invites can exceed it (documented limitation).
+//
+// FeedbackPR opts the assignment into the Feedback Pull Request: when
+// true, the autograde runner opens one long-lived PR per student repo
+// (base = a frozen branch at the baseline commit, head = the default
+// branch) so teachers leave inline review comments on the full
+// starter→submission diff. Default false; omits from the file when
+// unset. The runner re-reads it from the published manifest.
 type assignmentEntry struct {
 	Slug         string           `json:"slug"`
 	Name         string           `json:"name"`
@@ -80,6 +87,7 @@ type assignmentEntry struct {
 	MaxGroupSize int              `json:"max_group_size,omitempty"`
 	Runtime      *runtimeRef      `json:"runtime,omitempty"`
 	Tests        []testSpec       `json:"tests,omitempty"`
+	FeedbackPR   bool             `json:"feedback_pr,omitempty"`
 	MigratedFrom *migratedFromRef `json:"migrated_from,omitempty"`
 }
 

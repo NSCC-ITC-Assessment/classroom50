@@ -165,6 +165,81 @@ func TestParseAssignments_TestsRoundTrip(t *testing.T) {
 	}
 }
 
+func TestParseAssignments_FeedbackPRRoundTrip(t *testing.T) {
+	// feedback_pr=true parses, survives a re-encode/re-parse, and an
+	// entry without the field defaults to false.
+	in := []byte(`{
+  "schema": "classroom50/assignments/v1",
+  "assignments": [
+    {
+      "slug": "hello",
+      "name": "Hello",
+      "template": { "owner": "cs50", "repo": "hello-template", "branch": "main" },
+      "mode": "individual",
+      "autograder": "default",
+      "feedback_pr": true
+    },
+    {
+      "slug": "world",
+      "name": "World",
+      "template": { "owner": "cs50", "repo": "world-template", "branch": "main" },
+      "mode": "individual",
+      "autograder": "default"
+    }
+  ]
+}`)
+	file, err := parseAssignments(in)
+	if err != nil {
+		t.Fatalf("parseAssignments: %v", err)
+	}
+	if !file.Assignments[0].FeedbackPR {
+		t.Errorf("hello.FeedbackPR = false, want true")
+	}
+	if file.Assignments[1].FeedbackPR {
+		t.Errorf("world.FeedbackPR = true, want false (field absent)")
+	}
+
+	encoded, err := encodeAssignments(file)
+	if err != nil {
+		t.Fatalf("encodeAssignments: %v", err)
+	}
+	// false omits from the wire (omitempty); true must persist.
+	if !strings.Contains(string(encoded), `"feedback_pr": true`) {
+		t.Errorf("encoded missing feedback_pr:\n%s", encoded)
+	}
+	if strings.Contains(string(encoded), `"feedback_pr": false`) {
+		t.Errorf("feedback_pr:false should omit, not serialize:\n%s", encoded)
+	}
+	again, err := parseAssignments(encoded)
+	if err != nil {
+		t.Fatalf("re-parse: %v", err)
+	}
+	if !again.Assignments[0].FeedbackPR || again.Assignments[1].FeedbackPR {
+		t.Errorf("feedback_pr not stable across round-trip: %#v", again.Assignments)
+	}
+}
+
+func TestParseAssignments_RejectsNonBoolFeedbackPR(t *testing.T) {
+	// DisallowUnknownFields is satisfied (the field exists), but a
+	// non-bool value must fail the JSON decode rather than coerce.
+	in := []byte(`{
+  "schema": "classroom50/assignments/v1",
+  "assignments": [
+    {
+      "slug": "hello",
+      "name": "Hello",
+      "template": { "owner": "cs50", "repo": "hello-template", "branch": "main" },
+      "mode": "individual",
+      "autograder": "default",
+      "feedback_pr": "yes"
+    }
+  ]
+}`)
+	if _, err := parseAssignments(in); err == nil {
+		t.Fatal("expected parse error for non-bool feedback_pr, got nil")
+	}
+}
+
 func TestParseAssignments_RejectsInvalidTest(t *testing.T) {
 	// A malformed test (unknown type) must fail the parse-path
 	// validator with the entry context attached.

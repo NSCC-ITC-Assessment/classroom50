@@ -256,6 +256,43 @@ class TestBaselineSha:
         assert ag.baseline_sha(clone) == shas[1]
 
 
+class TestFeedbackBaseSha:
+    # feedback_base_sha is the *trusted* baseline for the Feedback PR's
+    # frozen base branch: it returns the matched accept commit, and
+    # (unlike baseline_sha) does NOT fall back to the root commit.
+    def test_returns_accept_commit_when_matched(self, tmp_path):
+        shas = _make_repo(tmp_path / "repo", [
+            "Initial commit",
+            ag.ACCEPT_COMMIT_SUBJECT,
+            "Submit hello",
+        ])
+        assert ag.feedback_base_sha(tmp_path / "repo") == shas[1]
+
+    def test_none_when_accept_commit_absent_no_root_fallback(self, tmp_path):
+        # A hand-created repo without the accept commit: baseline_sha
+        # would fall back to the root, but feedback_base_sha must NOT —
+        # freezing a wrong base into a long-lived branch is worse than
+        # skipping the Feedback PR.
+        _make_repo(tmp_path / "repo", [
+            "Initial commit",
+            "Submit hello",
+        ])
+        assert ag.feedback_base_sha(tmp_path / "repo") is None
+
+    def test_none_when_history_unavailable(self, tmp_path):
+        (tmp_path / "plain").mkdir()
+        assert ag.feedback_base_sha(tmp_path / "plain") is None
+
+    def test_earliest_accept_subject_wins(self, tmp_path):
+        shas = _make_repo(tmp_path / "repo", [
+            "Initial commit",
+            ag.ACCEPT_COMMIT_SUBJECT,
+            "Submit hello",
+            ag.ACCEPT_COMMIT_SUBJECT,
+        ])
+        assert ag.feedback_base_sha(tmp_path / "repo") == shas[1]
+
+
 # ---------------------------------------------------------------------------
 # empty_result
 # ---------------------------------------------------------------------------
@@ -813,6 +850,29 @@ class TestAppendOutputs:
     def test_no_path_does_not_crash(self):
         # Running locally for development — GITHUB_OUTPUT may not be set.
         ag.append_outputs(None, "success", "ok")  # no exception
+
+
+class TestAppendShaOutputs:
+    def test_writes_both_when_baseline_known(self, tmp_path):
+        path = tmp_path / "out"
+        path.write_text("")
+        ag.append_sha_outputs(str(path), "b" * 40, "a" * 40)
+        text = path.read_text()
+        assert f"head-sha={'a' * 40}\n" in text
+        assert f"baseline-sha={'b' * 40}\n" in text
+
+    def test_omits_baseline_when_unknown(self, tmp_path):
+        # No usable baseline → only head-sha; the workflow step's
+        # baseline-sha guard then skips opening the PR.
+        path = tmp_path / "out"
+        path.write_text("")
+        ag.append_sha_outputs(str(path), None, "a" * 40)
+        text = path.read_text()
+        assert f"head-sha={'a' * 40}\n" in text
+        assert "baseline-sha=" not in text
+
+    def test_no_path_does_not_crash(self):
+        ag.append_sha_outputs(None, "b" * 40, "a" * 40)  # no exception
 
 
 # ---------------------------------------------------------------------------

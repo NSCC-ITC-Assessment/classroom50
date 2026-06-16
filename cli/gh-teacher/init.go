@@ -80,6 +80,26 @@ func initCmd() *cobra.Command {
 				return err
 			}
 
+			// Allow Actions' GITHUB_TOKEN to open the opt-in Feedback PR
+			// (issue #86). Org-level so student repos inherit it at
+			// creation; a maintain student can't set it per-repo. Even
+			// with pull-requests: write, PR creation is rejected unless
+			// this org toggle is on, and it defaults off.
+			prCreateReady, err := ensureOrgCanCreatePRs(client, out, errOut, org)
+			if err != nil {
+				return err
+			}
+
+			// Install the org-level rulesets that protect submission
+			// history and lock the Feedback PR base (issue #86). Org-
+			// level so they auto-cover every current/future student
+			// repo; warn-and-continue if the org's plan/policy blocks
+			// them.
+			rulesetsReady, err := ensureClassroomRulesets(client, out, errOut, org)
+			if err != nil {
+				return err
+			}
+
 			// Default branch comes from the create/fetch response —
 			// org policy can rename it.
 			repo, created, err := ensureConfigRepo(client, org)
@@ -125,6 +145,24 @@ func initCmd() *cobra.Command {
 			}
 			if err := provisionCollectSecret(client, out, org, configRepoName, token, "stored"); err != nil {
 				return err
+			}
+
+			// Consolidated Feedback PR readiness summary so a teacher (or
+			// a script parsing init output) gets one clear signal about
+			// whether the opt-in Feedback PR (issue #86) prerequisites are
+			// in place, rather than only scattered per-step warnings.
+			if prCreateReady && rulesetsReady {
+				_, _ = fmt.Fprintf(out, "%s: Feedback PR prerequisites ready (Actions-PR setting + branch rulesets)\n", org)
+			} else {
+				var missing []string
+				if !prCreateReady {
+					missing = append(missing, "the org Actions-PR setting")
+				}
+				if !rulesetsReady {
+					missing = append(missing, "the submission-history / feedback-base rulesets")
+				}
+				_, _ = fmt.Fprintf(errOut, "Warning: %s: Feedback PR prerequisites incomplete — %s could not be applied (see the warnings above). Assignments created with `--feedback-pr` may not open PRs or may leave submissions unprotected until you apply these at https://github.com/organizations/%s/settings, then re-run `gh teacher init`.\n",
+					org, strings.Join(missing, " and "), org)
 			}
 
 			// Pages takes a few seconds after the first publish-pages

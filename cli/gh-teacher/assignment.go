@@ -58,6 +58,7 @@ func assignmentAddCmd() *cobra.Command {
 		autograder   string
 		runtimeFile  string
 		testsFile    string
+		feedbackPR   bool
 	)
 
 	cmd := &cobra.Command{
@@ -170,7 +171,7 @@ func assignmentAddCmd() *cobra.Command {
 			}
 			return runAssignmentAdd(client, cmd.OutOrStdout(), cmd.ErrOrStderr(),
 				org, classroom, slug, nameVal, strings.TrimSpace(description),
-				tmplArg, dueVal, dueMetaVal, modeVal, maxGroupSize, autograderVal, runtime, tests)
+				tmplArg, dueVal, dueMetaVal, modeVal, maxGroupSize, autograderVal, runtime, tests, feedbackPR)
 		},
 	}
 
@@ -183,6 +184,7 @@ func assignmentAddCmd() *cobra.Command {
 	cmd.Flags().StringVar(&autograder, "autograder", defaultAutograderName, "Autograder workflow shim this assignment opts into; resolves to <classroom>/autograders/<name>.yaml in the config repo")
 	cmd.Flags().StringVar(&runtimeFile, "runtime", "", "Path to a JSON file describing the runtime environment (runs-on, python/node/java/go versions, apt packages, or container image), or `-` to read from stdin. Omit for ubuntu-latest + Python 3.12.")
 	cmd.Flags().StringVar(&testsFile, "tests", "", "Path to a JSON file with a bare array of declarative test specs (io/run/python), or `-` to read from stdin. Sets the assignment's `tests` block; mutually exclusive with a per-assignment autograder.py. See `gh teacher assignment test --help`.")
+	cmd.Flags().BoolVar(&feedbackPR, "feedback-pr", true, "Open one long-lived Feedback pull request per student repo so you can leave inline review comments on the full starter→submission diff. The autograde runner freezes a base branch at the baseline commit and opens the PR on the first submission that has a diff. Default on; pass --feedback-pr=false to disable. Requires `gh teacher init` to have set up the org prerequisites.")
 	return cmd
 }
 
@@ -384,7 +386,7 @@ func validateModeAndSizeFlags(mode string, maxGroupSize int, sizeProvided bool) 
 	return modeVal, nil
 }
 
-func runAssignmentAdd(client *api.RESTClient, out, errOut io.Writer, org, classroom, slug, name, description string, tmpl templateArg, due string, dueMetaVal *dueMeta, mode string, maxGroupSize int, autograder string, runtime *runtimeRef, tests []testSpec) error {
+func runAssignmentAdd(client *api.RESTClient, out, errOut io.Writer, org, classroom, slug, name, description string, tmpl templateArg, due string, dueMetaVal *dueMeta, mode string, maxGroupSize int, autograder string, runtime *runtimeRef, tests []testSpec, feedbackPR bool) error {
 	branch, err := resolveConfigRepoBranch(client, org)
 	if err != nil {
 		return err
@@ -407,6 +409,7 @@ func runAssignmentAdd(client *api.RESTClient, out, errOut io.Writer, org, classr
 		Autograder:   autograder,
 		Runtime:      runtime,
 		Tests:        tests,
+		FeedbackPR:   feedbackPR,
 	}
 	if err := validateAssignmentEntry(entry); err != nil {
 		return err

@@ -120,8 +120,11 @@ def harness(tmp_path, monkeypatch):
         monkeypatch.setattr(ag, "fetch_url", fake_fetch)
 
         # Workspace isn't a git repo; tests set the baseline directly
-        # (real git behavior: test_runner.py::TestBaselineSha).
+        # (real git behavior: test_runner.py::TestBaselineSha /
+        # TestFeedbackBaseSha). feedback_base_sha mirrors baseline here —
+        # the harness baseline stands in for the trusted accept commit.
         monkeypatch.setattr(ag, "baseline_sha", lambda workspace: baseline)
+        monkeypatch.setattr(ag, "feedback_base_sha", lambda workspace: baseline)
 
         def fake_subprocess_run(cmd, cwd, env, check):
             if subprocess_raises is not None:
