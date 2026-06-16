@@ -42,6 +42,7 @@ func main() {
 	root.AddCommand(autograderCmd())
 	root.AddCommand(inviteCmd())
 	root.AddCommand(removeCmd())
+	root.AddCommand(memberCmd())
 	root.AddCommand(downloadCmd())
 	root.AddCommand(teardownCmd())
 
