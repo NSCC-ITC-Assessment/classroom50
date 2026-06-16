@@ -57,6 +57,58 @@ func TestAssignmentRegistered(t *testing.T) {
 	}
 }
 
+func TestAssignmentIsGroup(t *testing.T) {
+	file := assignmentsJSON{
+		Schema: assignmentsSchemaV1,
+		Assignments: []assignmentEntry{
+			{Slug: "solo", Mode: "individual"},
+			{Slug: "team", Mode: "group"},
+			{Slug: "blank"}, // no mode → not group
+		},
+	}
+	cases := []struct {
+		in   string
+		want bool
+	}{
+		{"team", true},
+		{"TEAM", true}, // case-insensitive
+		{"solo", false},
+		{"blank", false},
+		{"missing", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.in, func(t *testing.T) {
+			if got := assignmentIsGroup(file, tc.in); got != tc.want {
+				t.Fatalf("assignmentIsGroup(%q) = %v, want %v", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestCreditedUsernames(t *testing.T) {
+	scores := scoresJSON{
+		Schema: scoresSchemaV1,
+		Submissions: map[string][]map[string]any{
+			"project": {
+				{"usernames": []any{"alice", "Bob", "carol"}, "score": float64(90)},
+			},
+			"other": {
+				{"usernames": []any{"dan"}, "score": float64(50)},
+			},
+		},
+	}
+	credited := creditedUsernames(scores, "project")
+	// All three group members credited, lowercased; other-assignment rows excluded.
+	for _, u := range []string{"alice", "bob", "carol"} {
+		if _, ok := credited[u]; !ok {
+			t.Fatalf("expected %q credited for project, got %v", u, credited)
+		}
+	}
+	if _, ok := credited["dan"]; ok {
+		t.Fatalf("dan is in another assignment bucket, must not be credited for project")
+	}
+}
+
 func TestSelectResultAsset(t *testing.T) {
 	cases := []struct {
 		name        string
@@ -351,6 +403,57 @@ func TestWriteScoresCSV(t *testing.T) {
 	}, "\n")
 	if string(got) != want {
 		t.Fatalf("scores.csv mismatch:\n got:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+func TestWriteScoresCSV_GroupFanOut(t *testing.T) {
+	// A group submission is one multi-username row (written by
+	// collect_scores.py). writeScoresCSV must credit every member with
+	// the shared score, including a teammate who owns no derived repo.
+	roster := []rosterRow{
+		{Username: "alice"}, // owner
+		{Username: "bob"},   // joined alice's repo
+		{Username: "carol"}, // joined alice's repo
+		{Username: "dan"},   // not in the group — no score
+	}
+	scores := scoresJSON{
+		Schema: scoresSchemaV1,
+		Submissions: map[string][]map[string]any{
+			"project": {
+				{
+					"usernames":  []any{"alice", "bob", "carol"},
+					"score":      float64(90),
+					"max-score":  float64(100),
+					"datetime":   "2026-06-01T14:33:11Z",
+					"submission": "submit/2026-06-01T14-32-05Z",
+					"review":     "https://github.com/cs50/cs-principles-project-alice/commit/abc",
+					"late":       false,
+				},
+			},
+		},
+	}
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "scores.csv")
+	if err := writeScoresCSV(path, scores, "project", roster); err != nil {
+		t.Fatalf("writeScoresCSV: %v", err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read file: %v", err)
+	}
+
+	row := "90,100,2026-06-01T14:33:11Z,submit/2026-06-01T14-32-05Z,https://github.com/cs50/cs-principles-project-alice/commit/abc,false,"
+	want := strings.Join([]string{
+		"username,score,max_score,datetime,submission_tag,review_url,late,override",
+		"alice," + row,
+		"bob," + row,
+		"carol," + row,
+		"dan,,,,,,,", // not a group member → blank
+		"",
+	}, "\n")
+	if string(got) != want {
+		t.Fatalf("group scores.csv mismatch:\n got:\n%s\nwant:\n%s", got, want)
 	}
 }
 

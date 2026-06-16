@@ -153,10 +153,13 @@ func downloadByRoster(client *api.RESTClient, out, errOut io.Writer, org, classr
 			assignment, org, configRepoName, assignmentsFilePath(classroom), org, classroom, assignment)
 	}
 
+	isGroup := assignmentIsGroup(assignments, assignment)
+
 	scores, err := loadScores(client, org, classroom, branch)
 	if err != nil {
 		return err
 	}
+	credited := creditedUsernames(scores, assignment)
 
 	if len(roster) == 0 {
 		if !quiet {
@@ -213,6 +216,24 @@ func downloadByRoster(client *api.RESTClient, out, errOut io.Writer, org, classr
 			continue
 		}
 		if !exists {
+			if isGroup {
+				if _, ok := credited[strings.ToLower(row.Username)]; ok {
+					// Joined a teammate's repo: owns no derived repo,
+					// but already credited via the owner's fanned-out
+					// scores.json row. Expected — not a miss.
+					if verbose && !quiet {
+						_, _ = fmt.Fprintf(out, "Credited via group repo: %s (no own repo)\n", row.Username)
+					}
+					continue
+				}
+				// Group assignment, no own repo, and not credited in
+				// scores.json — a genuine non-participant. Still report.
+				if !quiet {
+					_, _ = fmt.Fprintf(out, "Missing: %s (group assignment — no own repo and not yet credited via a teammate)\n", row.Username)
+				}
+				missing = append(missing, row.Username)
+				continue
+			}
 			if !quiet {
 				_, _ = fmt.Fprintf(out, "Missing: %s (no repo at %s/%s — not accepted yet?)\n", row.Username, org, repoName)
 			}
@@ -376,6 +397,20 @@ func assignmentRegistered(assignments assignmentsJSON, slug string) bool {
 	for _, entry := range assignments.Assignments {
 		if strings.EqualFold(entry.Slug, slug) {
 			return true
+		}
+	}
+	return false
+}
+
+// assignmentIsGroup reports whether the registered assignment slug is a
+// group assignment. For a group assignment only the first accepter owns
+// a derived repo (`<classroom>-<assignment>-<owner>`); teammates join
+// that repo, so their own derived repo legitimately doesn't exist and a
+// 404 on it is not a "missing submission".
+func assignmentIsGroup(assignments assignmentsJSON, slug string) bool {
+	for _, entry := range assignments.Assignments {
+		if strings.EqualFold(entry.Slug, slug) {
+			return strings.EqualFold(entry.Mode, assignmentModeGroup)
 		}
 	}
 	return false
@@ -600,6 +635,20 @@ func submissionsForAssignment(scores scoresJSON, assignment string) []map[string
 		}
 	}
 	return nil
+}
+
+// creditedUsernames returns the lowercased set of usernames that
+// already have a score row for the assignment in scores.json. Used so a
+// group teammate who was fanned a score (but owns no derived repo) is
+// not mistaken for a non-participant.
+func creditedUsernames(scores scoresJSON, assignment string) map[string]struct{} {
+	out := make(map[string]struct{})
+	for _, sub := range submissionsForAssignment(scores, assignment) {
+		for _, u := range submissionUsernames(sub) {
+			out[strings.ToLower(u)] = struct{}{}
+		}
+	}
+	return out
 }
 
 // submissionUsernames returns every username on a submission entry.

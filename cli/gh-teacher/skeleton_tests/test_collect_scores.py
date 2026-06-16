@@ -357,6 +357,284 @@ class TestValidateResult:
         payload["tests"] = []
         cs.validate_result(payload, "cs-principles", "hello", "alice")
 
+    def test_group_mode_accepts_owner_only_usernames(self):
+        # The runner emits usernames=[owner] for a group repo (it can't
+        # read collaborators); collection rewrites it afterward.
+        payload = make_result(username="alice")
+        cs.validate_result(payload, "cs-principles", "hello", "alice", is_group=True)
+
+    def test_group_mode_accepts_owner_among_many(self):
+        payload = make_result()
+        payload["usernames"] = ["alice", "bob", "carol"]
+        cs.validate_result(payload, "cs-principles", "hello", "alice", is_group=True)
+
+    def test_group_mode_rejects_payload_missing_owner(self):
+        # Identity defense survives in group mode: the repo owner must
+        # be present in usernames.
+        payload = make_result()
+        payload["usernames"] = ["bob", "carol"]
+        with pytest.raises(ValueError, match="group owner"):
+            cs.validate_result(payload, "cs-principles", "hello", "alice", is_group=True)
+
+    def test_group_mode_rejects_empty_usernames(self):
+        payload = make_result()
+        payload["usernames"] = []
+        with pytest.raises(ValueError, match="non-empty list"):
+            cs.validate_result(payload, "cs-principles", "hello", "alice", is_group=True)
+
+
+# Group attribution -----------------------------------------------------------
+
+
+class TestGroupMemberUsernames:
+    def test_includes_owner_and_sorts_deduped(self, monkeypatch):
+        monkeypatch.setattr(
+            cs, "list_repo_collaborator_logins", lambda *a, **k: ["Carol", "bob", "alice"]
+        )
+        members = cs.group_member_usernames(
+            "https://api.github.com", "cs50", "cs-principles-hello-alice", "alice", "token",
+            {"alice", "bob", "carol"},
+        )
+        # Sorted, case-insensitively deduped, owner present.
+        assert members == ["alice", "bob", "Carol"]
+
+    def test_owner_guaranteed_even_if_not_listed(self, monkeypatch):
+        # A partial/eventually-consistent collaborator read might omit
+        # the owner; we still credit them.
+        monkeypatch.setattr(cs, "list_repo_collaborator_logins", lambda *a, **k: ["bob"])
+        members = cs.group_member_usernames(
+            "https://api.github.com", "cs50", "cs-principles-hello-alice", "alice", "token",
+            {"alice", "bob"},
+        )
+        assert members == ["alice", "bob"]
+
+    def test_excludes_non_rostered_collaborator(self, monkeypatch):
+        # A collaborator added out-of-band (not on the roster) must not
+        # be credited a score, even though they're a non-admin collaborator.
+        monkeypatch.setattr(
+            cs, "list_repo_collaborator_logins", lambda *a, **k: ["bob", "intruder"]
+        )
+        members = cs.group_member_usernames(
+            "https://api.github.com", "cs50", "cs-principles-hello-alice", "alice", "token",
+            {"alice", "bob", "carol"},
+        )
+        assert members == ["alice", "bob"]
+        assert "intruder" not in members
+
+    def test_owner_credited_even_if_not_on_roster(self, monkeypatch):
+        # The owner is always credited (the repo is named after them and
+        # they passed validate_result); roster filtering applies only to
+        # the other collaborators.
+        monkeypatch.setattr(cs, "list_repo_collaborator_logins", lambda *a, **k: [])
+        members = cs.group_member_usernames(
+            "https://api.github.com", "cs50", "cs-principles-hello-alice", "alice", "token",
+            set(),
+        )
+        assert members == ["alice"]
+
+    def test_owner_casing_wins_on_collision(self, monkeypatch):
+        # If the collaborator list returns the owner under a different
+        # casing, the owner's own casing (placed first) is kept and not
+        # duplicated.
+        monkeypatch.setattr(cs, "list_repo_collaborator_logins", lambda *a, **k: ["alice", "bob"])
+        members = cs.group_member_usernames(
+            "https://api.github.com", "cs50", "cs-principles-hello-alice", "Alice", "token",
+            {"alice", "bob"},
+        )
+        assert members == ["Alice", "bob"]
+
+
+class TestListRepoCollaboratorLogins:
+    def test_excludes_admins_and_paginates(self, monkeypatch):
+        page1 = [{"login": f"u{i}", "role_name": "write"} for i in range(100)]
+        page2 = [
+            {"login": "owner-admin", "role_name": "admin"},
+            {"login": "ta-admin", "role_name": "admin"},
+            {"login": "student", "role_name": "maintain"},
+        ]
+
+        def fake_http_get(url, token, *, accept, max_bytes=None):
+            page = "page=1&" in url or url.endswith("page=1")
+            return json.dumps(page1 if page else page2).encode("utf-8")
+
+        monkeypatch.setattr(cs, "_http_get", fake_http_get)
+        logins = cs.list_repo_collaborator_logins(
+            "https://api.github.com", "cs50", "cs-principles-hello-alice", "token"
+        )
+        assert "owner-admin" not in logins
+        assert "ta-admin" not in logins
+        assert "student" in logins
+        assert len([x for x in logins if x.startswith("u")]) == 100
+
+
+class TestGroupCollectClassroom:
+    def _group_assignments(self):
+        return {"assignments": [{"slug": "project", "mode": "group", "max_group_size": 3}]}
+
+    def _stub_release(self, monkeypatch):
+        def fake_latest(*args, **kwargs):
+            return {
+                "tag_name": "submit/2026-09-16T04-00-00Z",
+                "assets": [{"name": "result.json", "url": "https://api.github.com/assets/1"}],
+            }
+
+        monkeypatch.setattr(cs, "latest_submit_release_or_none", fake_latest)
+
+    def test_group_score_fans_out_to_members(self, monkeypatch):
+        self._stub_release(monkeypatch)
+        monkeypatch.setattr(
+            cs, "download_result_asset",
+            lambda *a, **k: make_result(classroom="cs-principles", assignment="project", username="alice"),
+        )
+        monkeypatch.setattr(
+            cs, "list_repo_collaborator_logins", lambda *a, **k: ["alice", "bob", "carol"]
+        )
+
+        results = cs.collect_classroom(
+            api_url="https://api.github.com",
+            org="cs50",
+            classroom_short="cs-principles",
+            assignments=self._group_assignments(),
+            roster=[
+                {"username": "alice", "github_id": "1"},
+                {"username": "bob", "github_id": "2"},
+                {"username": "carol", "github_id": "3"},
+            ],
+            collect_token="token",
+        )
+        assert len(results) == 1
+        assert results[0]["usernames"] == ["alice", "bob", "carol"]
+
+    def test_group_fanout_excludes_non_rostered_collaborator(self, monkeypatch):
+        # A collaborator added out-of-band who is not on the roster must
+        # not be credited a score.
+        self._stub_release(monkeypatch)
+        monkeypatch.setattr(
+            cs, "download_result_asset",
+            lambda *a, **k: make_result(classroom="cs-principles", assignment="project", username="alice"),
+        )
+        monkeypatch.setattr(
+            cs, "list_repo_collaborator_logins", lambda *a, **k: ["alice", "bob", "intruder"]
+        )
+
+        results = cs.collect_classroom(
+            api_url="https://api.github.com",
+            org="cs50",
+            classroom_short="cs-principles",
+            assignments=self._group_assignments(),
+            roster=[
+                {"username": "alice", "github_id": "1"},
+                {"username": "bob", "github_id": "2"},
+            ],
+            collect_token="token",
+        )
+        assert results[0]["usernames"] == ["alice", "bob"]
+        assert "intruder" not in results[0]["usernames"]
+
+    def test_group_read_failure_falls_back_to_owner_dropping_injected_usernames(self, monkeypatch, capsys):
+        # Regression guard: a student could hand-edit result.json to add
+        # an extra username. On a collaborator-read failure the fallback
+        # MUST reduce usernames to the owner only — never trust the
+        # runner/student-supplied list.
+        import urllib.error
+
+        self._stub_release(monkeypatch)
+
+        def injected(*a, **k):
+            payload = make_result(classroom="cs-principles", assignment="project", username="alice")
+            payload["usernames"] = ["alice", "victim"]  # student-injected extra
+            return payload
+
+        monkeypatch.setattr(cs, "download_result_asset", injected)
+
+        def boom(*a, **k):
+            raise urllib.error.HTTPError("u", 403, "Forbidden", None, None)
+
+        monkeypatch.setattr(cs, "list_repo_collaborator_logins", boom)
+
+        results = cs.collect_classroom(
+            api_url="https://api.github.com",
+            org="cs50",
+            classroom_short="cs-principles",
+            assignments=self._group_assignments(),
+            roster=[{"username": "alice", "github_id": "1"}],
+            collect_token="token",
+        )
+        # The injected "victim" must NOT survive into scores.
+        assert results[0]["usernames"] == ["alice"]
+        err = capsys.readouterr().err
+        assert "could not read group collaborators" in err
+        # Aggregate degraded-attribution signal fired.
+        assert "credited to the repo owner only" in err
+
+    def test_group_malformed_listing_falls_back_to_owner_dropping_injected(self, monkeypatch, capsys):
+        # The malformed-listing (ValueError) branch must also reset to
+        # owner-only and drop any injected username — same security
+        # guarantee as the HTTPError branch.
+        self._stub_release(monkeypatch)
+
+        def injected(*a, **k):
+            payload = make_result(classroom="cs-principles", assignment="project", username="alice")
+            payload["usernames"] = ["alice", "victim"]
+            return payload
+
+        monkeypatch.setattr(cs, "download_result_asset", injected)
+
+        def malformed(*a, **k):
+            raise ValueError("expected JSON array, got dict")
+
+        monkeypatch.setattr(cs, "list_repo_collaborator_logins", malformed)
+
+        results = cs.collect_classroom(
+            api_url="https://api.github.com",
+            org="cs50",
+            classroom_short="cs-principles",
+            assignments=self._group_assignments(),
+            roster=[{"username": "alice", "github_id": "1"}],
+            collect_token="token",
+        )
+        assert results[0]["usernames"] == ["alice"]
+        assert "malformed" in capsys.readouterr().err
+
+    def test_teammate_without_repo_is_not_a_miss(self, monkeypatch):
+        # bob joined alice's repo, so bob's derived repo 404s
+        # (release None). He should not appear as a separate submission;
+        # his score comes via alice's fanned-out row.
+        self._stub_release_only_for(monkeypatch, owner="alice")
+        monkeypatch.setattr(
+            cs, "download_result_asset",
+            lambda *a, **k: make_result(classroom="cs-principles", assignment="project", username="alice"),
+        )
+        monkeypatch.setattr(
+            cs, "list_repo_collaborator_logins", lambda *a, **k: ["alice", "bob"]
+        )
+
+        results = cs.collect_classroom(
+            api_url="https://api.github.com",
+            org="cs50",
+            classroom_short="cs-principles",
+            assignments=self._group_assignments(),
+            roster=[
+                {"username": "alice", "github_id": "1"},
+                {"username": "bob", "github_id": "2"},
+            ],
+            collect_token="token",
+        )
+        # One submission (alice's repo), fanned to both.
+        assert len(results) == 1
+        assert results[0]["usernames"] == ["alice", "bob"]
+
+    def _stub_release_only_for(self, monkeypatch, *, owner):
+        def fake_latest(api_url, org, repo, token):
+            if repo.endswith(f"-{owner}"):
+                return {
+                    "tag_name": "submit/2026-09-16T04-00-00Z",
+                    "assets": [{"name": "result.json", "url": "https://api.github.com/assets/1"}],
+                }
+            return None
+
+        monkeypatch.setattr(cs, "latest_submit_release_or_none", fake_latest)
+
 
 # assignment_repo_name --------------------------------------------------------
 

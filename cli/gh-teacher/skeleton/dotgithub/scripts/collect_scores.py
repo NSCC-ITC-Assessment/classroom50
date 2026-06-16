@@ -324,6 +324,11 @@ def collect_classroom(
     main() converts them to exit 1.
     """
     results: list[dict[str, Any]] = []
+    group_attribution_degraded = 0
+    # Roster usernames (lowercased) used to gate group attribution; depends
+    # only on the roster, so compute once outside the per-assignment loop.
+    roster_logins = {(s.get("username") or "").strip().lower() for s in roster}
+    roster_logins.discard("")
     for entry in assignments.get("assignments") or []:
         slug = entry.get("slug")
         if not isinstance(slug, str) or not slug:
@@ -336,6 +341,8 @@ def collect_classroom(
                 f"{classroom_short}/{slug}: due = {due_raw!r} is not an RFC 3339 "
                 f"timestamp with timezone; skipping late-marking for this assignment"
             )
+
+        is_group = (entry.get("mode") or "").lower() == "group"
 
         submitted = 0
         for student in roster:
@@ -379,10 +386,27 @@ def collect_classroom(
                 continue
 
             try:
-                validate_result(payload, classroom_short, slug, username)
+                validate_result(payload, classroom_short, slug, username, is_group=is_group)
             except ValueError as exc:
                 emit_warning(f"{org}/{repo_name}: invalid result.json ({exc}); skipping")
                 continue
+
+            # Group attribution: the runner emits usernames=[owner]
+            # (it can't read collaborators). Collection is authoritative
+            # — list the repo's student collaborators (intersected with
+            # the roster) and fan the shared score to all of them as one
+            # multi-username row. On a read failure, force the row to the
+            # owner only (never trust the runner-supplied usernames, which
+            # a student could have hand-edited) and warn, so a
+            # scope/transient issue degrades to owner-only rather than
+            # leaking an injected username into scores.json.
+            if is_group:
+                payload["usernames"], degraded_warning = attribute_group_members(
+                    api_url, org, repo_name, username, collect_token, roster_logins
+                )
+                if degraded_warning is not None:
+                    group_attribution_degraded += 1
+                    emit_warning(degraded_warning)
 
             if due is not None and not mark_late(payload, due):
                 emit_warning(
@@ -395,6 +419,14 @@ def collect_classroom(
             submitted += 1
 
         print(f"{classroom_short}/{slug}: {submitted}/{len(roster)} submitted")
+
+    if group_attribution_degraded:
+        emit_warning(
+            f"{classroom_short}: {group_attribution_degraded} group submission(s) "
+            f"credited to the repo owner only because the collaborator read failed "
+            f"(teammates not credited). This usually means CLASSROOM50_COLLECT_TOKEN "
+            f"lacks the collaborator-read permission — rotate it with `gh teacher rotate-collect-token`."
+        )
 
     return results
 
@@ -690,12 +722,23 @@ _REQUIRED_STR_FIELDS = ("submission", "commit", "release", "review", "datetime")
 
 
 def validate_result(
-    payload: Any, expected_classroom: str, expected_assignment: str, expected_username: str
+    payload: Any,
+    expected_classroom: str,
+    expected_assignment: str,
+    expected_username: str,
+    *,
+    is_group: bool = False,
 ) -> None:
     """Raise ValueError if the payload fails the v1 contract. The
     classroom/assignment/username checks defend against a hostile
     result.json trying to land in someone else's scores.json — the
     triple must match the source repo's expected identity.
+
+    For an individual assignment, usernames must be exactly
+    [expected_username]. For a group assignment the runner still emits
+    the single repo owner (it can't read collaborators), so usernames
+    must be non-empty and *contain* the expected owner; collection
+    rewrites it to the full member list after this check passes.
     """
     if not isinstance(payload, dict):
         raise ValueError(f"top-level value must be an object, got {type(payload).__name__}")
@@ -711,15 +754,29 @@ def validate_result(
         raise ValueError(f"assignment = {assignment!r}, want {expected_assignment!r}")
 
     usernames = payload.get("usernames")
-    if not isinstance(usernames, list) or len(usernames) != 1 or not isinstance(usernames[0], str):
+    if not isinstance(usernames, list) or not usernames or not all(
+        isinstance(u, str) and u for u in usernames
+    ):
         raise ValueError(
-            f"usernames must be a one-element list of strings (v0.2 individual mode), "
-            f"got {usernames!r}"
+            f"usernames must be a non-empty list of non-empty strings, got {usernames!r}"
         )
-    if usernames[0].lower() != expected_username.lower():
-        raise ValueError(
-            f"usernames[0] = {usernames[0]!r}, want {expected_username!r} (derived from roster)"
-        )
+    if is_group:
+        # The owner's repo is authoritative; the owner must be present.
+        if not any(u.lower() == expected_username.lower() for u in usernames):
+            raise ValueError(
+                f"usernames {usernames!r} does not include the group owner "
+                f"{expected_username!r} (derived from the repo name)"
+            )
+    else:
+        if len(usernames) != 1:
+            raise ValueError(
+                f"usernames must be a one-element list for an individual assignment, "
+                f"got {usernames!r}"
+            )
+        if usernames[0].lower() != expected_username.lower():
+            raise ValueError(
+                f"usernames[0] = {usernames[0]!r}, want {expected_username!r} (derived from roster)"
+            )
 
     submission = payload.get("submission")
     if not isinstance(submission, str) or not submission.startswith(SUBMIT_TAG_PREFIX):
@@ -850,6 +907,97 @@ def list_recent_releases(
                 f"GET {url}: expected release object at index {i}, got {type(release).__name__}"
             )
     return releases
+
+
+def list_repo_collaborator_logins(
+    api_url: str, owner: str, repo: str, token: str
+) -> list[str]:
+    """Logins of the student-level collaborators on owner/repo
+    (permission below admin), walking pagination. Admin collaborators
+    (org owners, instructors, admin-granted TAs) are excluded so they
+    don't get a group score row. Mirrors listGroupMemberLogins in
+    cli/gh-student/group.go (same admin-exclusion rule).
+
+    Raises urllib.error.HTTPError on any non-2xx (including 404) so the
+    caller can decide between an owner-only fallback and a hard failure.
+    """
+    per_page = 100
+    max_pages = 100
+    logins: list[str] = []
+    for page in range(1, max_pages + 1):
+        url = (
+            f"{_repo_url(api_url, owner, repo)}/collaborators"
+            f"?per_page={per_page}&page={page}"
+        )
+        body = _http_get(url, token, accept="application/vnd.github+json")
+        batch = json.loads(body.decode("utf-8"))
+        if not isinstance(batch, list):
+            raise ValueError(f"GET {url}: expected JSON array, got {type(batch).__name__}")
+        for c in batch:
+            if not isinstance(c, dict):
+                continue
+            if (c.get("role_name") or "").lower() == "admin":
+                continue
+            login = c.get("login")
+            if isinstance(login, str) and login:
+                logins.append(login)
+        if len(batch) < per_page:
+            return logins
+    raise ValueError(
+        f"repos/{owner}/{repo}/collaborators: too many collaborators to "
+        f"enumerate (hit the {max_pages}-page cap)"
+    )
+
+
+def group_member_usernames(
+    api_url: str, org: str, repo: str, owner_username: str, token: str, roster_logins: set[str]
+) -> list[str]:
+    """Member list for a group submission: the repo's student
+    collaborators **intersected with the roster** (case-insensitive),
+    sorted and deduped, with the owner guaranteed present. Restricting
+    to rostered students means a collaborator added out-of-band (e.g. a
+    non-rostered account invited via the GitHub UI, which bypasses the
+    CLI's group-size limit) can never be credited a score. Raises on the
+    underlying HTTP/parse error so the caller can fall back to owner-only.
+    """
+    logins = list_repo_collaborator_logins(api_url, org, repo, token)
+    seen: dict[str, str] = {}
+    for login in [owner_username, *logins]:
+        key = login.lower()
+        # The owner is always credited; other collaborators only if
+        # they are on the roster for this classroom.
+        if key != owner_username.lower() and key not in roster_logins:
+            continue
+        if key not in seen:
+            seen[key] = login
+    return [seen[k] for k in sorted(seen)]
+
+
+def attribute_group_members(
+    api_url: str, org: str, repo: str, owner_username: str, token: str, roster_logins: set[str]
+) -> tuple[list[str], str | None]:
+    """Resolve the member list to credit for a group submission.
+
+    Returns (usernames, warning). On success `usernames` is the rostered
+    collaborator list (owner always included) and `warning` is None. On a
+    collaborator-read failure `usernames` is forced to [owner] — never the
+    runner/student-supplied list — and `warning` is a non-None message the
+    caller should emit and count as a degraded attribution.
+    """
+    try:
+        return group_member_usernames(api_url, org, repo, owner_username, token, roster_logins), None
+    except urllib.error.HTTPError as exc:
+        return [owner_username], (
+            f"{org}/{repo}: could not read group collaborators "
+            f"(HTTP {exc.code} {exc.reason or 'no reason'}); crediting the "
+            f"repo owner {owner_username!r} only. Ensure CLASSROOM50_COLLECT_TOKEN "
+            f"can read repository collaborators (see the collect-token wiki)."
+        )
+    except (json.JSONDecodeError, ValueError) as exc:
+        return [owner_username], (
+            f"{org}/{repo}: group collaborator listing malformed "
+            f"({exc}); crediting the repo owner {owner_username!r} only."
+        )
 
 
 def download_result_asset(
