@@ -46,11 +46,20 @@ func autograderCmd() *cobra.Command {
 			"lets you grade every assignment in the classroom with one\n" +
 			"script (e.g., a slug-driven dispatcher to a third-party\n" +
 			"grader).\n\n" +
-			"Per-assignment overrides are not managed here. Drop them\n" +
-			"under <classroom>/autograders/<slug>/autograder.py via\n" +
-			"ordinary git operations against the config repo.",
+			"  set-default  install/replace <classroom>/autograder.py\n" +
+			"  show         print it (or report none); --json for metadata\n" +
+			"  remove       delete it (distinct from the stub overwrite)\n" +
+			"  list         list named shims + per-assignment overrides\n\n" +
+			"Named shims (<classroom>/autograders/<name>.yaml) and\n" +
+			"per-assignment overrides (<classroom>/autograders/<slug>/\n" +
+			"autograder.py) are read-only from the CLI — `list` shows what\n" +
+			"is present; author or delete them via ordinary git operations\n" +
+			"against the config repo.",
 	}
 	cmd.AddCommand(autograderSetDefaultCmd())
+	cmd.AddCommand(autograderShowCmd())
+	cmd.AddCommand(autograderListCmd())
+	cmd.AddCommand(autograderRemoveCmd())
 	return cmd
 }
 
@@ -158,14 +167,8 @@ func setClassroomDefaultAutograder(client *api.RESTClient, out, errOut io.Writer
 	// against a typo'd classroom name would otherwise silently create a
 	// phantom directory containing only autograder.py, which then never
 	// gets graded because no assignments are registered there.
-	classroomMarker := classroom + "/classroom.json"
-	exists, err := contentsExists(client, org, configRepoName, classroomMarker, branch)
-	if err != nil {
+	if err := requireClassroomExists(client, org, classroom, branch); err != nil {
 		return err
-	}
-	if !exists {
-		return fmt.Errorf("classroom %q not found in %s/%s (no %s) — run `gh teacher classroom add %s %s` first",
-			classroom, org, configRepoName, classroomMarker, org, classroom)
 	}
 
 	repoPath := classroom + "/" + classroomAutograderFilename
