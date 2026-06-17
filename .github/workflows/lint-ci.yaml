@@ -42,17 +42,30 @@ jobs:
       - uses: actions/checkout@v6
 
       - name: Install actionlint + shellcheck
-        # ubuntu-latest ships shellcheck; install it explicitly so a
-        # future runner image change can't silently drop actionlint's
-        # bundled-shellcheck pass. actionlint comes from its official
-        # release download script (no Go toolchain needed in this job).
+        # Both pinned to specific releases so the lint result is
+        # reproducible: apt's shellcheck floats by runner image and its
+        # info-level checks (e.g. SC2015 in 0.9.0 vs 0.11.0) differ,
+        # which would make CI red on a version bump we didn't choose.
+        # actionlint shells out to whichever `shellcheck` is on PATH, so
+        # we put the pinned one first.
         run: |
           set -euo pipefail
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends shellcheck
-          # Pinned for reproducibility; bump deliberately.
-          bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash) 1.7.12
-          echo "$PWD" >> "$GITHUB_PATH"
+          SHELLCHECK_VERSION="v0.11.0"
+          ACTIONLINT_VERSION="1.7.12"
+          tools="$RUNNER_TEMP/lint-tools"
+          mkdir -p "$tools"
+          # Pinned shellcheck: official static release tarball.
+          curl -fsSL "https://github.com/koalaman/shellcheck/releases/download/${SHELLCHECK_VERSION}/shellcheck-${SHELLCHECK_VERSION}.linux.x86_64.tar.xz" \
+            | tar -xJ -C "$tools" --strip-components=1 "shellcheck-${SHELLCHECK_VERSION}/shellcheck"
+          # actionlint: official download script, pinned.
+          bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash) "$ACTIONLINT_VERSION" "$tools"
+          echo "$tools" >> "$GITHUB_PATH"
+
+      - name: Versions
+        run: |
+          set -euo pipefail
+          shellcheck --version
+          actionlint --version
 
       - name: actionlint (repo + skeleton workflows + shim)
         # The skeleton workflows carry {{ORG}} / {{DEFAULT_BRANCH}}
