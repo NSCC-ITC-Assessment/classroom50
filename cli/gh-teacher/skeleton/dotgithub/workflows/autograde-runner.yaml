@@ -522,6 +522,7 @@ jobs:
       # done). PRs opened by GITHUB_TOKEN don't retrigger workflows, so
       # there's no loop, and this adds no new workflow runs.
       - name: Ensure Feedback PR
+        id: feedback_pr
         if: >-
           always() &&
           needs.setup.outputs.feedback-pr == 'true' &&
@@ -532,157 +533,43 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           BASE_SHA: ${{ steps.autograde.outputs.baseline-sha }}
           MODE: ${{ needs.setup.outputs.mode }}
+        # The control flow lives in ensure_feedback_pr.py (fetched from Pages,
+        # like runner.py) so it's unit-testable with a stubbed gh; this step
+        # is a thin fetch+exec shim. The script freezes the `feedback` base,
+        # maintains the one PR, and posts the classroom50/feedback-pr status.
+        # --retry-all-errors covers DNS/TLS/5xx/partial-response; the script
+        # itself exits 0 for every outcome (state is in the commit status).
         run: |
           set -euo pipefail
-          # Lockstep with cli/gh-teacher/init_repo.go `feedbackBaseBranch`
-          # and the `classroom50-feedback-base-lock` org ruleset — keep
-          # all three in sync if this value changes.
-          BASE_BRANCH="feedback"
-          HEAD_BRANCH=$(gh repo view "$GITHUB_REPOSITORY" --json defaultBranchRef --jq .defaultBranchRef.name)
+          FB_SCRIPT="${RUNNER_TEMP:-/tmp}/classroom50-ensure-feedback-pr.py"
+          curl -fsSL --max-time 30 --retry 3 --retry-delay 2 --retry-all-errors \
+               "${PAGES_BASE_URL}/ensure_feedback_pr.py" -o "$FB_SCRIPT"
+          python3 "$FB_SCRIPT"
 
-          # Outcome, posted as a machine-readable commit status at the end
-          # so an agent/script can poll whether the Feedback PR is in place
-          # (mirrors the classroom50/autograde status). State is one of
-          # success | failure | error; FB_URL points at the PR when known.
-          # Defaults to "error" and is promoted to "success" only when the
-          # step reaches its verified-good end, so an early `set -e` abort
-          # (e.g. the gh repo view below failing) reports error, not a
-          # false success, via the EXIT trap.
-          FB_STATE="error"
-          FB_DESC="Feedback PR step did not complete"
-          FB_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
-          emit_status() {
-            gh api "repos/${GITHUB_REPOSITORY}/statuses/${GITHUB_SHA}" \
-              -f state="$FB_STATE" \
-              -f context="classroom50/feedback-pr" \
-              -f description="$FB_DESC" \
-              -f target_url="$FB_URL" >/dev/null 2>&1 || true
-          }
-          trap emit_status EXIT
-
-          # Freeze the base at the baseline commit: create once, never
-          # advance. The org ruleset (gh teacher init) leaves branch
-          # *creation* open so GITHUB_TOKEN can land this, but locks
-          # updates/merges to org admins.
-          EXISTING_BASE=$(git ls-remote --heads origin "$BASE_BRANCH" 2>/dev/null | awk '{print $1}')
-          if [[ -z "${EXISTING_BASE:-}" ]]; then
-            REF_ERR="$(mktemp)"
-            if ! gh api -X POST "repos/${GITHUB_REPOSITORY}/git/refs" \
-              -f ref="refs/heads/${BASE_BRANCH}" -f sha="$BASE_SHA" >/dev/null 2>"$REF_ERR"; then
-              echo "::notice::could not create feedback-base at $BASE_SHA: $(tr '\n' ' ' <"$REF_ERR")"
-            fi
-            rm -f "$REF_ERR"
-          elif [[ "$EXISTING_BASE" != "$BASE_SHA" ]]; then
-            # The frozen base exists but doesn't point at this submission's
-            # baseline. Ruleset creation is open (only update/delete are
-            # locked), so a student could have pre-created it at the wrong
-            # commit — which would make the Feedback PR diff misleading.
-            # Do NOT open/refresh a PR against an unverified base: warn,
-            # post a failure status, and stop. The base can't be moved by
-            # the runner (the ruleset locks updates), so an org admin must
-            # delete it; the next submission then re-freezes it correctly.
-            echo "::warning::feedback-base ($BASE_BRANCH) is at $EXISTING_BASE, not the expected baseline $BASE_SHA; not opening/updating the Feedback PR. If a student created this branch, an org admin should delete it so the next submission re-freezes it correctly."
-            FB_STATE="failure"
-            FB_DESC="feedback-base is at the wrong commit; an org admin must delete the 'feedback' branch"
-            exit 0
-          fi
-
-          # One PR per repo. Match any state so a previously closed/merged
-          # PR is never duplicated. gh's built-in --jq avoids a dependency
-          # on an external jq (absent from some container images).
-          INFO=$(gh pr list --repo "$GITHUB_REPOSITORY" \
-            --base "$BASE_BRANCH" --head "$HEAD_BRANCH" --state all \
-            --json number,state,mergedAt \
-            --jq '(.[0] // {}) | [(.number // ""), (.state // ""), (.mergedAt // "")] | @tsv' \
-            2>/dev/null || true)
-          IFS=$'\t' read -r NUM STATE MERGED <<<"$INFO"
-
-          if [[ -z "${NUM:-}" ]]; then
-            # Label by assignment mode so a teacher can tell individual vs
-            # group feedback PRs apart at a glance (mirrors GitHub
-            # Classroom's "Individual"/"Group" feedback labels).
-            if [[ "${MODE:-individual}" == "group" ]]; then
-              LABEL="Group Assignment"
-              LABEL_COLOR="5319E7"
-            else
-              LABEL="Individual Assignment"
-              LABEL_COLOR="0E8A16"
-            fi
-            BODY=$(printf '%s\n' \
-              ":wave:! Classroom 50 opened this pull request as a place for your teacher to leave feedback on your work. It updates automatically. **Don't close or merge this pull request** unless your teacher tells you to." \
-              '' \
-              'Your teacher can leave comments and feedback on your code here. Click the **Subscribe** button to be notified when that happens.' \
-              '' \
-              "Open the **Files changed** or **Commits** tab to see everything you've pushed to \`$HEAD_BRANCH\` since you accepted the assignment — your teacher sees the same view." \
-              '' \
-              '<details>' \
-              '<summary><strong>Notes for teachers</strong></summary>' \
-              '' \
-              'Use this PR to leave feedback:' \
-              '' \
-              "- **Files changed** shows the full diff on \`$HEAD_BRANCH\` since the student accepted. Hover a line and click the blue **+** to leave a line comment." \
-              '- **Commits** lists each pushed commit; open one to see its changes.' \
-              '- Autograde results appear as the `classroom50/autograde` commit status / check on each submission.' \
-              '- This page is an overview — commits, line comments, and a general comment box below.' \
-              '' \
-              'The base branch (`'"$BASE_BRANCH"'`) is frozen at the starter so the diff always reflects the full body of work. The PR is managed automatically by the autograde runner; merging it is the teacher-side "grading done" signal.' \
-              '</details>')
-            # Best-effort label so the PR is easy to spot/filter; never
-            # block PR creation on label setup.
-            gh label create "$LABEL" --repo "$GITHUB_REPOSITORY" \
-              --color "$LABEL_COLOR" --description "Classroom 50 teacher-managed feedback PR" >/dev/null 2>&1 || true
-            # Capture stderr so a creation failure is legible in the job
-            # log instead of a vague warning. The most common cause is the
-            # org setting being off — surface a pointer to the fix.
-            ERR_FILE="$(mktemp)"
-            if ! URL=$(gh pr create --repo "$GITHUB_REPOSITORY" \
-              --base "$BASE_BRANCH" --head "$HEAD_BRANCH" \
-              --title "Feedback" --body "$BODY" --label "$LABEL" 2>"$ERR_FILE"); then
-              # A concurrent submission (a submit/* tag run and a main-push
-              # run use different concurrency groups) can win the
-              # create race; GitHub then rejects the duplicate. Re-query
-              # before warning so we don't misreport an existing PR as the
-              # "org setting is off" case.
-              if EXISTING_URL=$(gh pr list --repo "$GITHUB_REPOSITORY" --base "$BASE_BRANCH" \
-                --head "$HEAD_BRANCH" --state all --json url --jq '(.[0] // {}).url // ""' 2>/dev/null) \
-                && [[ -n "$EXISTING_URL" ]]; then
-                echo "Feedback PR already present (created concurrently); nothing to do"
-                FB_URL="$EXISTING_URL"
-                FB_STATE="success"
-                FB_DESC="Feedback PR in place (created concurrently)"
-                rm -f "$ERR_FILE"
-                exit 0
-              fi
-              echo "::warning::could not open Feedback PR (base=$BASE_BRANCH head=$HEAD_BRANCH): $(tr '\n' ' ' <"$ERR_FILE")"
-              echo "::warning::if this reports that Actions is not permitted to create pull requests, the org setting is off — re-run 'gh teacher init', or enable Settings → Actions → 'Allow GitHub Actions to create and approve pull requests'"
-              rm -f "$ERR_FILE"
-              FB_STATE="error"
-              FB_DESC="could not open Feedback PR (often: org Actions-PR setting off)"
-              exit 0
-            fi
-            rm -f "$ERR_FILE"
-            FB_URL="$URL"
-            FB_DESC="Feedback PR opened"
-            echo "Feedback PR opened: $URL"
-          else
-            FB_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/pull/${NUM}"
-            # Reopen only a student's unmerged close; a teacher merge
-            # (mergedAt set) is the grading-done signal — leave it. An
-            # unmerged PR has an empty mergedAt (gh --jq null → "").
-            if [[ "$STATE" == "CLOSED" && -z "${MERGED:-}" ]]; then
-              gh pr reopen "$NUM" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
-                && { echo "Reopened Feedback PR #$NUM (was closed unmerged)"; FB_DESC="Feedback PR reopened"; } || true
-            else
-              echo "Feedback PR #$NUM already present (state=$STATE merged=${MERGED:-none}); nothing to do"
-              FB_DESC="Feedback PR in place"
-            fi
-          fi
-
-          # Reached the verified-good end: the PR was created, reopened, or
-          # already in place against the correct base. Promote the status
-          # from its "error" default (poisoned-base and create-failure
-          # paths exit earlier with their own state).
-          FB_STATE="success"
+      # The script posts the classroom50/feedback-pr status itself for every
+      # outcome it reaches. But if the FETCH above fails (Pages 5xx past
+      # retries), the step aborts before the script runs and posts nothing —
+      # so this fallback posts an `error` status only when the step didn't
+      # succeed, keeping the "agent can always poll feedback-pr" guarantee
+      # (mirrors the autograde status's always() posting).
+      - name: Feedback PR status fallback
+        if: >-
+          always() &&
+          needs.setup.outputs.feedback-pr == 'true' &&
+          steps.autograde.outputs.baseline-sha != '' &&
+          steps.autograde.outputs.head-sha != '' &&
+          steps.autograde.outputs.baseline-sha != steps.autograde.outputs.head-sha &&
+          steps.feedback_pr.outcome != 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          gh api "repos/${GITHUB_REPOSITORY}/statuses/${GITHUB_SHA}" \
+            -f state="error" \
+            -f context="classroom50/feedback-pr" \
+            -f description="Feedback PR step could not run (could not fetch ensure_feedback_pr.py from Pages)" \
+            -f target_url="$RUN_URL" >/dev/null 2>&1 || true
 
   # === Move the "latest" pointer forward ===
   # Serialized across the whole repo so concurrent submissions can't

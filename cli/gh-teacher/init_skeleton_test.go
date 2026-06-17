@@ -23,6 +23,7 @@ func TestSkeletonFiles_Manifest(t *testing.T) {
 		".github/workflows/collect-scores.yaml",
 		".github/scripts/runner.py",
 		".github/scripts/collect_scores.py",
+		".github/scripts/ensure_feedback_pr.py",
 		"README.md",
 	}
 	for _, p := range wantPaths {
@@ -46,6 +47,20 @@ func TestSkeletonFiles_Manifest(t *testing.T) {
 	for path, body := range files {
 		if strings.Contains(body, "{{DEFAULT_BRANCH}}") {
 			t.Errorf("skeleton leaked {{DEFAULT_BRANCH}} placeholder in %s:\n%s", path, body)
+		}
+	}
+
+	// publish-pages must actually publish the org-level scripts the
+	// autograde-runner fetches from Pages — runner.py and the Phase 2
+	// ensure_feedback_pr.py. A missing copy line would 404 the runtime
+	// fetch and silently disable grading / the Feedback PR.
+	pubBody, ok := files[".github/workflows/publish-pages.yaml"]
+	if !ok {
+		t.Fatal("publish-pages.yaml missing from skeleton")
+	}
+	for _, script := range []string{"runner.py", "ensure_feedback_pr.py"} {
+		if !strings.Contains(pubBody, "_site/"+script) {
+			t.Errorf("publish-pages.yaml does not publish %s to the site root (autograde-runner fetches it from Pages)", script)
 		}
 	}
 }
@@ -93,16 +108,20 @@ func TestSkeletonFiles_AutogradeRunner(t *testing.T) {
 		t.Errorf("autograde-runner.yaml concurrency.cancel-in-progress = %v, want false", got)
 	}
 
-	// Cross-binary literal parity: the workflow's BASE_BRANCH (a bash
-	// literal inside the Ensure Feedback PR run: block, invisible to the
-	// YAML parser) must match the Go `feedbackBaseBranch` const that the
-	// org ruleset targets. A drift would point the runner and the ruleset
-	// at different branches, silently breaking the frozen-base lock. This
-	// is the enforced single-source the "keep in lockstep" comment asks
-	// for (Phase 1).
-	wantBaseBranch := "BASE_BRANCH=\"" + feedbackBaseBranch + "\""
-	if !strings.Contains(body, wantBaseBranch) {
-		t.Errorf("autograde-runner.yaml does not pin %s (feedbackBaseBranch drift vs the org ruleset)", wantBaseBranch)
+	// Cross-binary literal parity: the `feedback` base-branch name now
+	// lives in ensure_feedback_pr.py (BASE_BRANCH), fetched from Pages by
+	// the Feedback PR step. It must match the Go `feedbackBaseBranch` const
+	// that the org ruleset targets — a drift would point the runner and the
+	// ruleset at different branches, silently breaking the frozen-base lock.
+	// This is the enforced single-source the "keep in lockstep" comment asks
+	// for (Phase 1; moved to the script in Phase 2).
+	fbScript, ok := files[".github/scripts/ensure_feedback_pr.py"]
+	if !ok {
+		t.Fatal("ensure_feedback_pr.py missing from skeleton")
+	}
+	wantBaseBranch := "BASE_BRANCH = \"" + feedbackBaseBranch + "\""
+	if !strings.Contains(fbScript, wantBaseBranch) {
+		t.Errorf("ensure_feedback_pr.py does not pin %s (feedbackBaseBranch drift vs the org ruleset)", wantBaseBranch)
 	}
 
 	// F1: the grade job must pass MODE through to runner.py so a group
@@ -226,6 +245,13 @@ func TestSkeletonFiles_AutogradeRunner(t *testing.T) {
 	}
 	if !strings.Contains(body, "--retry 3") || !strings.Contains(body, "--retry-all-errors") {
 		t.Errorf("autograde-runner.yaml runner.py curl is missing retry flags (single point of failure on Pages 5xx)")
+	}
+
+	// The Feedback PR logic lives in ensure_feedback_pr.py, fetched from
+	// Pages like runner.py (the reusable workflow has no config-repo
+	// checkout). The step must be the thin fetch+exec shim, not inline bash.
+	if !strings.Contains(body, `${PAGES_BASE_URL}/ensure_feedback_pr.py`) {
+		t.Errorf("autograde-runner.yaml doesn't fetch ensure_feedback_pr.py at the org-level URL (Feedback PR logic should be Pages-fetched, not inline)")
 	}
 
 	// Commit status posted always; release publish skipped on error.

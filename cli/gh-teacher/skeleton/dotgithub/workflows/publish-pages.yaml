@@ -40,6 +40,13 @@ jobs:
           if [ -f .github/scripts/runner.py ]; then
             cp .github/scripts/runner.py _site/runner.py
           fi
+          # ensure_feedback_pr.py (org-level): the autograde-runner's
+          # "Ensure Feedback PR" step fetches it from the site root the same
+          # way as runner.py. Guarded so an older skeleton still publishes
+          # everything else.
+          if [ -f .github/scripts/ensure_feedback_pr.py ]; then
+            cp .github/scripts/ensure_feedback_pr.py _site/ensure_feedback_pr.py
+          fi
           # Per-classroom config files. classroom default autograder
           # (`<classroom>/autograder.py`) is published only when the
           # classroom has run `gh teacher autograder set-default` —
