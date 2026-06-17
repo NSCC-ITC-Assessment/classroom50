@@ -1,0 +1,98 @@
+name: lint CI
+
+# Static-analysis guardrails for the parts of the repo that aren't
+# already gated by the Go (gh-teacher/gh-student CI) or pytest
+# (embedded-python CI) suites:
+#
+#   - actionlint  — every GitHub Actions workflow, including the
+#     skeleton workflows scaffolded into a teacher's classroom50 repo
+#     and the inert student shim. actionlint bundles shellcheck, so the
+#     inline `run:` bash (the autograde-runner's tag / Ensure Feedback PR
+#     / set-latest steps, ~300 lines) is shellcheck'd here too.
+#   - ruff        — lint (NOT format) the shipped Python: the runner
+#     bootstrap, the score collector, the declarative-test materializer,
+#     and the embedded diagnostic autograder.
+#
+# This is a safety net added ahead of the cleanup refactors (extracting
+# the workflow bash into testable scripts, reshaping the validators);
+# it runs no product code and changes no behavior.
+
+on:
+  push:
+    branches: [main, v1]
+    paths:
+      - '.github/workflows/**'
+      - 'cli/gh-teacher/skeleton/dotgithub/workflows/**'
+      - 'cli/gh-teacher/skeleton/dotgithub/scripts/**'
+      - 'cli/gh-teacher/embed/**'
+      - 'cli/gh-student/embed/**'
+  pull_request:
+    paths:
+      - '.github/workflows/**'
+      - 'cli/gh-teacher/skeleton/dotgithub/workflows/**'
+      - 'cli/gh-teacher/skeleton/dotgithub/scripts/**'
+      - 'cli/gh-teacher/embed/**'
+      - 'cli/gh-student/embed/**'
+
+jobs:
+  actionlint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install actionlint + shellcheck
+        # ubuntu-latest ships shellcheck; install it explicitly so a
+        # future runner image change can't silently drop actionlint's
+        # bundled-shellcheck pass. actionlint comes from its official
+        # release download script (no Go toolchain needed in this job).
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends shellcheck
+          # Pinned for reproducibility; bump deliberately.
+          bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash) 1.7.12
+          echo "$PWD" >> "$GITHUB_PATH"
+
+      - name: actionlint (repo + skeleton workflows + shim)
+        # The skeleton workflows carry {{ORG}} / {{DEFAULT_BRANCH}}
+        # placeholders substituted at `gh teacher init` time; they are
+        # quoted so they still parse as valid YAML/Actions pre-substitution.
+        #
+        # SC2016 is excluded because the Ensure Feedback PR step builds the
+        # PR body with single-quoted literals that intentionally contain
+        # `classroom50/autograde` (literal Markdown, not a shell variable);
+        # shellcheck's "expressions don't expand in single quotes" info is a
+        # false positive there. It is the only finding across all workflows.
+        run: |
+          set -euo pipefail
+          actionlint -shellcheck "shellcheck --exclude=SC2016" \
+            .github/workflows/*.yaml \
+            cli/gh-teacher/skeleton/dotgithub/workflows/*.yaml \
+            cli/gh-student/embed/autograde-shim.yaml
+
+  ruff:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.x'
+
+      - name: Install ruff
+        # Pinned for reproducibility; bump deliberately (matches the
+        # golangci-lint version-pinning discipline in the Go CI jobs).
+        run: python -m pip install --quiet ruff==0.15.17
+
+      - name: ruff check (shipped Python)
+        # Default rule set (pyflakes F + pycodestyle E) over the Python
+        # that ships into teacher repos. `ruff format` is intentionally
+        # NOT run here — the existing files predate ruff's formatter and
+        # reformatting the autograding core is a separate, deliberate
+        # change, not a CI guardrail.
+        run: |
+          python -m ruff check \
+            cli/gh-teacher/skeleton/dotgithub/scripts/ \
+            cli/gh-teacher/embed/
