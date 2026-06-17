@@ -5,13 +5,14 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/foundation50/classroom50-cli-shared/contract"
 	"github.com/spf13/cobra"
 )
 
 // configRepoName: per-org classroom config repo. Hardcoded across
 // student repos and the collect-scores workflow — part of the
-// public contract.
-const configRepoName = "classroom50"
+// public contract. Single-sourced in the shared contract package.
+const configRepoName = contract.ConfigRepoName
 
 func initCmd() *cobra.Command {
 	var (

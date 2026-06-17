@@ -2,14 +2,12 @@ package main
 
 import (
 	"bytes"
-	"errors"
 	"fmt"
-	"net/http"
 	"net/url"
 	"strings"
-	"time"
 
 	"github.com/cli/go-gh/v2/pkg/api"
+	"github.com/foundation50/classroom50-cli-shared/ghutil"
 	"gopkg.in/yaml.v3"
 )
 
@@ -79,46 +77,10 @@ func dropClassroomFiles(client *api.RESTClient, owner, repo, branch string, cfg 
 // non-empty commit SHA (max 20 attempts). Required against a
 // freshly-templated branch — the contents/git-data APIs briefly
 // 409 with "Git Repository is empty" until the ref propagates.
+// waitForStableBranch polls until a freshly-created branch's ref
+// propagates. Thin wrapper over the shared ghutil helper.
 func waitForStableBranch(client *api.RESTClient, owner, repo, branch string) error {
-	path := fmt.Sprintf(
-		"repos/%s/%s/branches/%s",
-		url.PathEscape(owner),
-		url.PathEscape(repo),
-		url.PathEscape(branch),
-	)
-
-	var lastSHA string
-
-	for i := range 20 {
-		var resp struct {
-			Name   string `json:"name"`
-			Commit struct {
-				SHA string `json:"sha"`
-			} `json:"commit"`
-		}
-
-		if err := client.Get(path, &resp); err != nil {
-			// Transient error; reset the baseline.
-			lastSHA = ""
-			time.Sleep(time.Duration(250*(i+1)) * time.Millisecond)
-			continue
-		}
-
-		if resp.Commit.SHA == "" {
-			// No commit reported yet; reset the baseline.
-			lastSHA = ""
-			time.Sleep(500 * time.Millisecond)
-			continue
-		}
-
-		if resp.Commit.SHA == lastSHA {
-			return nil
-		}
-		lastSHA = resp.Commit.SHA
-		time.Sleep(500 * time.Millisecond)
-	}
-
-	return fmt.Errorf("branch %s/%s:%s did not stabilize", owner, repo, branch)
+	return ghutil.WaitForStableBranch(client, owner, repo, branch)
 }
 
 // escapeContentPath URL-encodes each path segment, preserving slashes.
@@ -176,8 +138,8 @@ func quoteStringValues(n *yaml.Node) {
 }
 
 // isHTTPNotFound reports whether err is a 404 *api.HTTPError.
-// Collapses the err → *api.HTTPError → StatusCode pattern.
+// Thin wrapper over the shared ghutil helper (kept as a local name
+// so call sites are unchanged).
 func isHTTPNotFound(err error) bool {
-	httpErr, ok := errors.AsType[*api.HTTPError](err)
-	return ok && httpErr.StatusCode == http.StatusNotFound
+	return ghutil.IsHTTPNotFound(err)
 }

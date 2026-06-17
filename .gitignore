@@ -16,3 +16,4 @@ __pycache__/
 # Internal planning docs — kept out of git entirely so drafts never
 # end up in the public mirror or shared review surface.
 plans/
+.tooling/

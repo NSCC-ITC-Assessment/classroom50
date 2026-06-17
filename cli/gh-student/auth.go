@@ -1,79 +1,32 @@
 package main
 
 import (
-	"fmt"
-	"os"
-	"os/exec"
-
 	"github.com/cli/go-gh/v2/pkg/api"
-	"github.com/cli/go-gh/v2/pkg/auth"
+	"github.com/foundation50/classroom50-cli-shared/ghauth"
 	"github.com/spf13/cobra"
 )
 
 // requiredScopes: extras on top of gh's defaults — read:org for the
 // membership lookup in accept, repo for assignment-repo creation,
-// contents writes, and collaborator management. One source of
-// truth for loginCmd and requireAuthClient's auto-login.
-var requiredScopes = []string{"read:org", "repo"}
+// contents writes, and collaborator management, and workflow because
+// accept commits .github/workflows/autograde.yaml into the new repo —
+// the Git Data API 404s that write without the workflow scope. Requested
+// explicitly rather than relying on `gh auth login`'s HTTPS-flow default
+// (which happens to include workflow but isn't guaranteed across protocols
+// or token types). One source of truth for loginCmd and
+// requireAuthClient's auto-login.
+var requiredScopes = []string{"read:org", "repo", "workflow"}
 
-// requireAuthClient returns a REST client, auto-running
-// `gh auth login` when no token is set for the default host so the
-// cryptic "token not found" failure becomes a guided login.
-// Non-interactive shells get a clear error instead.
+// authOptions binds gh-student's scopes + command name to the shared
+// auth scaffolding.
+var authOptions = ghauth.Options{RequiredScopes: requiredScopes, CommandName: "gh student"}
+
+// requireAuthClient returns a REST client, auto-running `gh auth login`
+// when no token is set for the default host. Thin wrapper over the shared
+// helper (kept local so call sites stay `requireAuthClient(cmd)`).
 func requireAuthClient(cmd *cobra.Command) (*api.RESTClient, error) {
-	host, _ := auth.DefaultHost()
-	if host == "" {
-		host = "github.com"
-	}
-	if token, _ := auth.TokenForHost(host); token == "" {
-		if err := autoLogin(cmd, host); err != nil {
-			return nil, err
-		}
-	}
-
-	client, err := api.DefaultRESTClient()
-	if err != nil {
-		return nil, fmt.Errorf("REST client: %w", err)
-	}
-	return client, nil
+	return ghauth.RequireClient(cmd.OutOrStdout(), cmd.ErrOrStderr(), authOptions)
 }
 
-// autoLogin shells out to `gh auth login` with gh-student's scopes
-// against the same host requireAuthClient checked. Mirrors
-// `gh student login` so a fresh user lands in the same flow.
-func autoLogin(cmd *cobra.Command, host string) error {
-	if !isInteractiveTTY() {
-		return fmt.Errorf("not signed in to %s; run `gh student login` from an interactive terminal to authenticate", host)
-	}
-
-	_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "Not signed in to %s; running `gh student login` to authenticate...\n", host)
-
-	args := []string{"auth", "login", "--hostname", host}
-	for _, s := range requiredScopes {
-		args = append(args, "-s", s)
-	}
-
-	sub := exec.Command("gh", args...)
-	sub.Stdin = os.Stdin
-	sub.Stdout = cmd.OutOrStdout()
-	sub.Stderr = cmd.ErrOrStderr()
-
-	if err := sub.Run(); err != nil {
-		return fmt.Errorf("gh auth login: %w", err)
-	}
-	return nil
-}
-
-// isInteractiveTTY: both stdin and stderr must be a TTY because
-// `gh auth login` reads from stdin and prompts on stderr.
-func isInteractiveTTY() bool {
-	return isCharDevice(os.Stdin) && isCharDevice(os.Stderr)
-}
-
-func isCharDevice(f *os.File) bool {
-	fi, err := f.Stat()
-	if err != nil {
-		return false
-	}
-	return fi.Mode()&os.ModeCharDevice != 0
-}
+// isInteractiveTTY reports whether stdin+stderr are both a TTY.
+func isInteractiveTTY() bool { return ghauth.IsInteractiveTTY() }

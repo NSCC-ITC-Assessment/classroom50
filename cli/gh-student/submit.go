@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/cli/go-gh/v2/pkg/api"
+	"github.com/foundation50/classroom50-cli-shared/ghutil"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 )
@@ -250,12 +250,10 @@ func fetchRepoPath(
 			return fmt.Errorf("unsupported encoding %q for %s", file.Encoding, path)
 		}
 
-		content := strings.ReplaceAll(file.Content, "\n", "")
-		decoded, err := base64.StdEncoding.DecodeString(content)
+		decoded, err := ghutil.DecodeContentsBase64(file.Content)
 		if err != nil {
 			return fmt.Errorf("decode base64 content for %s: %w", path, err)
 		}
-
 		dst := filepath.Join(dstRoot, file.Path)
 		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 			return fmt.Errorf("create parent dir for %s: %w", dst, err)

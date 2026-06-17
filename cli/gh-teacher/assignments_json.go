@@ -8,14 +8,17 @@ import (
 	"io"
 	"regexp"
 	"time"
+
+	"github.com/foundation50/classroom50-cli-shared/contract"
 )
 
 // Assignment modes accepted at the parse/write layer. Both are
 // end-to-end supported: `individual` (one repo per student) and
 // `group` (a shared repo a teammate joins, bounded by max_group_size).
+// Single-sourced in the shared contract package.
 const (
-	assignmentModeIndividual = "individual"
-	assignmentModeGroup      = "group"
+	assignmentModeIndividual = contract.ModeIndividual
+	assignmentModeGroup      = contract.ModeGroup
 )
 
 // assignmentModes is the canonical allow-list, sorted alphabetically

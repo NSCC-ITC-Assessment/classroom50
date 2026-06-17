@@ -1,0 +1,133 @@
+package ghutil
+
+import (
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"testing"
+
+	"github.com/cli/go-gh/v2/pkg/api"
+)
+
+func TestDecodeContentsBase64(t *testing.T) {
+	// The contents API wraps base64 at column 60 with embedded newlines;
+	// the std decoder rejects those, so the helper must strip them first.
+	t.Run("strips embedded newlines", func(t *testing.T) {
+		// "hello world" repeated, encoded then line-wrapped.
+		wrapped := "aGVsbG8gd29ybGQgaGVsbG8gd29ybGQgaGVsbG8gd29ybGQgaGVsbG8gd29y\nbGQ="
+		got, err := DecodeContentsBase64(wrapped)
+		if err != nil {
+			t.Fatalf("DecodeContentsBase64: %v", err)
+		}
+		want := "hello world hello world hello world hello world"
+		if string(got) != want {
+			t.Errorf("got %q, want %q", got, want)
+		}
+	})
+
+	t.Run("decodes unwrapped", func(t *testing.T) {
+		got, err := DecodeContentsBase64("aGk=")
+		if err != nil {
+			t.Fatalf("DecodeContentsBase64: %v", err)
+		}
+		if string(got) != "hi" {
+			t.Errorf("got %q, want %q", got, "hi")
+		}
+	})
+
+	t.Run("errors on invalid", func(t *testing.T) {
+		if _, err := DecodeContentsBase64("!!!not-base64!!!"); err == nil {
+			t.Error("expected error for invalid base64, got nil")
+		}
+	})
+}
+
+type hostRewriteTransport struct{ target *url.URL }
+
+func (h *hostRewriteTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	req.URL.Scheme = h.target.Scheme
+	req.URL.Host = h.target.Host
+	return http.DefaultTransport.RoundTrip(req)
+}
+
+func newTestRESTClient(t *testing.T, server *httptest.Server) *api.RESTClient {
+	t.Helper()
+	u, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatalf("parse server URL: %v", err)
+	}
+	client, err := api.NewRESTClient(api.ClientOptions{
+		Host:         "github.com",
+		AuthToken:    "test-token",
+		Transport:    &hostRewriteTransport{target: u},
+		LogIgnoreEnv: true,
+	})
+	if err != nil {
+		t.Fatalf("api.NewRESTClient: %v", err)
+	}
+	return client
+}
+
+func TestCurrentUser(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/user", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"login": "alice", "id": 4242})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	login, id, err := CurrentUser(newTestRESTClient(t, server))
+	if err != nil {
+		t.Fatalf("CurrentUser: %v", err)
+	}
+	if login != "alice" || id != 4242 {
+		t.Errorf("CurrentUser = (%q, %d), want (alice, 4242)", login, id)
+	}
+}
+
+func TestSetCollaborator(t *testing.T) {
+	// 201 means an invitation was created; 204 means added directly. The
+	// helper surfaces both verbatim and rejects anything else.
+	cases := []struct {
+		name    string
+		status  int
+		wantErr bool
+	}{
+		{"created", http.StatusCreated, false},
+		{"no content", http.StatusNoContent, false},
+		{"forbidden is error", http.StatusForbidden, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			mux := http.NewServeMux()
+			mux.HandleFunc("/repos/o/r/collaborators/bob", func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPut {
+					t.Errorf("method = %s, want PUT", r.Method)
+				}
+				body, _ := io.ReadAll(r.Body)
+				if want := `{"permission":"push"}`; string(body) != want {
+					t.Errorf("body = %s, want %s", body, want)
+				}
+				w.WriteHeader(tc.status)
+			})
+			server := httptest.NewServer(mux)
+			defer server.Close()
+
+			status, err := SetCollaborator(newTestRESTClient(t, server), "o", "r", "bob", "push")
+			if tc.wantErr {
+				if err == nil {
+					t.Errorf("expected error for status %d, got nil", tc.status)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("SetCollaborator: %v", err)
+			}
+			if status != tc.status {
+				t.Errorf("status = %d, want %d", status, tc.status)
+			}
+		})
+	}
+}

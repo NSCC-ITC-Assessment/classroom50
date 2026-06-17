@@ -284,6 +284,7 @@ func TestParseRuntimeFile_HappyPath(t *testing.T) {
 	}
 	if got == nil {
 		t.Fatal("got nil runtimeRef on happy path")
+		return
 	}
 	if got.RunsOn != "ubuntu-latest" || got.Python != "3.12" {
 		t.Errorf("fields not parsed: %#v", got)
@@ -386,6 +387,7 @@ func TestParseAssignments_RuntimeRoundTrips(t *testing.T) {
 	got := file.Assignments[0].Runtime
 	if got == nil {
 		t.Fatal("runtime block dropped on parse")
+		return
 	}
 	if got.RunsOn != "ubuntu-latest" || got.Python != "3.12" || len(got.Apt) != 1 {
 		t.Errorf("runtime fields not parsed: %#v", got)

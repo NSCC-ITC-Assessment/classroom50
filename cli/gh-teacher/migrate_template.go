@@ -8,9 +8,9 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
-	"time"
 
 	"github.com/cli/go-gh/v2/pkg/api"
+	"github.com/foundation50/classroom50-cli-shared/ghutil"
 )
 
 // templateAction classifies what the template-copy phase did for
@@ -269,42 +269,10 @@ func copyOneTemplate(client *api.RESTClient, errOut io.Writer, targetOrg, templa
 	}, nil
 }
 
-// waitForStableBranch polls until two consecutive reads agree on a
-// non-empty commit SHA (max 20 attempts, ~10s total). Required
-// against a freshly-templated branch — the contents/git-data APIs
-// briefly 409 with "Git Repository is empty" until the ref
-// propagates. Mirrors the helper in gh-student's metadata.go.
+// waitForStableBranch polls until a freshly-templated branch's ref
+// propagates. Thin wrapper over the shared ghutil helper.
 func waitForStableBranch(client *api.RESTClient, owner, repo, branch string) error {
-	path := fmt.Sprintf(
-		"repos/%s/%s/branches/%s",
-		url.PathEscape(owner),
-		url.PathEscape(repo),
-		url.PathEscape(branch),
-	)
-	var lastSHA string
-	for i := range 20 {
-		var resp struct {
-			Commit struct {
-				SHA string `json:"sha"`
-			} `json:"commit"`
-		}
-		if err := client.Get(path, &resp); err != nil {
-			lastSHA = ""
-			time.Sleep(time.Duration(250*(i+1)) * time.Millisecond)
-			continue
-		}
-		if resp.Commit.SHA == "" {
-			lastSHA = ""
-			time.Sleep(500 * time.Millisecond)
-			continue
-		}
-		if resp.Commit.SHA == lastSHA {
-			return nil
-		}
-		lastSHA = resp.Commit.SHA
-		time.Sleep(500 * time.Millisecond)
-	}
-	return fmt.Errorf("branch %s/%s:%s did not stabilize", owner, repo, branch)
+	return ghutil.WaitForStableBranch(client, owner, repo, branch)
 }
 
 // splitOwnerRepo splits a `<owner>/<repo>` full-name into its parts.

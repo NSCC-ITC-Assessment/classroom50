@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/cli/go-gh/v2/pkg/api"
+	"github.com/foundation50/classroom50-cli-shared/contract"
 	"github.com/spf13/cobra"
 )
 
@@ -23,10 +24,12 @@ var shortNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{1,38}$`)
 
 // Schema sentinels for the four scaffolded files. Schema-aware
 // readers MUST branch on this field first so newer files don't
-// crash older readers.
+// crash older readers. assignmentsSchemaV1 is single-sourced in the
+// shared contract package (it's the one shared Go<->Go); the
+// classroom/scores sentinels are teacher-written only.
 const (
 	classroomSchemaV1   = "classroom50/classroom/v1"
-	assignmentsSchemaV1 = "classroom50/assignments/v1"
+	assignmentsSchemaV1 = contract.AssignmentsSchemaV1
 	scoresSchemaV1      = "classroom50/scores/v1"
 )
 

@@ -289,6 +289,7 @@ func TestClassroomMigratedFromFromDetail(t *testing.T) {
 	got := classroomMigratedFromFromDetail(detail, migratedAt)
 	if got == nil {
 		t.Fatalf("classroomMigratedFromFromDetail returned nil")
+		return
 	}
 	want := classroomMigratedFromRef{
 		Source:           migrateSourceGitHubClassroom,

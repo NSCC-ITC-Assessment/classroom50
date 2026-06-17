@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/cli/go-gh/v2/pkg/api"
+	"github.com/foundation50/classroom50-cli-shared/ghutil"
 )
 
 // gitIdentity is the author/committer pair stamped on submit commits.
@@ -15,16 +16,13 @@ type gitIdentity struct {
 // fetchGitIdentity returns the authenticated user's GitHub login and
 // `<id>+<login>@users.noreply.github.com` noreply email.
 func fetchGitIdentity(client *api.RESTClient) (gitIdentity, error) {
-	var user struct {
-		ID    int64  `json:"id"`
-		Login string `json:"login"`
-	}
-	if err := client.Get("user", &user); err != nil {
-		return gitIdentity{}, fmt.Errorf("GET /user: %w", err)
+	login, id, err := ghutil.CurrentUser(client)
+	if err != nil {
+		return gitIdentity{}, err
 	}
 
 	return gitIdentity{
-		Name:  user.Login,
-		Email: fmt.Sprintf("%d+%s@users.noreply.github.com", user.ID, user.Login),
+		Name:  login,
+		Email: fmt.Sprintf("%d+%s@users.noreply.github.com", id, login),
 	}, nil
 }

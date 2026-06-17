@@ -10,13 +10,15 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/foundation50/classroom50-cli-shared/contract"
 	"gopkg.in/yaml.v3"
 )
 
 // configRepoName: the fixed per-org classroom config repo created
 // by `gh teacher init`. Hardcoded so the Pages URL builder stays
-// aligned with the teacher CLI.
-const configRepoName = "classroom50"
+// aligned with the teacher CLI. Single-sourced in the shared contract
+// package (kept as a local alias so call sites are unchanged).
+const configRepoName = contract.ConfigRepoName
 
 // pagesFetchTimeout bounds Pages GETs. Without it, http.Client would
 // hang indefinitely on a slow CDN.
@@ -36,8 +38,8 @@ type assignmentEntry struct {
 }
 
 // defaultAutograderName is the fallback when entry.Autograder is
-// empty. Mirrors the gh-teacher constant.
-const defaultAutograderName = "default"
+// empty. Single-sourced in the shared contract package.
+const defaultAutograderName = contract.DefaultAutograderName
 
 // ResolveAutograder returns the entry's autograder identifier with
 // the default applied. Centralized so accept and submit can't drift.
@@ -71,9 +73,9 @@ type assignmentsFile struct {
 	Assignments []assignmentEntry `json:"assignments"`
 }
 
-// assignmentsSchemaV1: the only sentinel this CLI accepts. Bump in
-// lockstep with the gh-teacher constant.
-const assignmentsSchemaV1 = "classroom50/assignments/v1"
+// assignmentsSchemaV1: the only sentinel this CLI accepts.
+// Single-sourced in the shared contract package.
+const assignmentsSchemaV1 = contract.AssignmentsSchemaV1
 
 // pagesAssignmentsURL: Pages URL for a classroom's assignments.json.
 // Pages on `<org>/classroom50` serves under

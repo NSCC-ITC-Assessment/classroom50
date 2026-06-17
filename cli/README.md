@@ -1,6 +1,6 @@
 # cli
 
-Sources for `gh` CLI extensions. Each subfolder is its own extension; once published to its own repo, an extension is installable via:
+Sources for `gh` CLI extensions. `gh-teacher/` and `gh-student/` are each their own extension; once published to its own repo, an extension is installable via:
 
 ```
 gh extension install <owner>/<repo>
@@ -8,10 +8,11 @@ gh extension install <owner>/<repo>
 
 See the [GitHub CLI extensions docs](https://docs.github.com/en/github-cli/github-cli/creating-github-cli-extensions) for background on what `gh` extensions are and how they're built.
 
-## Extensions
+## Layout
 
 - [gh-teacher/](gh-teacher/) — instructor-facing extension.
 - [gh-student/](gh-student/) — student-facing extension.
+- [shared/](shared/) — `github.com/foundation50/classroom50-cli-shared`, an internal Go module holding logic both extensions share (cross-binary contract constants, GitHub-API helpers, auth scaffolding, git Tree-commit plumbing). It is **not** an extension. The two extensions depend on it via a relative `replace => ../shared` directive wired through the top-level `go.work` (dev-only); `go` statically links it at build time, so `gh extension install` ships self-contained binaries and the sharing is transparent to installation. Each extension still builds standalone with the workspace disabled (`GOWORK=off`).
 
 ## Using the CLIs
 

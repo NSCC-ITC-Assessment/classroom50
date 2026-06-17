@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	"github.com/cli/go-gh/v2/pkg/api"
+	"github.com/foundation50/classroom50-cli-shared/ghauth"
 	"github.com/spf13/cobra"
 	"golang.org/x/crypto/nacl/box"
 	"golang.org/x/term"
@@ -48,7 +49,7 @@ func readCollectToken(cmd *cobra.Command) ([]byte, error) {
 		return []byte(v), nil
 	}
 
-	stdinIsTTY := isCharDevice(os.Stdin)
+	stdinIsTTY := ghauth.IsCharDevice(os.Stdin)
 	if !stdinIsTTY {
 		scanner := bufio.NewScanner(os.Stdin)
 		if !scanner.Scan() {
@@ -64,7 +65,7 @@ func readCollectToken(cmd *cobra.Command) ([]byte, error) {
 		return []byte(v), nil
 	}
 
-	if !isCharDevice(os.Stderr) {
+	if !ghauth.IsCharDevice(os.Stderr) {
 		return nil, fmt.Errorf("can't prompt for collect token without an interactive terminal on stderr; set %s in the environment", envCollectToken)
 	}
 

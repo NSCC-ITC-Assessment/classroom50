@@ -6,7 +6,7 @@ import (
 	"io"
 	"strings"
 
-	"github.com/cli/go-gh/v2/pkg/api"
+	"github.com/foundation50/classroom50-cli-shared/ghutil"
 	"github.com/spf13/cobra"
 )
 
@@ -32,11 +32,10 @@ func parseOrgClassroom(args []string) (org, classroom string, err error) {
 }
 
 // isHTTPStatus reports whether err is a *api.HTTPError with the
-// given status code. Collapses the err → *api.HTTPError → StatusCode
-// pattern used to distinguish 404/409/422 from transport errors.
+// given status code. Thin wrapper over the shared ghutil helper
+// (kept as a local name so the ~30 call sites are unchanged).
 func isHTTPStatus(err error, code int) bool {
-	httpErr, ok := errors.AsType[*api.HTTPError](err)
-	return ok && httpErr.StatusCode == code
+	return ghutil.IsHTTPStatus(err, code)
 }
 
 // scopeListContains reports whether the comma-separated OAuth scope

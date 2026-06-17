@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/cli/go-gh/v2/pkg/api"
+	"github.com/foundation50/classroom50-cli-shared/ghutil"
 	"github.com/spf13/cobra"
 )
 
@@ -260,28 +261,17 @@ func getMembershipState(client *api.RESTClient, org, username string) (string, b
 }
 
 func inviteToRepo(client *api.RESTClient, out io.Writer, owner, repo, username, permission string, quiet bool) error {
-	body, err := json.Marshal(map[string]string{"permission": permission})
+	status, err := ghutil.SetCollaborator(client, owner, repo, username, permission)
 	if err != nil {
-		return fmt.Errorf("encode body: %w", err)
+		return err
 	}
-
-	path := fmt.Sprintf("repos/%s/%s/collaborators/%s",
-		url.PathEscape(owner), url.PathEscape(repo), url.PathEscape(username))
-	resp, err := client.Request(http.MethodPut, path, bytes.NewReader(body))
-	if err != nil {
-		return fmt.Errorf("PUT %s: %w", path, err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	_, _ = io.Copy(io.Discard, resp.Body)
 
 	var msg string
-	switch resp.StatusCode {
+	switch status {
 	case http.StatusCreated:
 		msg = fmt.Sprintf("%s/%s: invited %s with %s permission (awaiting acceptance)\n", owner, repo, username, permission)
 	case http.StatusNoContent:
 		msg = fmt.Sprintf("%s/%s: added %s with %s permission\n", owner, repo, username, permission)
-	default:
-		return fmt.Errorf("PUT %s: unexpected status %d", path, resp.StatusCode)
 	}
 	if !quiet {
 		_, _ = fmt.Fprint(out, msg)

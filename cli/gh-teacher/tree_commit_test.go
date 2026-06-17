@@ -13,32 +13,6 @@ import (
 	"github.com/cli/go-gh/v2/pkg/api"
 )
 
-func TestIsNonFastForwardMessage(t *testing.T) {
-	cases := []struct {
-		in   string
-		want bool
-	}{
-		// Real shape GitHub returns.
-		{"Update is not a fast forward", true},
-		// Tolerate hyphenated rewordings.
-		{"Update is not a fast-forward", true},
-		{"UPDATE IS NOT A FAST FORWARD", true},
-		// Other 422 reasons must NOT match — mis-retrying them would
-		// busy-loop the rebase path.
-		{"Reference does not exist", false},
-		{"Resource not accessible by integration", false},
-		{"Validation failed", false},
-		{"", false},
-	}
-	for _, tc := range cases {
-		t.Run(tc.in, func(t *testing.T) {
-			if got := isNonFastForwardMessage(tc.in); got != tc.want {
-				t.Fatalf("isNonFastForwardMessage(%q) = %v, want %v", tc.in, got, tc.want)
-			}
-		})
-	}
-}
-
 // hostRewriteTransport redirects every request to a single test
 // server while preserving the path so the handler can dispatch on
 // it. This is the seam go-gh's docs recommend for tests

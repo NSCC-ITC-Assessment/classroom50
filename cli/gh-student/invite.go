@@ -1,15 +1,13 @@
 package main
 
 import (
-	"bytes"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"net/url"
 	"strings"
 
 	"github.com/cli/go-gh/v2/pkg/api"
+	"github.com/foundation50/classroom50-cli-shared/ghutil"
 	"github.com/spf13/cobra"
 )
 
@@ -57,18 +55,8 @@ func inviteCmd() *cobra.Command {
 
 // inviteUserToPush adds username as a push collaborator on org/repo.
 func inviteUserToPush(client *api.RESTClient, out io.Writer, org, repo, username string) error {
-	body, err := json.Marshal(map[string]string{
-		"permission": "push",
-	})
-	if err != nil {
-		return fmt.Errorf("error creating PUT body: %w", err)
-	}
-
-	path := fmt.Sprintf("repos/%s/%s/collaborators/%s",
-		url.PathEscape(org), url.PathEscape(repo), url.PathEscape(username))
-
-	if err := client.Put(path, bytes.NewReader(body), nil); err != nil {
-		return fmt.Errorf("PUT %s: %w", path, err)
+	if _, err := ghutil.SetCollaborator(client, org, repo, username, "push"); err != nil {
+		return err
 	}
 
 	_, _ = fmt.Fprintf(out, "invited %s to %s/%s with push permission\n", username, org, repo)

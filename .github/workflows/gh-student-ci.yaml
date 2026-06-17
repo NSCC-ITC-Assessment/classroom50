@@ -5,10 +5,12 @@ on:
     branches: [main, v1]
     paths:
       - 'cli/gh-student/**'
+      - 'cli/shared/**'
       - '.github/workflows/gh-student-ci.yaml'
   pull_request:
     paths:
       - 'cli/gh-student/**'
+      - 'cli/shared/**'
       - '.github/workflows/gh-student-ci.yaml'
 
 jobs:

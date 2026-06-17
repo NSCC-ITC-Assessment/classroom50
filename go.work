@@ -1,0 +1,14 @@
+// go.work ties the two CLI extension modules and their shared module together
+// for local development (editor tooling, cross-module `go test ./...`). It is
+// DEV-ONLY: each consumer module also carries a `replace` directive pointing at
+// ../shared, so `go build`/`go test` work with GOWORK=off and inside a single
+// module too. The shared module is consumed via a relative replace while the
+// CLIs live in this monorepo; when an extension is split into its own repo the
+// replace is swapped for a published version (see CLEANUP_PLAN.md Phase 5a).
+go 1.26
+
+use (
+	./cli/gh-student
+	./cli/gh-teacher
+	./cli/shared
+)

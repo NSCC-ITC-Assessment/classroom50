@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/cli/go-gh/v2/pkg/api"
+	"github.com/foundation50/classroom50-cli-shared/contract"
 )
 
 // defaultAutograderName is a sentinel meaning "use the universal
@@ -12,8 +13,8 @@ import (
 // teacher-authored sibling shim at
 // `<classroom>/autograders/<name>.yaml` in the config repo, which
 // `gh student accept` fetches from Pages instead of the embedded
-// default.
-const defaultAutograderName = "default"
+// default. Single-sourced in the shared contract package.
+const defaultAutograderName = contract.DefaultAutograderName
 
 // autograderFilePath: in-repo path for a non-default autograder
 // shim (e.g. "c-makefile" → "cs-principles/autograders/c-makefile.yaml").

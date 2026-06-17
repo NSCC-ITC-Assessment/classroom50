@@ -13,6 +13,8 @@ import (
 	"strings"
 
 	"github.com/cli/go-gh/v2/pkg/api"
+	"github.com/foundation50/classroom50-cli-shared/contract"
+	"github.com/foundation50/classroom50-cli-shared/ghutil"
 	"github.com/spf13/cobra"
 )
 
@@ -183,11 +185,11 @@ func acceptOrgInvite(client *api.RESTClient, org string) (AcceptStatus, error) {
 }
 
 // assignmentModeIndividual and assignmentModeGroup are the modes
-// `gh student accept` supports; they mirror the teacher-side constants.
-// Both are accepted (the first accepter creates a group repo just like
-// an individual one); only an unrecognized mode surfaces an error.
-const assignmentModeIndividual = "individual"
-const assignmentModeGroup = "group"
+// `gh student accept` supports. Both are accepted (the first accepter
+// creates a group repo just like an individual one); only an unrecognized
+// mode surfaces an error. Single-sourced in the shared contract package.
+const assignmentModeIndividual = contract.ModeIndividual
+const assignmentModeGroup = contract.ModeGroup
 
 // checkAcceptableMode gates `gh student accept` by assignment mode.
 // Both individual and group are accepted (and an empty mode defaults to
@@ -328,18 +330,9 @@ func printCloneInstructions(out io.Writer, htmlURL string) error {
 	return nil
 }
 
-type AuthenticatedUser struct {
-	Login string `json:"login"`
-}
-
 func getAuthedUsername(client *api.RESTClient) (string, error) {
-	var user AuthenticatedUser
-
-	if err := client.Get("user", &user); err != nil {
-		return "", fmt.Errorf("GET /user: %w", err)
-	}
-
-	return user.Login, nil
+	login, _, err := ghutil.CurrentUser(client)
+	return login, err
 }
 
 type GeneratedRepo struct {
@@ -438,19 +431,9 @@ func createTemplatedPrivateAssignmentRepoInOrg(client *api.RESTClient, out io.Wr
 // inviteUserToMaintain adds username as a maintain collaborator.
 // PUT collaborators is upsert (covers admin → maintain downgrade).
 func inviteUserToMaintain(client *api.RESTClient, out io.Writer, username, classroom, assignment, org string) error {
-	body, err := json.Marshal(map[string]string{
-		"permission": "maintain",
-	})
-	if err != nil {
-		return fmt.Errorf("error creating PUT body: %w", err)
-	}
-
 	fullRepoName := assignmentRepoName(classroom, assignment, username)
-	path := fmt.Sprintf("repos/%s/%s/collaborators/%s",
-		url.PathEscape(org), url.PathEscape(fullRepoName), url.PathEscape(username))
-
-	if err := client.Put(path, bytes.NewReader(body), nil); err != nil {
-		return fmt.Errorf("PUT %s: %w", path, err)
+	if _, err := ghutil.SetCollaborator(client, org, fullRepoName, username, "maintain"); err != nil {
+		return err
 	}
 
 	if verbose {

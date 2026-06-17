@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 
+	"github.com/foundation50/classroom50-cli-shared/ghutil"
 	"github.com/spf13/cobra"
 )
 
@@ -17,13 +18,11 @@ func whoamiCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			var user struct {
-				Login string `json:"login"`
+			login, _, err := ghutil.CurrentUser(client)
+			if err != nil {
+				return err
 			}
-			if err := client.Get("user", &user); err != nil {
-				return fmt.Errorf("GET /user: %w", err)
-			}
-			_, _ = fmt.Fprintln(cmd.OutOrStdout(), user.Login)
+			_, _ = fmt.Fprintln(cmd.OutOrStdout(), login)
 			return nil
 		},
 	}

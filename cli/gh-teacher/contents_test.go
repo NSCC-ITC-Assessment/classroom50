@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 )
 
@@ -116,38 +115,5 @@ func TestListSubtreeBlobPaths_TruncatedErrors(t *testing.T) {
 
 	if _, err := listSubtreeBlobPaths(client, "o", "classroom50", "parent-sha", "cs-principles"); err == nil {
 		t.Fatal("expected error on truncated tree, got nil")
-	}
-}
-
-// TestDeletionEntriesMarshalNullSHA pins the wire contract the Trees
-// API depends on: a deletion entry must serialize `"sha":null`, while
-// an upsert entry serializes a string SHA.
-func TestDeletionEntriesMarshalNullSHA(t *testing.T) {
-	entries := deletionEntries([]string{"b/2.txt", "a/1.txt"})
-	if len(entries) != 2 {
-		t.Fatalf("len = %d, want 2", len(entries))
-	}
-	// Sorted for a deterministic payload.
-	if entries[0].Path != "a/1.txt" || entries[1].Path != "b/2.txt" {
-		t.Errorf("paths not sorted: %q, %q", entries[0].Path, entries[1].Path)
-	}
-	data, err := json.Marshal(entries[0])
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	if !strings.Contains(string(data), `"sha":null`) {
-		t.Errorf("deletion entry = %s, want \"sha\":null", data)
-	}
-
-	// An upsert entry (non-nil SHA) must NOT be null.
-	sha := "abc123"
-	up := treeEntry{Path: "x", Mode: "100644", Type: "blob", SHA: &sha}
-	updata, _ := json.Marshal(up)
-	if strings.Contains(string(updata), `"sha":null`) {
-		t.Errorf("upsert entry = %s, want a string sha", updata)
-	}
-
-	if deletionEntries(nil) != nil {
-		t.Error("deletionEntries(nil) should be nil")
 	}
 }
