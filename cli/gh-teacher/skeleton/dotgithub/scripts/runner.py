@@ -1122,6 +1122,156 @@ def run_declarative(tests_path: pathlib.Path, finalize: Finalizer,
 
 
 # ---------------------------------------------------------------------------
+# Pipeline stages (called in order by main(); each is a named step so the
+# top-level flow reads as a narrative and the precedence/early-exit rules
+# are explicit). They call the module-level fetch_url / subprocess.run so
+# the test harness's monkeypatches still apply.
+# ---------------------------------------------------------------------------
+
+
+def fetch_bundle(finalize: Finalizer, *, pages_base_url: str, classroom: str,
+                 assignment: str, runtime_dir: pathlib.Path) -> int | None:
+    """Download the per-assignment bundle from Pages and extract it into
+    `runtime_dir`. A 404 means "no per-assignment override" — fine, the
+    entrypoint resolver falls through to the classroom default. Returns an
+    rc (already finalized as an error) on a hard fetch/extract failure, or
+    None to continue."""
+    burl = bundle_url(pages_base_url, classroom, assignment)
+    print(f"runner: fetching bundle {burl}")
+    try:
+        bundle = fetch_url(burl)
+    except (urllib.error.HTTPError, urllib.error.URLError, ValueError) as exc:
+        return finalize.error(f"bundle fetch failed: {exc} — see workflow logs")
+
+    if bundle is not None:
+        print(f"runner: bundle size {len(bundle)} bytes")
+        try:
+            extract_tarball(bundle, runtime_dir)
+        except (tarfile.TarError, OSError, ValueError) as exc:
+            return finalize.error(f"bundle extraction failed: {exc} — see workflow logs")
+    return None
+
+
+def resolve_entrypoint(
+    finalize: Finalizer, *, pages_base_url: str, classroom: str, assignment: str,
+    runtime_dir: pathlib.Path,
+) -> tuple[pathlib.Path | None, int | None]:
+    """Resolve the grading entrypoint, most-specific first:
+        per-assignment autograder.py
+        > per-assignment tests.json (declarative, graded in-process)
+        > classroom default autograder.py
+        > vacuous pass.
+    A hand-written per-assignment autograder.py wins over declarative tests
+    for the same slug (it's the escape hatch).
+
+    Returns exactly one of two shapes (never both-set, never both-None):
+      (entrypoint, None)  — a Python entrypoint to exec; main() continues.
+      (None, rc)          — the step is already TERMINAL and rc is main()'s
+                            return value: the declarative grader ran
+                            (run_declarative), nothing was configured
+                            (no_autograder), or the default fetch failed
+                            (error).
+    A missing autograder is NOT an error: "no autograder configured" is a
+    valid mid-setup state, so finalize.no_autograder() synthesizes a
+    vacuous-pass (0/0 success) result and the gradebook records the
+    submission rather than dropping it.
+    """
+    per_assignment = runtime_dir / assignment / ENTRYPOINT_FILENAME
+    per_assignment_tests = runtime_dir / assignment / TESTS_FILENAME
+    if per_assignment.is_file():
+        print(f"runner: using per-assignment entrypoint {per_assignment}")
+        return per_assignment, None
+    if per_assignment_tests.is_file():
+        print(f"runner: grading per-assignment declarative tests {per_assignment_tests}")
+        return None, run_declarative(per_assignment_tests, finalize, runtime_dir / assignment)
+
+    durl = classroom_default_autograder_url(pages_base_url, classroom)
+    print(
+        f"runner: no per-assignment {ENTRYPOINT_FILENAME}; "
+        f"fetching classroom default from {durl}"
+    )
+    try:
+        content = fetch_url(durl)
+    except (urllib.error.HTTPError, urllib.error.URLError, ValueError) as exc:
+        return None, finalize.error(f"classroom default {ENTRYPOINT_FILENAME} fetch failed: {exc}")
+    if content is None:
+        # "No autograder configured" is a valid mid-setup state, not an
+        # error: synthesize a vacuous-pass result (0/0 success).
+        return None, finalize.no_autograder()
+    entrypoint = runtime_dir / ENTRYPOINT_FILENAME
+    entrypoint.write_bytes(content)
+    print(f"runner: using classroom default entrypoint {entrypoint}")
+    return entrypoint, None
+
+
+def run_entrypoint(
+    finalize: Finalizer, entrypoint: pathlib.Path, workspace: pathlib.Path,
+) -> int | None:
+    """Exec the entrypoint with the helper env vars and cwd at the
+    student's checkout. Returns an rc (already finalized as an error) on a
+    failed invocation or a non-zero autograder exit, else None to continue.
+
+    The USERNAME / *_URL helper env vars are read off `finalize` (the
+    identity carrier), matching how run_declarative pulls them, rather than
+    re-threading them through the signature."""
+    env = dict(os.environ)
+    env["USERNAME"] = finalize.username
+    env["COMMIT_URL"] = finalize.commit_link
+    env["RELEASE_URL"] = finalize.release_link
+    env["REVIEW_URL"] = finalize.review_link
+    try:
+        proc = subprocess.run(
+            [sys.executable, str(entrypoint)],
+            cwd=str(workspace),
+            env=env,
+            check=False,
+        )
+    except OSError as exc:
+        return finalize.error(f"failed to invoke {ENTRYPOINT_FILENAME}: {exc}")
+    if proc.returncode != 0:
+        return finalize.error(f"autograder exited {proc.returncode}")
+    return None
+
+
+def finalize_result(finalize: Finalizer, *, is_group: bool) -> int:
+    """Read + validate the autograder's result.json, then synthesize the
+    release body and status/summary outputs the autograder didn't write.
+    Returns the runner's exit code (0 on success; an error rc when the
+    result is missing/malformed/invalid). Identity/paths are read off
+    `finalize`; `is_group` is the one stage-local input (it drives the
+    mode-aware usernames check)."""
+    workspace = finalize.workspace
+    github_output = finalize.github_output
+    result_path = workspace / RESULT_FILENAME
+    if not result_path.is_file():
+        return finalize.error(f"autograder did not produce {RESULT_FILENAME}")
+    try:
+        result = json.loads(result_path.read_text())
+    except json.JSONDecodeError as exc:
+        return finalize.error(f"{RESULT_FILENAME} is not valid JSON: {exc}")
+    err = validate_result(
+        result, classroom=finalize.classroom, assignment=finalize.assignment, is_group=is_group
+    )
+    if err is not None:
+        return finalize.error(err)
+
+    # Synthesize release-body.md if the autograder didn't write one.
+    body_path = workspace / RELEASE_BODY_FILENAME
+    if not body_path.is_file():
+        _, fallback = derive_status_and_summary(result)
+        body_path.write_text(render_release_body(result, fallback))
+
+    # Synthesize status / summary if the autograder didn't write them.
+    if not output_has_status(github_output):
+        status, summary = derive_status_and_summary(result)
+        append_outputs(github_output, status, summary)
+        print(f"runner: derived status={status} summary={summary!r}")
+    else:
+        print("runner: autograder set status/summary; using as-is")
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # main()
 # ---------------------------------------------------------------------------
 
@@ -1203,102 +1353,28 @@ def main() -> int:
         if f.exists():
             f.unlink()
 
-    # 1) Download the per-assignment bundle (404 → no override, fall
-    # through to the classroom default).
-    burl = bundle_url(pages_base_url, classroom, assignment)
-    print(f"runner: fetching bundle {burl}")
-    try:
-        bundle = fetch_url(burl)
-    except (urllib.error.HTTPError, urllib.error.URLError, ValueError) as exc:
-        return finalize.error(f"bundle fetch failed: {exc} — see workflow logs")
+    # Pipeline: fetch bundle → resolve entrypoint → exec → validate +
+    # synthesize. Each stage returns an rc when it's terminal (a finalized
+    # error, the declarative grader, or a vacuous pass), else None/continue.
+    rc = fetch_bundle(
+        finalize, pages_base_url=pages_base_url, classroom=classroom,
+        assignment=assignment, runtime_dir=runtime_dir,
+    )
+    if rc is not None:
+        return rc
 
-    if bundle is not None:
-        print(f"runner: bundle size {len(bundle)} bytes")
-        try:
-            extract_tarball(bundle, runtime_dir)
-        except (tarfile.TarError, OSError, ValueError) as exc:
-            return finalize.error(f"bundle extraction failed: {exc} — see workflow logs")
+    entrypoint, rc = resolve_entrypoint(
+        finalize, pages_base_url=pages_base_url, classroom=classroom,
+        assignment=assignment, runtime_dir=runtime_dir,
+    )
+    if entrypoint is None:
+        return rc  # declarative grader ran, vacuous pass, or fetch error
 
-    # 2) Resolve the entrypoint, most-specific first:
-    #      per-assignment autograder.py
-    #      > per-assignment tests.json (declarative, graded in-process)
-    #      > classroom default autograder.py
-    #      > vacuous pass.
-    # A hand-written per-assignment autograder.py wins over declarative
-    # tests for the same slug (it's the escape hatch). When nothing
-    # exists, finalize.no_autograder() synthesizes a vacuous-pass result
-    # — "no autograder configured" is a valid mid-setup state, not an
-    # error, so the gradebook records the submission as 0/0 success.
-    per_assignment = runtime_dir / assignment / ENTRYPOINT_FILENAME
-    per_assignment_tests = runtime_dir / assignment / TESTS_FILENAME
-    if per_assignment.is_file():
-        entrypoint = per_assignment
-        print(f"runner: using per-assignment entrypoint {entrypoint}")
-    elif per_assignment_tests.is_file():
-        print(f"runner: grading per-assignment declarative tests {per_assignment_tests}")
-        return run_declarative(per_assignment_tests, finalize, runtime_dir / assignment)
-    else:
-        durl = classroom_default_autograder_url(pages_base_url, classroom)
-        print(
-            f"runner: no per-assignment {ENTRYPOINT_FILENAME}; "
-            f"fetching classroom default from {durl}"
-        )
-        try:
-            content = fetch_url(durl)
-        except (urllib.error.HTTPError, urllib.error.URLError, ValueError) as exc:
-            return finalize.error(f"classroom default {ENTRYPOINT_FILENAME} fetch failed: {exc}")
-        if content is None:
-            return finalize.no_autograder()
-        entrypoint = runtime_dir / ENTRYPOINT_FILENAME
-        entrypoint.write_bytes(content)
-        print(f"runner: using classroom default entrypoint {entrypoint}")
+    rc = run_entrypoint(finalize, entrypoint, workspace)
+    if rc is not None:
+        return rc
 
-    # 3) Exec with helper env vars and cwd at the student's checkout.
-    env = dict(os.environ)
-    env["USERNAME"] = username
-    env["COMMIT_URL"] = commit_link
-    env["RELEASE_URL"] = release_link
-    env["REVIEW_URL"] = review_link
-    try:
-        proc = subprocess.run(
-            [sys.executable, str(entrypoint)],
-            cwd=str(workspace),
-            env=env,
-            check=False,
-        )
-    except OSError as exc:
-        return finalize.error(f"failed to invoke {ENTRYPOINT_FILENAME}: {exc}")
-
-    if proc.returncode != 0:
-        return finalize.error(f"autograder exited {proc.returncode}")
-
-    # 4) Validate result.json.
-    result_path = workspace / RESULT_FILENAME
-    if not result_path.is_file():
-        return finalize.error(f"autograder did not produce {RESULT_FILENAME}")
-    try:
-        result = json.loads(result_path.read_text())
-    except json.JSONDecodeError as exc:
-        return finalize.error(f"{RESULT_FILENAME} is not valid JSON: {exc}")
-    err = validate_result(result, classroom=classroom, assignment=assignment, is_group=is_group)
-    if err is not None:
-        return finalize.error(err)
-
-    # 5) Synthesize release-body.md if the autograder didn't write one.
-    body_path = workspace / RELEASE_BODY_FILENAME
-    if not body_path.is_file():
-        _, fallback = derive_status_and_summary(result)
-        body_path.write_text(render_release_body(result, fallback))
-
-    # 6) Synthesize status / summary if the autograder didn't write them.
-    if not output_has_status(github_output):
-        status, summary = derive_status_and_summary(result)
-        append_outputs(github_output, status, summary)
-        print(f"runner: derived status={status} summary={summary!r}")
-    else:
-        print("runner: autograder set status/summary; using as-is")
-
-    return 0
+    return finalize_result(finalize, is_group=is_group)
 
 
 if __name__ == "__main__":
