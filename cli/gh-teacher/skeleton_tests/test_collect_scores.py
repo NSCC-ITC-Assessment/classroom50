@@ -97,31 +97,40 @@ def write_minimal_classroom(root: pathlib.Path) -> pathlib.Path:
     return classroom
 
 
-# usernames_key ---------------------------------------------------------------
+# row_key ---------------------------------------------------------------------
 
 
-class TestUsernamesKey:
-    def test_canonical_record_returns_lowercased_tuple(self):
-        # Lowercased usernames keep a hand-edited "Alice" and the
-        # canonical "alice" from creating duplicate rows. The
-        # assignment is the bucket key now, not part of this key.
-        assert cs.usernames_key({"usernames": ["Alice"]}) == ("alice",)
+class TestRowKey:
+    def test_prefers_owner_field_lowercased(self):
+        # The stable key is the repo owner, not the credited usernames.
+        assert cs.row_key({"owner": "Alice", "usernames": ["alice", "bob"]}) == "alice"
 
-    def test_missing_usernames_returns_none(self):
-        assert cs.usernames_key({"datetime": "x"}) is None
+    def test_owner_invariant_across_changing_usernames(self):
+        # Same owner, different credited sets -> same key (the #104 fix).
+        full = {"owner": "alice", "usernames": ["alice", "bob"]}
+        degraded = {"owner": "alice", "usernames": ["alice"]}
+        assert cs.row_key(full) == cs.row_key(degraded) == "alice"
 
-    def test_empty_usernames_list_returns_none(self):
-        assert cs.usernames_key({"usernames": []}) is None
+    def test_falls_back_to_sole_username(self):
+        # A row without `owner` (individual, or written before owner
+        # existed) keys on its single username.
+        assert cs.row_key({"usernames": ["Alice"]}) == "alice"
+
+    def test_missing_owner_and_usernames_returns_none(self):
+        assert cs.row_key({"datetime": "x"}) is None
+
+    def test_empty_usernames_returns_none(self):
+        assert cs.row_key({"usernames": []}) is None
 
     def test_non_string_username_returns_none(self):
-        # Defensive — a hand-edited numeric username would silently
-        # match nothing in apply_updates.
-        assert cs.usernames_key({"usernames": [123]}) is None
+        assert cs.row_key({"usernames": [123]}) is None
 
-    def test_multi_username_preserves_order_lowercased(self):
-        # Tuple shape is intentionally extensible so a key migration
-        # isn't needed if group submissions land.
-        assert cs.usernames_key({"usernames": ["Alice", "Bob"]}) == ("alice", "bob")
+    def test_multi_username_without_owner_is_unkeyable(self):
+        # A legacy multi-username group row with no `owner` has no stable
+        # key here; apply_updates migrates it in place (adopts it for the
+        # owner-keyed update whose owner is a member). row_key returns None
+        # rather than guessing which member is the owner.
+        assert cs.row_key({"usernames": ["alice", "bob"]}) is None
 
 
 # apply_updates ---------------------------------------------------------------
@@ -250,6 +259,97 @@ class TestApplyUpdates:
 
         assert changes == 1
         assert scores["submissions"]["hello"][0]["late"] is False
+
+    def test_group_degraded_recollect_replaces_not_duplicates(self):
+        # Issue #104 / F2 regression. First collect credits a group's full
+        # member list; a later collect whose collaborator read degraded to
+        # owner-only must REPLACE the same row (keyed on the owner), not
+        # append a second one. Before the owner-keying fix this left two
+        # rows (("alice","bob") and ("alice",)).
+        scores = {"schema": cs.SCORES_SCHEMA_V1, "submissions": {}}
+        full = make_result(username="alice", owner="alice",
+                           usernames=["alice", "bob"], score=8)
+        assert cs.apply_updates(scores, [full]) == 1
+        assert len(scores["submissions"]["hello"]) == 1
+
+        degraded = make_result(username="alice", owner="alice",
+                               usernames=["alice"], score=8)
+        changes = cs.apply_updates(scores, [degraded])
+        assert changes == 1
+        bucket = scores["submissions"]["hello"]
+        assert len(bucket) == 1, f"expected exactly one row, got {bucket!r}"
+        assert bucket[0]["usernames"] == ["alice"]
+
+    def test_group_membership_change_replaces_same_owner_row(self):
+        # A teammate is added/removed between collects: same owner -> same
+        # row, updated in place.
+        scores = {"schema": cs.SCORES_SCHEMA_V1, "submissions": {}}
+        cs.apply_updates(scores, [make_result(owner="alice", usernames=["alice"], score=5)])
+        cs.apply_updates(scores, [make_result(owner="alice", usernames=["alice", "bob"], score=5)])
+        bucket = scores["submissions"]["hello"]
+        assert len(bucket) == 1
+        assert bucket[0]["usernames"] == ["alice", "bob"]
+
+    def test_owner_field_persisted_in_row(self):
+        # The owner is a first-class row field (download.go reads rows as
+        # map[string]any, so the extra key is tolerated) and survives ingest.
+        scores = {"schema": cs.SCORES_SCHEMA_V1, "submissions": {}}
+        cs.apply_updates(scores, [make_result(owner="alice", usernames=["alice", "bob"])])
+        assert scores["submissions"]["hello"][0]["owner"] == "alice"
+
+    def test_distinct_owners_are_distinct_rows(self):
+        # Two different group repos (different owners) for the same
+        # assignment are separate rows even if their member sets overlap.
+        scores = {"schema": cs.SCORES_SCHEMA_V1, "submissions": {}}
+        cs.apply_updates(scores, [make_result(owner="alice", usernames=["alice", "bob"])])
+        cs.apply_updates(scores, [make_result(owner="carol", usernames=["carol", "bob"])])
+        assert len(scores["submissions"]["hello"]) == 2
+
+    def test_legacy_group_row_migrated_in_place(self):
+        # Migration: a pre-fix legacy group row (multi-username, NO owner —
+        # a #104 duplicate) is ADOPTED by the first owner-keyed update whose
+        # owner is among its members, not left as a permanent orphan.
+        legacy = stored_row(username="alice", score=8)
+        legacy["usernames"] = ["alice", "bob"]   # multi-username, no `owner`
+        legacy.pop("owner", None)
+        scores = {"schema": cs.SCORES_SCHEMA_V1, "submissions": {"hello": [legacy]}}
+
+        incoming = make_result(username="alice", owner="alice",
+                               usernames=["alice", "bob"], score=8)
+        changes = cs.apply_updates(scores, [incoming])
+        bucket = scores["submissions"]["hello"]
+        assert len(bucket) == 1, f"legacy row should be migrated in place, got {bucket!r}"
+        assert bucket[0]["owner"] == "alice"
+        assert changes == 1
+
+    def test_legacy_individual_row_matched_by_owner_update(self):
+        # Back-compat: an existing individual row written WITHOUT `owner`
+        # (usernames=[alice]) is matched (sole-username fallback) by an
+        # incoming owner-stamped update — replaced in place, no duplicate.
+        legacy = stored_row(username="alice", score=5)
+        legacy.pop("owner", None)
+        assert "owner" not in legacy
+        scores = {"schema": cs.SCORES_SCHEMA_V1, "submissions": {"hello": [legacy]}}
+        cs.apply_updates(scores, [make_result(username="alice", owner="alice", score=9)])
+        bucket = scores["submissions"]["hello"]
+        assert len(bucket) == 1
+        assert bucket[0]["score"] == 9
+        assert bucket[0]["owner"] == "alice"
+
+    def test_legacy_migration_respects_override(self):
+        # A legacy group row a teacher pinned (override:true) is NOT
+        # adopted/overwritten by migration.
+        legacy = stored_row(username="alice", score=8)
+        legacy["usernames"] = ["alice", "bob"]
+        legacy.pop("owner", None)
+        legacy["override"] = True
+        scores = {"schema": cs.SCORES_SCHEMA_V1, "submissions": {"hello": [legacy]}}
+        cs.apply_updates(scores, [make_result(username="alice", owner="alice", score=99)])
+        bucket = scores["submissions"]["hello"]
+        # Pinned legacy row preserved; nothing appended either.
+        assert len(bucket) == 1
+        assert bucket[0]["score"] == 8
+        assert bucket[0]["override"] is True
 
 
 # validate_result -------------------------------------------------------------
@@ -504,6 +604,9 @@ class TestGroupCollectClassroom:
         )
         assert len(results) == 1
         assert results[0]["usernames"] == ["alice", "bob", "carol"]
+        # End-to-end: collect_classroom stamps the stable owner (the repo
+        # owner from the roster), not the fanned-out member set (#104 fix).
+        assert results[0]["owner"] == "alice"
 
     def test_group_fanout_excludes_non_rostered_collaborator(self, monkeypatch):
         # A collaborator added out-of-band who is not on the roster must

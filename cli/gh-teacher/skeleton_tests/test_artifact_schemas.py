@@ -284,6 +284,17 @@ class TestScoresSchema:
         }
         assert _errs(SCORES_V, doc) == []
 
+    def test_rows_with_and_without_owner_both_validate(self):
+        # `owner` is an optional collection-added field. A legacy row
+        # written before it existed (no `owner`) and a new row carrying it
+        # must BOTH validate — back-compat for existing scores.json files.
+        with_owner = {**_SCORES_ROW, "owner": "alice", "usernames": ["alice", "bob"]}
+        without_owner = {k: v for k, v in _SCORES_ROW.items() if k != "owner"}
+        assert "owner" not in without_owner
+        doc = {"schema": "classroom50/scores/v1",
+               "submissions": {"hello": [with_owner, without_owner]}}
+        assert _errs(SCORES_V, doc) == []
+
     def test_row_is_result_minus_assignment(self):
         # A row must NOT carry `assignment` (it's the bucket key) — but
         # additionalProperties:true means we can't reject it; assert the

@@ -415,6 +415,16 @@ def collect_classroom(
                     f"cannot mark lateness"
                 )
 
+            # Stamp the stable row identity: the repo OWNER (roster-derived,
+            # from the repo-name formula), not the credited `usernames` set.
+            # For a group submission `usernames` is rewritten to the member
+            # list and can change between collects (e.g. a degraded read drops
+            # to owner-only); keying on it would orphan the prior row and
+            # append a duplicate (issue #104). The owner is invariant for the
+            # repo, so apply_updates keys on it and replaces in place. It is
+            # persisted as the row's `owner` field (documented in scores-v1).
+            payload["owner"] = username
+
             results.append(payload)
             submitted += 1
 
@@ -635,27 +645,47 @@ def apply_updates(scores: dict[str, Any], updates: Iterable[dict[str, Any]]) -> 
     redundant `assignment` field dropped (it's the bucket key).
 
     Existing rows with `"override": true` are preserved verbatim.
-    Rows within a bucket are keyed by tuple(lowercased usernames) --
-    individual mode has exactly one username today; the tuple shape
-    leaves room for group submissions later.
+    Rows within a bucket are keyed by the repo OWNER (`row_key`), which
+    is invariant for a repo — so a group row whose credited `usernames`
+    set changes between collects (e.g. a degraded collaborator read drops
+    it to owner-only) REPLACES its prior row instead of orphaning it and
+    appending a duplicate (issue #104). A legacy group row written before
+    `owner` existed (multi-username, unkeyable) is migrated in place: the
+    first owner-keyed update whose owner is among its members ADOPTS it,
+    so the upgrade dedups any pre-fix #104 duplicate rather than leaving it.
     """
     submissions: dict[str, Any] = scores["submissions"]
-    # Per-bucket index: assignment slug -> {usernames_key: row index}.
-    index: dict[str, dict[tuple[str, ...], int]] = {}
+    # Per-bucket index: assignment slug -> {row_key: row index}.
+    index: dict[str, dict[str, int]] = {}
+    # Secondary index for MIGRATION: legacy group rows written before `owner`
+    # existed (multi-username, no `owner`) are unkeyable by row_key. Map each
+    # of their member logins -> row index so an incoming owner-keyed update
+    # can ADOPT (replace in place) the legacy row that contains its owner,
+    # instead of appending a new row and orphaning the old #104 duplicate.
+    legacy_index: dict[str, dict[str, int]] = {}
     for assignment, rows in submissions.items():
-        bucket_index: dict[tuple[str, ...], int] = {}
+        bucket_index: dict[str, int] = {}
+        legacy_bucket: dict[str, int] = {}
         for i, row in enumerate(rows):
             if not isinstance(row, dict):
                 continue
-            key = usernames_key(row)
+            key = row_key(row)
             if key is not None:
                 bucket_index[key] = i
+                continue
+            # Unkeyable: a legacy multi-username group row with no owner.
+            members = row.get("usernames")
+            if isinstance(members, list):
+                for m in members:
+                    if isinstance(m, str) and m:
+                        legacy_bucket.setdefault(m.lower(), i)
         index[assignment] = bucket_index
+        legacy_index[assignment] = legacy_bucket
 
     changes = 0
     for update in updates:
         assignment = update.get("assignment")
-        key = usernames_key(update)
+        key = row_key(update)
         if not isinstance(assignment, str) or not assignment or key is None:
             continue
         row = entry_from_result(update)
@@ -663,6 +693,19 @@ def apply_updates(scores: dict[str, Any], updates: Iterable[dict[str, Any]]) -> 
         bucket_index = index.setdefault(assignment, {})
         idx = bucket_index.get(key)
         if idx is None:
+            # No owner-keyed match. Before appending, adopt a legacy
+            # owner-less row that lists this owner (the pre-fix #104
+            # duplicate of this very submission), replacing it in place so
+            # the upgrade dedups rather than leaving a permanent orphan.
+            legacy_idx = legacy_index.get(assignment, {}).pop(key, None)
+            if legacy_idx is not None:
+                existing = bucket[legacy_idx]
+                if isinstance(existing, dict) and existing.get("override") is True:
+                    continue
+                bucket[legacy_idx] = row
+                bucket_index[key] = legacy_idx
+                changes += 1
+                continue
             bucket.append(row)
             bucket_index[key] = len(bucket) - 1
             changes += 1
@@ -686,26 +729,43 @@ def apply_updates(scores: dict[str, Any], updates: Iterable[dict[str, Any]]) -> 
 def entry_from_result(payload: dict[str, Any]) -> dict[str, Any]:
     """The stored gradebook row: the validated result payload minus
     `assignment` (the bucket key -- keeping it would duplicate data).
-    Every other field, including `schema` and `tests`, is retained
-    verbatim; an existing `override` flag is carried through.
+    Every other field, including `schema`, `tests`, and the collection-
+    added `owner`/`late`/`override`, is retained verbatim.
     """
     return {k: v for k, v in payload.items() if k != "assignment"}
 
 
-def usernames_key(record: dict[str, Any]) -> tuple[str, ...] | None:
-    """tuple(lowercased usernames), or None for an unkeyable record
-    (missing/empty usernames or any non-string username). Rows within
-    an assignment bucket are matched on this.
+def row_key(record: dict[str, Any]) -> str | None:
+    """The stable per-bucket key: the repo OWNER login, lowercased.
+
+    Prefers the explicit `owner` field (set by collection from the
+    repo-name formula). Falls back to the sole username for a
+    single-username row (so a row written before `owner` existed, or an
+    individual submission, still matches). Returns None for an unkeyable
+    record (no owner and not exactly one usable username).
+
+    Keying on the owner — not the credited `usernames` set — is what
+    makes a group re-collect replace its row instead of duplicating it
+    when the member set changes (issue #104). A legacy multi-username
+    group row written before `owner` existed is unkeyable here (returns
+    None); `apply_updates` migrates it in place by adopting it for the
+    owner-keyed update whose owner is among its members.
+
+    Cross-binary tie: the owner is the `<username>` component of the
+    `<classroom>-<assignment>-<username>` repo-name formula (see
+    `assignment_repo_name` here and `assignmentRepoName` in
+    cli/gh-student/accept.go); it is persisted as the row `owner` field,
+    which download.go reads tolerantly (rows decode as map[string]any).
     """
+    owner = record.get("owner")
+    if isinstance(owner, str) and owner:
+        return owner.lower()
     usernames = record.get("usernames") or []
-    if not isinstance(usernames, list) or not usernames:
-        return None
-    lowered: list[str] = []
-    for u in usernames:
-        if not isinstance(u, str) or not u:
-            return None
-        lowered.append(u.lower())
-    return tuple(lowered)
+    if isinstance(usernames, list) and len(usernames) == 1:
+        only = usernames[0]
+        if isinstance(only, str) and only:
+            return only.lower()
+    return None
 
 
 def same_submission(a: dict[str, Any], b: dict[str, Any]) -> bool:
@@ -959,6 +1019,18 @@ def group_member_usernames(
     non-rostered account invited via the GitHub UI, which bypasses the
     CLI's group-size limit) can never be credited a score. Raises on the
     underlying HTTP/parse error so the caller can fall back to owner-only.
+
+    TRUST ASSUMPTION (F6, documented residual): every rostered collaborator
+    on the repo is credited the shared score. GitHub does not record *how* a
+    collaborator was added, so collection cannot distinguish a teammate added
+    via `gh student group join` (which enforces `max_group_size`) from one a
+    student added directly through the GitHub UI. The roster intersection
+    bounds the blast radius to rostered classmates — a stranger can never be
+    credited — but a student could still add a rostered classmate as a
+    collaborator and credit them this assignment's score. Treating that as
+    acceptable (rostered students are mutually trusted within a classroom) is
+    the deliberate, simple model; see wiki/Autograders.md. Tightening it would
+    require a teacher-approved group manifest, deferred as out of scope.
     """
     logins = list_repo_collaborator_logins(api_url, org, repo, token)
     seen: dict[str, str] = {}
