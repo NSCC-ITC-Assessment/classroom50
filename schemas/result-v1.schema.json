@@ -1,0 +1,103 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/foundation50/classroom50/main/schemas/result-v1.schema.json",
+  "title": "classroom50/result/v1",
+  "description": "Machine-readable schema for the result.json an autograder (or runner.py's synthesized error/vacuous/declarative paths) writes per submission. Mirrors the authoritative validators runner.py::validate_result and collect_scores.py::validate_result (cli/gh-teacher/skeleton/dotgithub/scripts/). Rules JSON Schema cannot express, enforced in code: (1) classroom/assignment/usernames must match the SOURCE REPO's identity (a hostile result can't land in another student's gradebook); (2) usernames cardinality is MODE-dependent — individual mode requires exactly [owner]; group mode requires a non-empty list CONTAINING the owner (collection later rewrites it to the full member list); the runner emits the single owner in both cases. (3) score <= max-score and per-test score <= per-test max-score are cross-field. This schema captures only the mode-independent structural contract.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "classroom",
+    "assignment",
+    "usernames",
+    "submission",
+    "commit",
+    "release",
+    "review",
+    "datetime",
+    "score",
+    "max-score",
+    "tests"
+  ],
+  "properties": {
+    "schema": { "const": "classroom50/result/v1" },
+    "classroom": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Classroom short-name. Must equal the source repo's classroom (enforced in code against the repo identity)."
+    },
+    "assignment": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Assignment slug. Must equal the source repo's assignment (enforced in code)."
+    },
+    "usernames": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string", "minLength": 1 },
+      "description": "Crediting GitHub usernames. The runner always emits exactly one (the repo owner). Cardinality rule is mode-dependent and enforced in code: individual => exactly [owner]; group => non-empty list containing the owner (collection rewrites it to the full member list after validation). The owner must match the username derived from the repo name."
+    },
+    "submission": {
+      "type": "string",
+      "pattern": "^submit/",
+      "description": "The submit/<UTC-timestamp>-<short-sha> tag this result graded."
+    },
+    "commit": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Link to the graded commit on the Git host."
+    },
+    "release": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Link to the submission release on the Git host."
+    },
+    "review": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Full-diff (baseline...graded commit) review link; equals `commit` when there is nothing to compare."
+    },
+    "datetime": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T([01]\\d|2[0-3]):[0-5]\\d:[0-5]\\dZ$",
+      "description": "UTC instant the result was produced, formatted YYYY-MM-DDTHH:MM:SSZ. Advisory: collect-scores compares it against the assignment `due` to mark a row `late` in scores.json."
+    },
+    "score": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Points earned. Must be <= max-score (cross-field, enforced in code)."
+    },
+    "max-score": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Total points available (0 for a vacuous/error result)."
+    },
+    "tests": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/testResult" },
+      "description": "Per-test outcomes. Empty for a vacuous pass (no autograder configured) or an error result."
+    }
+  },
+  "$defs": {
+    "testResult": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["test-name", "passed", "score", "max-score"],
+      "description": "One graded test. additionalProperties is true: an autograder.py may attach extra diagnostic fields (e.g. output, message) that the runner and collector preserve verbatim.",
+      "properties": {
+        "test-name": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Human-readable test name (the declarative grader uses the assignment test `name`)."
+        },
+        "passed": { "type": "boolean" },
+        "score": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Points earned on this test. Must be <= this test's max-score (cross-field, enforced in code)."
+        },
+        "max-score": { "type": "integer", "minimum": 0 }
+      }
+    }
+  }
+}

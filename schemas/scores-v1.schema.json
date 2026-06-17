@@ -1,0 +1,100 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/foundation50/classroom50/main/schemas/scores-v1.schema.json",
+  "title": "classroom50/scores/v1",
+  "description": "Machine-readable schema for <classroom>/scores.json, the gradebook written by collect_scores.py (cli/gh-teacher/skeleton/dotgithub/scripts/) and read by `gh teacher download`. `submissions` is keyed by assignment slug; each value is that assignment's rows. A row is a result.json (classroom50/result/v1) payload with the `assignment` field DROPPED (it's the bucket key), plus collection-added fields: `late` (boolean, submission datetime vs the assignment `due`) and `override` (boolean teacher flag — `true` rows are preserved verbatim across re-collects). Rules JSON Schema cannot express, enforced in code: (1) within a bucket, rows are keyed by tuple(lowercased usernames) — a key is unique per bucket; (2) the same identity/score cross-field rules as result/v1; (3) the lenient reader also tolerates a legacy flat-array `submissions` and a stray \"{}\" string, which it normalizes to the keyed map on write — this schema describes only the canonical written form.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "submissions"],
+  "properties": {
+    "schema": { "const": "classroom50/scores/v1" },
+    "submissions": {
+      "type": "object",
+      "description": "Assignment slug -> array of submission rows. `{}` (never null) at scaffold time.",
+      "propertyNames": { "$ref": "#/$defs/shortName" },
+      "additionalProperties": {
+        "type": "array",
+        "items": { "$ref": "#/$defs/row" }
+      }
+    }
+  },
+  "$defs": {
+    "shortName": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{1,38}$"
+    },
+    "row": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "A result/v1 payload minus `assignment`, plus optional collection-added fields. additionalProperties is true so an autograder's extra top-level diagnostic fields survive ingest verbatim, mirroring entry_from_result.",
+      "required": [
+        "schema",
+        "classroom",
+        "usernames",
+        "submission",
+        "commit",
+        "release",
+        "review",
+        "datetime",
+        "score",
+        "max-score",
+        "tests"
+      ],
+      "properties": {
+        "schema": {
+          "const": "classroom50/result/v1",
+          "description": "Rows retain the per-result sentinel (not a scores sentinel) — they are stored result payloads."
+        },
+        "classroom": { "type": "string", "minLength": 1 },
+        "usernames": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 },
+          "description": "One entry for an individual submission; the full rostered member list for a group submission (collection rewrites it from the runner's owner-only list)."
+        },
+        "submission": { "type": "string", "pattern": "^submit/" },
+        "commit": { "type": "string", "minLength": 1 },
+        "release": { "type": "string", "minLength": 1 },
+        "review": { "type": "string", "minLength": 1 },
+        "datetime": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T([01]\\d|2[0-3]):[0-5]\\d:[0-5]\\dZ$"
+        },
+        "score": { "type": "integer", "minimum": 0 },
+        "max-score": { "type": "integer", "minimum": 0 },
+        "tests": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/testResult" }
+        },
+        "late": {
+          "type": "boolean",
+          "description": "Collection-added: true when the submission datetime is after the assignment `due`. Absent when the assignment has no `due`."
+        },
+        "override": {
+          "type": "boolean",
+          "description": "Teacher flag. `true` => the row is preserved verbatim and never refreshed by collection. `false` => an explicit 'keep refreshing' marker that survives replacement."
+        }
+      }
+    },
+    "testResult": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["test-name", "passed", "score", "max-score"],
+      "description": "One graded test. additionalProperties is true: an autograder.py may attach extra diagnostic fields (e.g. output, message) that the runner and collector preserve verbatim.",
+      "properties": {
+        "test-name": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Human-readable test name (the declarative grader uses the assignment test `name`)."
+        },
+        "passed": { "type": "boolean" },
+        "score": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Points earned on this test. Must be <= this test's max-score (cross-field, enforced in code)."
+        },
+        "max-score": { "type": "integer", "minimum": 0 }
+      }
+    }
+  }
+}

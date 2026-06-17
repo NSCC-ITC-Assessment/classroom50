@@ -337,7 +337,9 @@ def render_release_body(result: dict[str, Any], summary: str) -> str:
     return "\n".join(lines) + "\n"
 
 
-def validate_result(data: Any, *, classroom: str, assignment: str) -> str | None:
+def validate_result(
+    data: Any, *, classroom: str, assignment: str, is_group: bool = False
+) -> str | None:
     """Return None if `data` is v1-shaped for the given identity, else
     a human-readable error string.
 
@@ -348,6 +350,14 @@ def validate_result(data: Any, *, classroom: str, assignment: str) -> str | None
     runner, get published as a release, and only get rejected on the
     next collect-scores run — the student appears as not-yet-submitted
     in the gradebook with no signal in the workflow log.
+
+    `usernames` cardinality is mode-dependent (matching the collector):
+    an individual assignment must be a one-element list; a group
+    assignment must be a non-empty list (a custom group autograder may
+    legitimately emit the full teammate list — the runner no longer
+    rejects it). The owner-membership and identity checks the collector
+    adds are out of scope here: the runner can't read collaborators, so
+    it validates shape, and the collector re-validates identity on ingest.
     """
     if not isinstance(data, dict):
         return f"{RESULT_FILENAME} is not a JSON object"
@@ -365,10 +375,15 @@ def validate_result(data: Any, *, classroom: str, assignment: str) -> str | None
         )
 
     usernames = data.get("usernames")
-    if not isinstance(usernames, list) or len(usernames) != 1:
-        return f"{RESULT_FILENAME} 'usernames' must be a one-element list"
-    if not isinstance(usernames[0], str) or not usernames[0]:
-        return f"{RESULT_FILENAME} 'usernames[0]' must be a non-empty string"
+    if not isinstance(usernames, list) or not usernames or not all(
+        isinstance(u, str) and u for u in usernames
+    ):
+        return f"{RESULT_FILENAME} 'usernames' must be a non-empty list of non-empty strings"
+    if not is_group and len(usernames) != 1:
+        return (
+            f"{RESULT_FILENAME} 'usernames' must be a one-element list for an "
+            f"individual assignment"
+        )
 
     submission = data.get("submission")
     if not isinstance(submission, str) or not submission.startswith("submit/"):
@@ -586,6 +601,15 @@ def append_sha_outputs(
 
 def now_utc() -> datetime.datetime:
     return datetime.datetime.now(datetime.timezone.utc)
+
+
+def mode_is_group(mode: str | None) -> bool:
+    """True only when the assignment mode is exactly 'group' (case- and
+    whitespace-insensitive). Anything else — including None, '', or an
+    unrecognized value — is treated as individual, the stricter
+    one-username rule, so a missing/typo'd MODE env can never loosen
+    validation. Mirrors the setup job's mode normalization."""
+    return (mode or "").strip().lower() == "group"
 
 
 # ---------------------------------------------------------------------------
@@ -1119,6 +1143,12 @@ def main() -> int:
     sha = os.environ.get("GITHUB_SHA", "")
     server_url = os.environ.get("GITHUB_SERVER_URL", "https://github.com")
     actor = os.environ.get("GITHUB_ACTOR", "")
+    # Assignment mode flows from assignments.json (config repo) via the
+    # setup job's `mode` output. Unknown/missing defaults to individual —
+    # the stricter one-username rule — so a missing env can't loosen
+    # validation. Drives the mode-aware usernames check below; adds no
+    # student-repo state.
+    is_group = mode_is_group(os.environ.get("MODE"))
     github_output = os.environ.get("GITHUB_OUTPUT")
     workspace = pathlib.Path.cwd()
 
@@ -1250,7 +1280,7 @@ def main() -> int:
         result = json.loads(result_path.read_text())
     except json.JSONDecodeError as exc:
         return finalize.error(f"{RESULT_FILENAME} is not valid JSON: {exc}")
-    err = validate_result(result, classroom=classroom, assignment=assignment)
+    err = validate_result(result, classroom=classroom, assignment=assignment, is_group=is_group)
     if err is not None:
         return finalize.error(err)
 

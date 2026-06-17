@@ -1,0 +1,92 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/foundation50/classroom50/main/schemas/tests-v1.schema.json",
+  "title": "classroom50/tests/v1",
+  "description": "Machine-readable schema for the per-assignment tests.json materialized by materialize_tests.py (cli/gh-teacher/skeleton/dotgithub/scripts/) from each assignment's `tests` block and graded by runner.py's built-in interpreter. The `tests` array items are IDENTICAL to assignments-v1.schema.json #/$defs/test (the materializer copies them verbatim), so the two MUST stay in lockstep — the parity test asserts it. Same two inexpressible rules as the assignments schema: test names UNIQUE within the file, and name length capped at 100 BYTES (UTF-8), enforced in code (tests.go / runner.py).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "tests"],
+  "properties": {
+    "schema": { "const": "classroom50/tests/v1" },
+    "tests": {
+      "type": "array",
+      "maxItems": 100,
+      "items": { "$ref": "#/$defs/test" }
+    }
+  },
+  "$defs": {
+    "test": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "type", "run"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[^\\u0000-\\u001f\\u007f]+$",
+          "description": "Unique within the assignment (enforce client-side); <= 100 UTF-8 bytes; no control characters."
+        },
+        "type": { "enum": ["io", "run", "python"] },
+        "setup": { "type": "string" },
+        "run": { "type": "string", "minLength": 1 },
+        "input": { "type": "string" },
+        "input-file": { "type": "string" },
+        "expected": { "type": "string" },
+        "expected-file": { "type": "string" },
+        "comparison": { "enum": ["included", "exact", "regex"] },
+        "timeout": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 600,
+          "description": "Seconds, 1-600. 0 (or omitted) means the default of 10s."
+        },
+        "exit-code": { "type": "integer", "minimum": 0, "maximum": 255 },
+        "points": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1000,
+          "description": "Defaults to 0 (informational test) when omitted; the CLI always writes it."
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "type": { "const": "io" } } },
+          "then": {
+            "required": ["comparison"],
+            "not": { "required": ["exit-code"] }
+          },
+          "else": {
+            "allOf": [
+              { "not": { "required": ["input"] } },
+              { "not": { "required": ["input-file"] } },
+              { "not": { "required": ["expected"] } },
+              { "not": { "required": ["expected-file"] } },
+              { "not": { "required": ["comparison"] } }
+            ]
+          }
+        },
+        {
+          "if": { "properties": { "type": { "const": "python" } } },
+          "then": { "not": { "required": ["exit-code"] } }
+        },
+        { "not": { "required": ["input", "input-file"] } },
+        { "not": { "required": ["expected", "expected-file"] } },
+        {
+          "if": {
+            "properties": {
+              "type": { "const": "io" },
+              "comparison": { "enum": ["included", "regex"] }
+            }
+          },
+          "then": {
+            "anyOf": [
+              { "required": ["expected"], "properties": { "expected": { "minLength": 1 } } },
+              { "required": ["expected-file"], "properties": { "expected-file": { "minLength": 1 } } }
+            ]
+          }
+        }
+      ]
+    }
+  }
+}

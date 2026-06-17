@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/foundation50/classroom50/main/schemas/classroom-v1.schema.json",
+  "title": "classroom50/classroom/v1",
+  "description": "Machine-readable schema for <classroom>/classroom.json, the per-classroom metadata scaffolded by `gh teacher classroom add` (cli/gh-teacher/classroom.go, classroomJSON). Hand-authored classrooms omit `migrated_from`; only `gh teacher classroom migrate` writes it.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "name", "short_name", "term", "org"],
+  "properties": {
+    "schema": { "const": "classroom50/classroom/v1" },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Human-readable classroom name."
+    },
+    "short_name": {
+      "$ref": "#/$defs/shortName",
+      "description": "URL/path-safe slug; the directory name under the config repo and the Pages path segment."
+    },
+    "term": {
+      "type": "string",
+      "description": "Free-form term label (e.g. \"Fall 2026\"); may be empty."
+    },
+    "org": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The GitHub organization login that owns this classroom."
+    },
+    "migrated_from": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source", "classroom_id", "original_name", "original_org_login", "migrated_at"],
+      "description": "Provenance written only by `gh teacher classroom migrate`.",
+      "properties": {
+        "source": { "type": "string", "minLength": 1 },
+        "classroom_id": { "type": "integer" },
+        "original_name": { "type": "string" },
+        "original_org_login": { "type": "string" },
+        "url": { "type": "string" },
+        "migrated_at": { "type": "string" }
+      }
+    }
+  },
+  "$defs": {
+    "shortName": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{1,38}$"
+    }
+  }
+}

@@ -413,6 +413,11 @@ jobs:
       CLASSROOM:      ${{ needs.setup.outputs.classroom }}
       ASSIGNMENT:     ${{ needs.setup.outputs.assignment }}
       SUBMISSION_TAG: ${{ needs.setup.outputs.submission-tag }}
+      # Assignment mode (individual | group) from assignments.json, so
+      # runner.py validates a group autograder's multi-username result.json
+      # instead of rejecting it. Defaults to the stricter individual rule
+      # when absent.
+      MODE:           ${{ needs.setup.outputs.mode }}
     steps:
       - uses: actions/checkout@v6
         with:

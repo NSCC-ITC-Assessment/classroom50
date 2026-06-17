@@ -93,6 +93,24 @@ func TestSkeletonFiles_AutogradeRunner(t *testing.T) {
 		t.Errorf("autograde-runner.yaml concurrency.cancel-in-progress = %v, want false", got)
 	}
 
+	// Cross-binary literal parity: the workflow's BASE_BRANCH (a bash
+	// literal inside the Ensure Feedback PR run: block, invisible to the
+	// YAML parser) must match the Go `feedbackBaseBranch` const that the
+	// org ruleset targets. A drift would point the runner and the ruleset
+	// at different branches, silently breaking the frozen-base lock. This
+	// is the enforced single-source the "keep in lockstep" comment asks
+	// for (Phase 1).
+	wantBaseBranch := "BASE_BRANCH=\"" + feedbackBaseBranch + "\""
+	if !strings.Contains(body, wantBaseBranch) {
+		t.Errorf("autograde-runner.yaml does not pin %s (feedbackBaseBranch drift vs the org ruleset)", wantBaseBranch)
+	}
+
+	// F1: the grade job must pass MODE through to runner.py so a group
+	// autograder's multi-username result.json is validated (not rejected).
+	if got, ok := nested(doc, "jobs", "grade", "env", "MODE"); !ok || got == "" {
+		t.Errorf("autograde-runner.yaml grade.env.MODE = %v, want the setup `mode` output (F1 mode-aware validation)", got)
+	}
+
 	// === Setup → grade → set-latest job structure ===
 	jobs, _ := nested(doc, "jobs")
 	jobsMap, ok := jobs.(map[string]any)
