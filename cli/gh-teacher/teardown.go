@@ -73,7 +73,7 @@ func runTeardown(client *api.RESTClient, in io.Reader, out, errOut io.Writer, or
 		return err
 	}
 
-	repos, err := listOrgRepoNamesForTeardown(client, org)
+	repos, err := listOrgRepoNames(client, org)
 	if err != nil {
 		return err
 	}
@@ -142,33 +142,6 @@ func requireConfigRepo(client *api.RESTClient, org string) error {
 		return fmt.Errorf("GET %s: %w", path, err)
 	}
 	return nil
-}
-
-// listOrgRepoNamesForTeardown pages through every repo in the org.
-// Note: this is the wildcard list, not filtered by name pattern —
-// teardown nukes everything (the precondition check is the safety
-// net). Pagination caps match the existing download.go pattern.
-func listOrgRepoNamesForTeardown(client *api.RESTClient, org string) ([]string, error) {
-	var names []string
-	for page := 1; ; page++ {
-		var batch []struct {
-			Name string `json:"name"`
-		}
-		path := fmt.Sprintf("orgs/%s/repos?per_page=100&page=%d", url.PathEscape(org), page)
-		if err := client.Get(path, &batch); err != nil {
-			return nil, fmt.Errorf("GET %s: %w", path, err)
-		}
-		if len(batch) == 0 {
-			break
-		}
-		for _, r := range batch {
-			names = append(names, r.Name)
-		}
-		if len(batch) < 100 {
-			break
-		}
-	}
-	return names, nil
 }
 
 // orderRepoDeletions returns the input slice with classroom50 moved

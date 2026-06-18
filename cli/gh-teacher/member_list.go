@@ -293,9 +293,9 @@ func classifyMembershipReadError(path, subject string, err error) error {
 		case orgForbiddenScopeMissing:
 			return errMissingOrgAdminScope
 		case orgForbiddenNotAdmin:
-			return fmt.Errorf("%s: forbidden -- you may not have admin access to read it", subject)
+			return fmt.Errorf("%s: forbidden — you may not have admin access to read it", subject)
 		default:
-			return fmt.Errorf("%s: forbidden -- ensure your token has the admin:org scope (`gh teacher login`) and that you have access", subject)
+			return fmt.Errorf("%s: forbidden — ensure your token has the admin:org scope (`gh teacher login`) and that you have access", subject)
 		}
 	}
 	return fmt.Errorf("GET %s: %w", path, err)

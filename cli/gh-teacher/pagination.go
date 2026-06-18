@@ -8,11 +8,10 @@ import (
 
 // paginateAll walks a GitHub `page`/`per_page` list endpoint, returning
 // every element across pages. It is the shared core for the teacher
-// CLI's capped list walks (org members/invitations/collaborators and the
-// GitHub Classroom imports), replacing those per-call-site hand-rolled
-// loops. (The uncapped org-repos walks in download.go/teardown.go are
-// deliberately not migrated yet — adopting the page cap there is a
-// separate behavior change.)
+// CLI's capped list walks (org members/invitations/collaborators, the
+// GitHub Classroom imports, and the org-repos walk shared by
+// download.go/teardown.go via listOrgRepoNames), replacing those
+// per-call-site hand-rolled loops.
 //
 //   - pageURL(page) builds the request path for a 1-based page number
 //     (callers own per_page/page formatting and any query prefix).

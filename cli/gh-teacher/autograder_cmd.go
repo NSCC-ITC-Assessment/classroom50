@@ -96,15 +96,8 @@ func autograderSetDefaultCmd() *cobra.Command {
 			"      --from examples/autograders/cs50/autograder.py",
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			org := strings.TrimSpace(args[0])
-			classroom := strings.TrimSpace(args[1])
-			if org == "" {
-				return fmt.Errorf("org name must not be empty")
-			}
-			if classroom == "" {
-				return fmt.Errorf("classroom short-name must not be empty")
-			}
-			if err := validateShortName(classroom, "classroom"); err != nil {
+			org, classroom, err := parseOrgClassroom(args)
+			if err != nil {
 				return err
 			}
 

@@ -159,14 +159,14 @@ func ensureOrgActionsEnabled(client *api.RESTClient, out, errOut io.Writer, org 
 		_, _ = fmt.Fprintf(out, "%s: Actions already enabled (all repositories)\n", org)
 		return nil
 	case "selected":
-		_, _ = fmt.Fprintf(errOut, "Warning: %s: Actions is enabled only for selected repositories; ensure the classroom50 config repo and the <classroom>-* student repos are included (or switch to All repositories) at https://github.com/organizations/%s/settings/actions -- Classroom50's autograde, publish-pages, and collect-scores workflows won't run in any repo left out.\n",
+		_, _ = fmt.Fprintf(errOut, "Warning: %s: Actions is enabled only for selected repositories; ensure the classroom50 config repo and the <classroom>-* student repos are included (or switch to All repositories) at https://github.com/organizations/%s/settings/actions — Classroom50's autograde, publish-pages, and collect-scores workflows won't run in any repo left out.\n",
 			org, org)
 		return nil
 	case "none":
 		// Off org-wide -- enable it below.
 	default:
 		// Empty or unknown value: warn, don't touch the policy.
-		_, _ = fmt.Fprintf(errOut, "Warning: %s: unexpected Actions enabled_repositories value %q; leaving it unchanged -- verify GitHub Actions is enabled for the org at https://github.com/organizations/%s/settings/actions, or Classroom50's workflows may not run.\n",
+		_, _ = fmt.Fprintf(errOut, "Warning: %s: unexpected Actions enabled_repositories value %q; leaving it unchanged — verify GitHub Actions is enabled for the org at https://github.com/organizations/%s/settings/actions, or Classroom50's workflows may not run.\n",
 			org, perms.EnabledRepositories, org)
 		return nil
 	}
@@ -280,7 +280,7 @@ func ensureRepoActionsEnabled(client *api.RESTClient, out, errOut io.Writer, own
 
 	var perms repoActionsPermissions
 	if err := client.Get(path, &perms); err != nil {
-		_, _ = fmt.Fprintf(errOut, "Warning: %s/%s: couldn't read Actions permissions (%v); make sure Actions is enabled at https://github.com/%s/%s/settings/actions -- Classroom50's publish-pages and collect-scores workflows won't run without it.\n",
+		_, _ = fmt.Fprintf(errOut, "Warning: %s/%s: couldn't read Actions permissions (%v); make sure Actions is enabled at https://github.com/%s/%s/settings/actions — Classroom50's publish-pages and collect-scores workflows won't run without it.\n",
 			owner, repo, err, owner, repo)
 		return nil
 	}
@@ -298,7 +298,7 @@ func ensureRepoActionsEnabled(client *api.RESTClient, out, errOut io.Writer, own
 	resp, err := client.Request(http.MethodPut, path, bytes.NewReader(body))
 	if err != nil {
 		if isHTTPStatus(err, http.StatusForbidden) || isHTTPStatus(err, http.StatusConflict) || isHTTPStatus(err, http.StatusUnprocessableEntity) {
-			_, _ = fmt.Fprintf(errOut, "Warning: %s/%s: couldn't enable Actions (%v); this is often an org or enterprise policy -- enable it at https://github.com/%s/%s/settings/actions. Classroom50's publish-pages and collect-scores workflows won't run until then.\n",
+			_, _ = fmt.Fprintf(errOut, "Warning: %s/%s: couldn't enable Actions (%v); this is often an org or enterprise policy — enable it at https://github.com/%s/%s/settings/actions. Classroom50's publish-pages and collect-scores workflows won't run until then.\n",
 				owner, repo, err, owner, repo)
 			return nil
 		}

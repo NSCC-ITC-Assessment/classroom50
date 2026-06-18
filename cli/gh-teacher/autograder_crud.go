@@ -134,7 +134,7 @@ func runAutograderShow(client *api.RESTClient, out, errOut io.Writer, org, class
 
 	if !ok {
 		if !quiet {
-			_, _ = fmt.Fprintf(errOut, "%s/%s/%s: no default autograder set -- use `gh teacher autograder set-default %s %s` to install one\n",
+			_, _ = fmt.Fprintf(errOut, "%s/%s/%s: no default autograder set — use `gh teacher autograder set-default %s %s` to install one\n",
 				org, configRepoName, repoPath, org, classroom)
 		}
 		return nil
@@ -290,7 +290,7 @@ func runAutograderList(client *api.RESTClient, out, errOut io.Writer, org, class
 func summarizeAutograderList(org, classroom string, entries []autograderListEntry) string {
 	path := fmt.Sprintf("%s/%s/%s/autograders", org, configRepoName, classroom)
 	if len(entries) == 0 {
-		return fmt.Sprintf("%s: no named or per-assignment autograders -- the classroom default (autograder.py) covers every assignment", path)
+		return fmt.Sprintf("%s: no named or per-assignment autograders — the classroom default (autograder.py) covers every assignment", path)
 	}
 	var named, perAssignment int
 	for _, e := range entries {
@@ -374,7 +374,7 @@ func removeClassroomDefaultAutograder(client *api.RESTClient, in io.Reader, out,
 			return err
 		}
 		if !proceed {
-			return errors.New("aborted -- default autograder not removed")
+			return errors.New("aborted — default autograder not removed")
 		}
 	}
 

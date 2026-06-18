@@ -149,7 +149,7 @@ func dashIfEmpty(s string) string {
 func summarizeRosterList(org, classroom string, count int) string {
 	path := fmt.Sprintf("%s/%s/%s", org, configRepoName, rosterFilePath(classroom))
 	if count == 0 {
-		return fmt.Sprintf("%s: no students on the roster -- add some with `gh teacher roster add %s %s <username>`", path, org, classroom)
+		return fmt.Sprintf("%s: no students on the roster — add some with `gh teacher roster add %s %s <username>`", path, org, classroom)
 	}
 	return fmt.Sprintf("%s: %d student(s)", path, count)
 }

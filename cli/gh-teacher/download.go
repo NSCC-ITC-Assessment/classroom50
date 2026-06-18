@@ -925,25 +925,31 @@ func downloadAssetBytes(token, assetURL string) ([]byte, error) {
 	return body, nil
 }
 
+// orgRepoPagesMax / orgRepoPerPage bound the org-repos walk. 100×100 =
+// 10k repos, far above classroom scale; hitting the cap errors loudly
+// rather than silently under-reporting (a partial list would make
+// teardown miss repos or download skip submissions).
+const (
+	orgRepoPerPage  = 100
+	orgRepoPagesMax = 100
+)
+
+// listOrgRepoNames returns every repo name in the org. Shared by
+// download (pattern mode) and teardown (wildcard nuke); both want the
+// unfiltered name list and map/filter it themselves.
 func listOrgRepoNames(client *api.RESTClient, org string) ([]string, error) {
-	var names []string
-	for page := 1; ; page++ {
-		var batch []struct {
-			Name string `json:"name"`
-		}
-		path := fmt.Sprintf("orgs/%s/repos?per_page=100&page=%d", url.PathEscape(org), page)
-		if err := client.Get(path, &batch); err != nil {
-			return nil, fmt.Errorf("GET %s: %w", path, err)
-		}
-		if len(batch) == 0 {
-			break
-		}
-		for _, r := range batch {
-			names = append(names, r.Name)
-		}
-		if len(batch) < 100 {
-			break
-		}
+	repos, err := paginateAll[struct {
+		Name string `json:"name"`
+	}](client, orgRepoPerPage, orgRepoPagesMax,
+		func(page int) string {
+			return fmt.Sprintf("orgs/%s/repos?per_page=%d&page=%d", url.PathEscape(org), orgRepoPerPage, page)
+		}, nil)
+	if err != nil {
+		return nil, err
+	}
+	names := make([]string, 0, len(repos))
+	for _, r := range repos {
+		names = append(names, r.Name)
 	}
 	return names, nil
 }

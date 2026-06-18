@@ -163,4 +163,43 @@ func TestParseOrgClassroom(t *testing.T) {
 			t.Fatalf("err = %v, want the short-name pattern error", err)
 		}
 	})
+
+	t.Run("invalid org rejected via validateOrgName", func(t *testing.T) {
+		_, _, err := parseOrgClassroom([]string{"bad org!", "cs-principles"})
+		if err == nil || !strings.Contains(err.Error(), "invalid org") {
+			t.Fatalf("err = %v, want an 'invalid org' error", err)
+		}
+	})
+}
+
+func TestValidateOrgName(t *testing.T) {
+	valid := []string{
+		"cs50",
+		"CS50",           // org logins allow uppercase (case-insensitive)
+		"Foundation50",   // mixed case
+		"cs50-fall-2026", // internal hyphens
+		"a",              // single char is a valid login
+		"1password",      // may start with a digit
+	}
+	for _, org := range valid {
+		if err := validateOrgName(org); err != nil {
+			t.Errorf("validateOrgName(%q) = %v, want nil", org, err)
+		}
+	}
+
+	invalid := []string{
+		"",                      // empty
+		"-leadinghyphen",        // leading hyphen
+		"trailinghyphen-",       // trailing hyphen
+		"double--hyphen",        // consecutive hyphens
+		"has space",             // space
+		"has/slash",             // path separator (the traversal case)
+		"has.dot",               // dot
+		strings.Repeat("a", 40), // over 39 chars
+	}
+	for _, org := range invalid {
+		if err := validateOrgName(org); err == nil {
+			t.Errorf("validateOrgName(%q) = nil, want an error", org)
+		}
+	}
 }
