@@ -118,7 +118,8 @@ COMPARISON_EXACT = "exact"
 COMPARISON_REGEX = "regex"
 COMPARISONS = (COMPARISON_INCLUDED, COMPARISON_EXACT, COMPARISON_REGEX)
 
-# Bounded retry for Pages fetches. 1s → 2s → 4s on transient network
+# Bounded retry for Pages fetches. Fixed 1s then 2s between attempts
+# (the final attempt raises rather than sleeping) on transient network
 # errors / HTTP 5xx. 404 is NOT retried — for the bundle URL it
 # means "no per-assignment override"; for the classroom-default URL
 # it means the classroom hasn't run `gh teacher autograder

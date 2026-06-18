@@ -34,7 +34,7 @@ func main() {
 
 	// Signal-aware root context: subcommands see cmd.Context()
 	// cancel on Ctrl-C / SIGTERM so in-flight HTTP (notably the
-	// Pages fetch in submit) unwinds promptly.
+	// Pages fetches in accept and invite) unwinds promptly.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 

@@ -459,8 +459,9 @@ jobs:
       # runner-side bootstrap propagate without editing this file.
       # Replace this block to swap to a non-Python bootstrap.
       # `--retry-all-errors` covers DNS / TLS / 5xx / partial response;
-      # 3 attempts at 2s/4s/8s budgets ~14s plus the 30s per-attempt
-      # ceiling — well under the grade job's 15-minute timeout.
+      # `--retry-delay 2` uses a fixed 2s gap (it disables curl's
+      # exponential backoff), so 3 retries add ~6s plus the 30s
+      # per-attempt ceiling — well under the grade job's 15-minute timeout.
       - id: autograde
         run: |
           set -euo pipefail
