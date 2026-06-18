@@ -68,7 +68,7 @@
         },
         "mode": {
           "enum": ["individual", "group"],
-          "description": "`individual` = one repo per student. `group` = a shared repo teammates join (the first accepter creates it; others run `gh student group join`), bounded by `max_group_size`. Group mode REQUIRES `max_group_size` (>= 2); individual mode must omit it. See the conditional at the assignment level."
+          "description": "`individual` = one repo per student. `group` = a shared repo: the first accepter creates it and becomes its admin, then adds teammates with `gh student invite`. Group size is advisory — `max_group_size` is a coordination hint the founder is expected to respect, NOT a hard cap (the CLI no longer enforces it; the joiner-driven `gh student group join` that once did was removed in #112). Group mode still REQUIRES `max_group_size` (>= 2) as a contract field for clients like the GUI; individual mode must omit it. See the conditional at the assignment level."
         },
         "autograder": {
           "$ref": "#/$defs/shortName",
@@ -78,7 +78,7 @@
           "type": "integer",
           "minimum": 2,
           "maximum": 100,
-          "description": "Maximum collaborators on a group repo. REQUIRED for `mode: group` (>= 2); MUST be omitted for `mode: individual`. Enforced within the CLI at join time — direct GitHub-UI invites can exceed it (documented limitation)."
+          "description": "Advisory maximum collaborators on a group repo. REQUIRED for `mode: group` (>= 2) and MUST be omitted for `mode: individual` — but this is a CONTRACT field, not an enforced ceiling: the CLI never rejects a group that exceeds it (the only enforcement point, `gh student group join`, was removed in #112). The founder coordinates actual group size when adding teammates with `gh student invite`. Retained in the schema/assignments.json so clients such as the GUI can display and (optionally) enforce it client-side."
         },
         "runtime": { "$ref": "#/$defs/runtime" },
         "tests": {

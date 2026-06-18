@@ -975,8 +975,9 @@ def list_repo_collaborator_logins(
     """Logins of the student-level collaborators on owner/repo
     (permission below admin), walking pagination. Admin collaborators
     (org owners, instructors, admin-granted TAs) are excluded so they
-    don't get a group score row. Mirrors listGroupMemberLogins in
-    cli/gh-student/group.go (same admin-exclusion rule).
+    don't get a group score row. The repo owner (the founder) is admin
+    on their own repo but is credited separately via the row's stable
+    `owner` field, so excluding admins here never drops them.
 
     Raises urllib.error.HTTPError on any non-2xx (including 404) so the
     caller can decide between an owner-only fallback and a hard failure.
@@ -1022,9 +1023,9 @@ def group_member_usernames(
 
     TRUST ASSUMPTION (F6, documented residual): every rostered collaborator
     on the repo is credited the shared score. GitHub does not record *how* a
-    collaborator was added, so collection cannot distinguish a teammate added
-    via `gh student group join` (which enforces `max_group_size`) from one a
-    student added directly through the GitHub UI. The roster intersection
+    collaborator was added, so collection cannot distinguish a teammate the
+    founder added via `gh student invite` from one a student added directly
+    through the GitHub UI. The roster intersection
     bounds the blast radius to rostered classmates — a stranger can never be
     credited — but a student could still add a rostered classmate as a
     collaborator and credit them this assignment's score. Treating that as

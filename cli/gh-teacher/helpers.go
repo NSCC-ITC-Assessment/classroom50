@@ -105,3 +105,25 @@ func printServiceAccountReminder(errOut io.Writer, confirmed bool) {
 	}
 	_, _ = fmt.Fprintln(errOut, "Note: the collect token should belong to an org-owned service account, not a personal teacher account. Pass --service-account-confirm to silence this notice.")
 }
+
+// printManualHardeningReminder lists the four org member-privilege
+// settings that complete the least-privilege posture (issue #112) but
+// have no `PATCH /orgs/{org}` field — they're web-UI-only and GitHub
+// exposes no GET for them either, so init can neither set nor detect
+// them. The reminder is static by necessity. Branch renames is ON by
+// default on new orgs; disabling it is defense-in-depth (the
+// submission-history org ruleset already targets ~DEFAULT_BRANCH with
+// org-admin-only bypass, so a repo-admin student cannot rename the
+// default branch out from under that protection), so it's listed as a
+// recommended tidy-up rather than an open hole.
+func printManualHardeningReminder(errOut io.Writer, org string) {
+	url := fmt.Sprintf("https://github.com/organizations/%s/settings/member_privileges", org)
+	_, _ = fmt.Fprintf(errOut,
+		"Manual org hardening (one-time, %s): four member privileges can't be set via the API — apply them yourself:\n"+
+			"  - App access requests -> Members only (or Disabled)\n"+
+			"  - GitHub Apps -> deselect \"Allow repository admins to install GitHub Apps for their repositories\"\n"+
+			"  - Projects base permissions -> No access\n"+
+			"  - Branch renames -> deselect \"Allow repository administrators to rename branches...\" (ON by default; defense-in-depth — the submission-history ruleset already protects each repo's default branch)\n"+
+			"  See the CLI Teacher Guide \"Manual org hardening\" checklist for context.\n",
+		url)
+}

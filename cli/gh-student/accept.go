@@ -67,8 +67,9 @@ func acceptCmd() *cobra.Command {
 			"propagate on the next submission without ever touching the\n" +
 			"student repo.\n\n" +
 			"If the student has a pending org invite it is auto-accepted first.\n" +
-			"After creating the repo, the student is added as a `maintain`\n" +
-			"collaborator, and `.classroom50.yaml` and the autograde\n" +
+			"After creating the repo, the student is added as an `admin`\n" +
+			"collaborator (so they can manage collaborators for group\n" +
+			"assignments), and `.classroom50.yaml` and the autograde\n" +
 			"workflow are written in a single Tree commit. Re-running on an\n" +
 			"already-accepted assignment short-circuits without touching the\n" +
 			"existing repo.",
@@ -216,8 +217,9 @@ func acceptAssignment(cmd *cobra.Command, client *api.RESTClient, out io.Writer,
 		return err
 	}
 	// Group assignments are accepted normally by the first accepter:
-	// the repo is created under their name and teammates join it via
-	// `gh student group join`. Only an unknown mode is rejected.
+	// the repo is created under their name and they add teammates with
+	// `gh student invite <org>/<repo> <teammate>`. Only an unknown mode
+	// is rejected.
 	if err := checkAcceptableMode(assignment, entry.Mode); err != nil {
 		return err
 	}
@@ -253,9 +255,13 @@ func acceptAssignment(cmd *cobra.Command, client *api.RESTClient, out io.Writer,
 		return reportAlreadyAccepted(out, fullName, htmlURL)
 	}
 
-	// 4) Invite as `maintain`. PUT collaborators is upsert, so this
-	//    also downgrades an existing admin collaborator.
-	if err := inviteUserToMaintain(client, out, username, classroom, assignment, org); err != nil {
+	// 4) Keep the founder as repo `admin` (PUT collaborators is an
+	//    upsert). Admin is required so they can manage collaborators —
+	//    a group founder adds teammates with `gh student invite`, which
+	//    only an admin can do. The danger admin would otherwise carry
+	//    (delete / transfer / visibility change) is defanged at the org
+	//    level by `gh teacher init`'s member-privilege lockdown (#112).
+	if err := inviteUserAsAdmin(client, out, username, classroom, assignment, org); err != nil {
 		return err
 	}
 
@@ -428,16 +434,21 @@ func createTemplatedPrivateAssignmentRepoInOrg(client *api.RESTClient, out io.Wr
 	return updated.HTMLURL, updated.FullName, false, nil
 }
 
-// inviteUserToMaintain adds username as a maintain collaborator.
-// PUT collaborators is upsert (covers admin → maintain downgrade).
-func inviteUserToMaintain(client *api.RESTClient, out io.Writer, username, classroom, assignment, org string) error {
+// inviteUserAsAdmin keeps username as a repo `admin` collaborator. PUT
+// collaborators is an upsert, so re-running is a no-op. Admin (not
+// maintain) is required because only an admin can manage collaborator
+// access — a group founder uses `gh student invite` to add teammates.
+// The org-level member-privilege lockdown in `gh teacher init` (#112)
+// removes the org-wide danger of repo-admin (no delete/transfer/
+// visibility change), so admin-on-own-repo is safe.
+func inviteUserAsAdmin(client *api.RESTClient, out io.Writer, username, classroom, assignment, org string) error {
 	fullRepoName := assignmentRepoName(classroom, assignment, username)
-	if _, err := ghutil.SetCollaborator(client, org, fullRepoName, username, "maintain"); err != nil {
+	if _, err := ghutil.SetCollaborator(client, org, fullRepoName, username, "admin"); err != nil {
 		return err
 	}
 
 	if verbose {
-		_, _ = fmt.Fprintf(out, "invited %s to %s/%s with maintain permission\n", username, org, fullRepoName)
+		_, _ = fmt.Fprintf(out, "invited %s to %s/%s with admin permission\n", username, org, fullRepoName)
 	}
 
 	return nil

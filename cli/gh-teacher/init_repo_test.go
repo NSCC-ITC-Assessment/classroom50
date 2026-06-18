@@ -308,8 +308,12 @@ func TestApplyOrgMemberDefaults_HappyPath(t *testing.T) {
 	client := newTestRESTClient(t, server)
 
 	var out, errOut bytes.Buffer
-	if err := applyOrgMemberDefaults(client, &out, &errOut, "cs50-fall-2026"); err != nil {
+	complete, err := applyOrgMemberDefaults(client, &out, &errOut, "cs50-fall-2026")
+	if err != nil {
 		t.Fatalf("applyOrgMemberDefaults: %v", err)
+	}
+	if !complete {
+		t.Errorf("combined-PATCH success should report a complete lockdown")
 	}
 
 	mu.Lock()
@@ -326,7 +330,42 @@ func TestApplyOrgMemberDefaults_HappyPath(t *testing.T) {
 	if gotBody["members_can_create_private_repositories"] != true {
 		t.Errorf("members_can_create_private_repositories = %v, want true", gotBody["members_can_create_private_repositories"])
 	}
-	if !strings.Contains(out.String(), "base permission = none") {
+	// Issue #112 lockdown fields must all be present and false in the
+	// combined PATCH — a regression that drops one silently re-opens a
+	// member privilege.
+	for _, f := range []string{
+		"members_can_create_internal_repositories",
+		"members_can_delete_repositories",
+		"members_can_change_repo_visibility",
+		"members_can_delete_issues",
+		"members_can_create_teams",
+		"members_can_fork_private_repositories",
+		"members_can_invite_outside_collaborators",
+		"readers_can_create_discussions",
+		"members_can_create_private_pages",
+	} {
+		if v, ok := gotBody[f]; !ok || v != false {
+			t.Errorf("combined PATCH field %s = %v (present=%v), want false", f, v, ok)
+		}
+	}
+	// Pages creation is ENFORCED true so the config repo's public Pages
+	// site can publish — a regression to false would break the
+	// unauthenticated assignments.json fetch.
+	for _, f := range []string{"members_can_create_pages", "members_can_create_public_pages"} {
+		if v, ok := gotBody[f]; !ok || v != true {
+			t.Errorf("combined PATCH field %s = %v (present=%v), want true", f, v, ok)
+		}
+	}
+	// The success line is derived from orgMemberDefaultSettings()
+	// (orgMemberDefaultsSummary), so assert every policy's desc appears
+	// — this is what catches a hand-written prose summary drifting out
+	// of sync with the canonical slice.
+	for _, s := range orgMemberDefaultSettings() {
+		if !strings.Contains(out.String(), s.desc) {
+			t.Errorf("success line missing policy %q, got: %q", s.desc, out.String())
+		}
+	}
+	if !strings.Contains(out.String(), "locked down") {
 		t.Errorf("stdout missing success line, got: %q", out.String())
 	}
 	if errOut.Len() != 0 {
@@ -355,22 +394,29 @@ func TestApplyOrgMemberDefaults_ForbiddenWarnsButSucceeds(t *testing.T) {
 	client := newTestRESTClient(t, server)
 
 	var out, errOut bytes.Buffer
-	if err := applyOrgMemberDefaults(client, &out, &errOut, "locked-org"); err != nil {
+	complete, err := applyOrgMemberDefaults(client, &out, &errOut, "locked-org")
+	if err != nil {
 		t.Fatalf("applyOrgMemberDefaults should not return an error on 403: %v", err)
+	}
+	if complete {
+		t.Errorf("all critical fields were 403-rejected; lockdown must report INCOMPLETE")
 	}
 
 	mu.Lock()
 	defer mu.Unlock()
-	if calls != 4 {
-		t.Errorf("PATCH calls = %d, want 4 (combined + one per field)", calls)
+	n := len(orgMemberDefaultSettings())
+	if calls != n+1 {
+		t.Errorf("PATCH calls = %d, want %d (combined + one per field)", calls, n+1)
 	}
-	if got := strings.Count(errOut.String(), "Warning:"); got != 3 {
-		t.Errorf("warnings = %d, want 3 (one per rejected field):\n%s", got, errOut.String())
+	if got := strings.Count(errOut.String(), "Warning:"); got != n {
+		t.Errorf("warnings = %d, want %d (one per rejected field):\n%s", got, n, errOut.String())
 	}
 	for _, desc := range []string{
 		`base repository permission "none"`,
 		"public repo creation disabled",
 		"private repo creation enabled",
+		"member repo deletion/transfer disabled",
+		"member-invited outside collaborators disabled",
 	} {
 		if !strings.Contains(errOut.String(), desc) {
 			t.Errorf("warning should name policy %q: %q", desc, errOut.String())
@@ -400,7 +446,7 @@ func TestApplyOrgMemberDefaults_TransportFailurePropagates(t *testing.T) {
 	client := newTestRESTClient(t, server)
 
 	var out, errOut bytes.Buffer
-	err := applyOrgMemberDefaults(client, &out, &errOut, "o")
+	_, err := applyOrgMemberDefaults(client, &out, &errOut, "o")
 	if err == nil {
 		t.Fatal("expected error on PATCH 500, got nil")
 	}
@@ -441,14 +487,18 @@ func TestApplyOrgMemberDefaults_UnprocessableFallsBackPerField(t *testing.T) {
 	client := newTestRESTClient(t, server)
 
 	var out, errOut bytes.Buffer
-	if err := applyOrgMemberDefaults(client, &out, &errOut, "team-plan-org"); err != nil {
+	complete, err := applyOrgMemberDefaults(client, &out, &errOut, "team-plan-org")
+	if err != nil {
 		t.Fatalf("applyOrgMemberDefaults: %v", err)
+	}
+	if complete {
+		t.Errorf("a critical field (members_can_create_public_repositories) was rejected; lockdown must report INCOMPLETE")
 	}
 
 	mu.Lock()
 	defer mu.Unlock()
-	if len(bodies) != 4 {
-		t.Fatalf("PATCH calls = %d, want 4 (combined + one per field)", len(bodies))
+	if want := len(orgMemberDefaultSettings()) + 1; len(bodies) != want {
+		t.Fatalf("PATCH calls = %d, want %d (combined + one per field)", len(bodies), want)
 	}
 	for _, fields := range bodies[1:] {
 		if len(fields) != 1 {
@@ -496,14 +546,44 @@ func TestApplyOrgMemberDefaults_FallbackTransportFailurePropagates(t *testing.T)
 	client := newTestRESTClient(t, server)
 
 	var out, errOut bytes.Buffer
-	if err := applyOrgMemberDefaults(client, &out, &errOut, "o"); err == nil {
+	complete, err := applyOrgMemberDefaults(client, &out, &errOut, "o")
+	if err == nil {
 		t.Fatal("expected error on fallback PATCH 500, got nil")
+	}
+	if complete {
+		t.Errorf("a transient mid-loop failure must report an INCOMPLETE lockdown")
+	}
+	// #8: a transient mid-loop failure must surface the partial state
+	// (what landed / what was never attempted), not just a bare error.
+	if !strings.Contains(errOut.String(), "PARTIALLY APPLIED") {
+		t.Errorf("expected a partial-state warning on transient mid-loop failure, got: %q", errOut.String())
 	}
 
 	mu.Lock()
 	defer mu.Unlock()
 	if calls < 2 {
 		t.Fatalf("PATCH calls = %d, want >= 2 (the 500 must come from a fallback PATCH, not the combined one)", calls)
+	}
+}
+
+func TestPrintManualHardeningReminder(t *testing.T) {
+	var errOut bytes.Buffer
+	printManualHardeningReminder(&errOut, "cs50-fall-2026")
+	got := errOut.String()
+	// Names the org's member-privileges settings page.
+	if !strings.Contains(got, "https://github.com/organizations/cs50-fall-2026/settings/member_privileges") {
+		t.Errorf("reminder should link the org member-privileges page: %q", got)
+	}
+	// Lists the four web-UI-only settings that init can't PATCH.
+	for _, want := range []string{
+		"App access requests",
+		"GitHub Apps",
+		"Projects base permissions",
+		"Branch renames",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("reminder missing %q:\n%s", want, got)
+		}
 	}
 }
 

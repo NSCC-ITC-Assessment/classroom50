@@ -33,6 +33,12 @@ func initCmd() *cobra.Command {
 			"skeleton drop, Pages enablement, branch protection on the\n" +
 			"default branch, workflow permissions, and the repo-level\n" +
 			"CLASSROOM50_COLLECT_TOKEN secret.\n\n" +
+			"The org member-default lockdown ENFORCES org-wide Pages creation\n" +
+			"(members_can_create_pages / _public_pages) so the config repo can\n" +
+			"publish its public assignments.json site — re-running init resets\n" +
+			"these to enabled even if you tightened them afterward. Disable\n" +
+			"Pages creation manually only if you've moved the config site\n" +
+			"elsewhere.\n\n" +
 			"The collect token is read from the CLASSROOM50_COLLECT_TOKEN\n" +
 			"environment variable, falling back to a hidden stdin prompt when\n" +
 			"run interactively. No --collect-token flag is offered: PAT values\n" +
@@ -71,8 +77,18 @@ func initCmd() *cobra.Command {
 
 			// Tighten org-level member defaults before any repos
 			// land so the classroom starts in a known-safe state.
-			if err := applyOrgMemberDefaults(client, out, errOut, org); err != nil {
+			lockdownComplete, err := applyOrgMemberDefaults(client, out, errOut, org)
+			if err != nil {
 				return err
+			}
+			if !lockdownComplete {
+				// The org-level locks are the only thing that defangs the
+				// repo-admin that `gh student accept` grants each founder
+				// (#112). If a critical lockdown field was rejected, that
+				// safety invariant does NOT hold — say so loudly rather
+				// than letting a half-locked org hide behind init's later
+				// success output.
+				_, _ = fmt.Fprintf(errOut, "Warning: %s: org member-privilege lockdown is INCOMPLETE — one or more critical policies could not be applied (see the warnings above). Repo-admin is NOT fully defanged org-wide, so the `admin` collaborator that `gh student accept` grants each founder may retain dangerous powers (delete/transfer/visibility). Apply the missing policies at https://github.com/organizations/%s/settings/member_privileges, then re-run `gh teacher init`.\n", org, org)
 			}
 
 			// Enable Actions before any repo/Pages/workflow setup --
@@ -170,6 +186,7 @@ func initCmd() *cobra.Command {
 			// run before the URL serves.
 			pagesURL := fmt.Sprintf("https://%s.github.io/%s/", org, configRepoName)
 			_, _ = fmt.Fprintf(out, "Pages will serve at %s once publish-pages completes its first run.\n", pagesURL)
+			printManualHardeningReminder(errOut, org)
 			_, _ = fmt.Fprintf(out, "Next: gh teacher classroom add %s <short-name>\n", org)
 			return nil
 		},

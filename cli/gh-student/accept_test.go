@@ -1,6 +1,13 @@
 package main
 
-import "testing"
+import (
+	"bytes"
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+)
 
 // TestCheckAcceptableMode pins the lifted accept seam: group is now
 // accepted (previously rejected), individual and empty are accepted, and
@@ -26,5 +33,47 @@ func TestCheckAcceptableMode(t *testing.T) {
 				t.Errorf("mode %q: unexpected error %v", tc.mode, err)
 			}
 		})
+	}
+}
+
+// TestInviteUserAsAdmin pins the founder-admin grant (#112): accept must
+// keep the student as an `admin` collaborator (not the old `maintain`),
+// because only an admin can manage collaborators for the founder-driven
+// group-invite flow. A regression to a weaker permission silently breaks
+// `gh student invite`, so assert the exact PUT path and request body.
+func TestInviteUserAsAdmin(t *testing.T) {
+	const (
+		org        = "cs50"
+		classroom  = "cs50-fall-2026"
+		assignment = "hello"
+		username   = "alice"
+	)
+	wantPath := "/repos/" + org + "/" + assignmentRepoName(classroom, assignment, username) + "/collaborators/" + username
+
+	var gotPath, gotMethod string
+	var gotBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotMethod = r.Method
+		raw, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(raw, &gotBody)
+		w.WriteHeader(http.StatusNoContent) // 204: added directly
+	}))
+	t.Cleanup(server.Close)
+	client := newTestRESTClient(t, server)
+
+	var out bytes.Buffer
+	if err := inviteUserAsAdmin(client, &out, username, classroom, assignment, org); err != nil {
+		t.Fatalf("inviteUserAsAdmin returned error: %v", err)
+	}
+
+	if gotMethod != http.MethodPut {
+		t.Errorf("method = %q, want PUT", gotMethod)
+	}
+	if gotPath != wantPath {
+		t.Errorf("path = %q, want %q", gotPath, wantPath)
+	}
+	if perm := gotBody["permission"]; perm != "admin" {
+		t.Errorf("collaborator permission = %v, want \"admin\" (regression to maintain/push breaks gh student invite)", perm)
 	}
 }

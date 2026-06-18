@@ -33,16 +33,44 @@ type orgMemberDefaultSetting struct {
 	// gate the member-privileges page and some checkbox combos don't
 	// exist on every plan.
 	manualFix string
+	// critical marks the lockdown fields whose absence re-opens the
+	// org-wide repo-admin danger that makes the founder-admin grant in
+	// `gh student accept` safe (#112). If any of these is rejected, the
+	// "repo-admin is defanged org-wide" invariant does NOT hold and init
+	// must say so loudly rather than reporting a clean success. The
+	// enabling fields (private-repo / Pages creation) are deliberately
+	// non-critical: a rejected `members_can_create_public_pages` on a
+	// non-Enterprise plan is expected and harmless, not a safety gap.
+	critical bool
 }
 
-// orgMemberDefaultSettings: the three policies, in apply order.
-//   - default_repository_permission "none": new members get no
-//     implicit read access to other repos (existing access is
-//     unaffected).
-//   - members_can_create_public_repositories false: stops members
-//     accidentally publishing student work.
-//   - members_can_create_private_repositories true: gh student accept
-//     needs it to create each student's private repo.
+// orgMemberDefaultSettings: the org-level member policies, in apply
+// order. The intent (issue #112) is a least-privilege org where the
+// only member capability is private-repo creation; every other member
+// privilege and dangerous repo-admin capability is locked to org
+// owners. Because `gh student accept` now keeps the founder as repo
+// `admin` (so a group founder can add teammates), these org-level locks
+// are what defang that admin org-wide (no delete/transfer/visibility-
+// change/etc.).
+//
+// Notable entries:
+//   - default_repository_permission "none": new members get no implicit
+//     read access to other repos.
+//   - members_can_create_private_repositories true: the one allowed
+//     member capability — gh student accept needs it.
+//   - members_can_create_pages / _public_pages true: ENFORCED so the
+//     classroom50 config repo can publish its *public* Pages site (the
+//     unauthenticated assignments.json fetch the student flow depends
+//     on). init enforces, not just allows, these — re-running init
+//     resets a teacher who tightened Pages back to the working state.
+//     members_can_create_private_pages stays false (never needed).
+//   - everything else false: locks the member privilege / repo-admin
+//     power to org owners.
+//
+// The four web-UI-only member privileges with no REST field (app
+// access requests, repo-admin GitHub App installs, Projects base
+// permissions, branch renames) are NOT here — they can't be PATCHed;
+// init prints a manual-hardening reminder for them instead.
 func orgMemberDefaultSettings() []orgMemberDefaultSetting {
 	return []orgMemberDefaultSetting{
 		{
@@ -50,18 +78,112 @@ func orgMemberDefaultSettings() []orgMemberDefaultSetting {
 			value:     "none",
 			desc:      `base repository permission "none"`,
 			manualFix: `set "Base permissions" to "No permission"`,
-		},
-		{
-			field:     "members_can_create_public_repositories",
-			value:     false,
-			desc:      "public repo creation disabled",
-			manualFix: `under "Repository creation", uncheck "Public" if your plan's settings page allows it`,
+			critical:  true,
 		},
 		{
 			field:     "members_can_create_private_repositories",
 			value:     true,
 			desc:      "private repo creation enabled",
 			manualFix: `under "Repository creation", check "Private" — without it, gh student accept can't create student repos`,
+		},
+		{
+			field:     "members_can_create_public_repositories",
+			value:     false,
+			desc:      "public repo creation disabled",
+			manualFix: `under "Repository creation", uncheck "Public" if your plan's settings page allows it`,
+			critical:  true,
+		},
+		{
+			field:     "members_can_create_internal_repositories",
+			value:     false,
+			desc:      "internal repo creation disabled",
+			manualFix: `under "Repository creation", uncheck "Internal" if your plan offers it`,
+			critical:  true,
+		},
+		{
+			// Enforced TRUE: the classroom50 config repo publishes a
+			// public Pages site (the unauthenticated assignments.json
+			// fetch). Re-running init resets this to allowed so a teacher
+			// who tightened it can't accidentally break the student flow.
+			field:     "members_can_create_pages",
+			value:     true,
+			desc:      "Pages creation enabled (required for the public config-repo site)",
+			manualFix: `check "Allow members to publish Pages sites"`,
+		},
+		{
+			// Enforced TRUE for the same reason: the config-repo Pages
+			// site must be allowed to publish *publicly*. On non-Enterprise
+			// plans this per-visibility control doesn't exist and the field
+			// is rejected (the per-field fallback warns); on Enterprise
+			// Cloud it's what keeps the public site allowed.
+			field:     "members_can_create_public_pages",
+			value:     true,
+			desc:      "public Pages creation enabled (required for the public config-repo site)",
+			manualFix: `under "Pages creation", select "Public"`,
+		},
+		{
+			// Private Pages are never needed; keep this one locked.
+			field:     "members_can_create_private_pages",
+			value:     false,
+			desc:      "private Pages creation disabled",
+			manualFix: `under "Pages creation", deselect "Private"`,
+			critical:  true,
+		},
+		{
+			field:     "members_can_delete_repositories",
+			value:     false,
+			desc:      "member repo deletion/transfer disabled",
+			manualFix: `uncheck "Allow members to delete or transfer repositories for this organization"`,
+			critical:  true,
+		},
+		{
+			field:     "members_can_change_repo_visibility",
+			value:     false,
+			desc:      "member repo visibility change disabled",
+			manualFix: `uncheck "Allow members to change repository visibilities for this organization"`,
+			critical:  true,
+		},
+		{
+			field:     "members_can_delete_issues",
+			value:     false,
+			desc:      "member issue deletion disabled",
+			manualFix: `uncheck "Allow members to delete issues for this organization"`,
+			critical:  true,
+		},
+		{
+			field:     "readers_can_create_discussions",
+			value:     false,
+			desc:      "discussion creation by read-access members disabled",
+			manualFix: `uncheck "Allow users with read access to create discussions"`,
+			critical:  true,
+		},
+		{
+			field:     "members_can_create_teams",
+			value:     false,
+			desc:      "member team creation disabled",
+			manualFix: `uncheck "Allow members to create teams"`,
+			critical:  true,
+		},
+		{
+			field:     "members_can_view_dependency_insights",
+			value:     false,
+			desc:      "member dependency-insights viewing disabled",
+			manualFix: `uncheck "Allow members to view dependency insights"`,
+			critical:  true,
+		},
+		{
+			field:     "members_can_fork_private_repositories",
+			value:     false,
+			desc:      "forking of private repos disabled",
+			manualFix: `uncheck "Allow forking of private repositories"`,
+			critical:  true,
+		},
+		{
+			field:     "members_can_invite_outside_collaborators",
+			value:     false,
+			desc:      "member-invited outside collaborators disabled",
+			manualFix: `uncheck "Allow members to invite outside collaborators to repositories for this organization"`,
+			critical:  true,
 		},
 	}
 }
@@ -70,67 +192,161 @@ func orgMemberDefaultSettings() []orgMemberDefaultSetting {
 // /orgs/{org}. On 403/422 (one plan-gated field fails the whole
 // PATCH) it falls back to one PATCH per policy, warning only for the
 // fields GitHub rejects. init completes either way.
-func applyOrgMemberDefaults(client *api.RESTClient, out, errOut io.Writer, org string) error {
+//
+// Returns complete=true only when every *critical* lockdown field
+// landed — the fields that defang the founder-admin grant org-wide
+// (#112). A combined-PATCH success applies all fields atomically, so
+// it's always complete; the per-field fallback computes completeness
+// from which critical fields the org rejected. init surfaces an
+// explicit "lockdown INCOMPLETE" warning when complete=false so a
+// half-locked org never hides behind a clean success line.
+func applyOrgMemberDefaults(client *api.RESTClient, out, errOut io.Writer, org string) (complete bool, err error) {
 	combined := make(map[string]any, len(orgMemberDefaultSettings()))
 	for _, s := range orgMemberDefaultSettings() {
 		combined[s.field] = s.value
 	}
 	body, err := json.Marshal(combined)
 	if err != nil {
-		return fmt.Errorf("encode body: %w", err)
+		return false, fmt.Errorf("encode body: %w", err)
 	}
 	path := fmt.Sprintf("orgs/%s", url.PathEscape(org))
 	resp, err := client.Request(http.MethodPatch, path, bytes.NewReader(body))
 	if err != nil {
+		// A secondary-rate-limit 403 must not drop into the per-field
+		// fallback — that fires 15 more PATCHes and amplifies the
+		// throttle. Surface it as a transient error so a re-run retries.
+		if isSecondaryRateLimit(err) {
+			return false, fmt.Errorf("PATCH %s: secondary rate limit (retry shortly): %w", path, err)
+		}
 		if isHTTPStatus(err, http.StatusForbidden) || isHTTPStatus(err, http.StatusUnprocessableEntity) {
 			return applyOrgMemberDefaultsPerField(client, out, errOut, org)
 		}
-		return fmt.Errorf("PATCH %s: %w", path, err)
+		return false, fmt.Errorf("PATCH %s: %w", path, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	_, _ = io.Copy(io.Discard, resp.Body)
 	// go-gh returns non-2xx as err (handled above); this only
 	// catches a stray non-200 2xx.
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("PATCH %s: unexpected status %d", path, resp.StatusCode)
+		return false, fmt.Errorf("PATCH %s: unexpected status %d", path, resp.StatusCode)
 	}
-	_, _ = fmt.Fprintf(out, "%s: org member defaults set (base permission = none, public repo creation disabled, private repo creation enabled)\n", org)
-	return nil
+	_, _ = fmt.Fprintf(out, "%s: org member defaults locked down (%s)\n", org, orgMemberDefaultsSummary())
+	return true, nil
+}
+
+// isSecondaryRateLimit reports whether err is GitHub's secondary
+// rate-limit response. GitHub surfaces it as a 403 (occasionally 429)
+// whose message mentions a secondary rate limit / abuse detection —
+// distinct from a plan-gated field rejection, which is also a 403 but
+// means the field can't be set on this plan. Distinguishing them
+// matters: a plan-gated 403 warns "set it manually" (correct), whereas
+// a rate-limit 403 must be treated as transient (retry), not as a field
+// the teacher should go toggle by hand.
+func isSecondaryRateLimit(err error) bool {
+	httpErr, ok := errors.AsType[*api.HTTPError](err)
+	if !ok {
+		return false
+	}
+	if httpErr.StatusCode != http.StatusForbidden && httpErr.StatusCode != http.StatusTooManyRequests {
+		return false
+	}
+	msg := strings.ToLower(httpErr.Message)
+	return strings.Contains(msg, "secondary rate limit") || strings.Contains(msg, "abuse")
+}
+
+// orgMemberDefaultsSummary renders the applied policies straight from
+// orgMemberDefaultSettings() so the combined-PATCH success line can't
+// drift from the canonical slice (it previously hand-listed the
+// policies in prose and silently fell out of sync). Reports the policy
+// count and joins each setting's `desc`.
+func orgMemberDefaultsSummary() string {
+	settings := orgMemberDefaultSettings()
+	descs := make([]string, 0, len(settings))
+	for _, s := range settings {
+		descs = append(descs, s.desc)
+	}
+	return fmt.Sprintf("%d policies: %s", len(settings), strings.Join(descs, "; "))
 }
 
 // applyOrgMemberDefaultsPerField is the 403/422 fallback: one PATCH
 // per policy so one rejected field can't sink the others. Rejected
 // fields warn (with GitHub's error and a reachable manual fix);
 // applied ones are summarized to out.
-func applyOrgMemberDefaultsPerField(client *api.RESTClient, out, errOut io.Writer, org string) error {
+//
+// Returns complete=false when any *critical* lockdown field was
+// rejected (the caller turns that into a loud "repo-admin NOT defanged"
+// warning). A transient (non-403/422) error mid-loop still aborts init,
+// but first reports which policies were already applied and which were
+// never attempted — the org is left partially mutated and the teacher
+// needs to know exactly where, rather than getting a bare PATCH error.
+func applyOrgMemberDefaultsPerField(client *api.RESTClient, out, errOut io.Writer, org string) (complete bool, err error) {
 	path := fmt.Sprintf("orgs/%s", url.PathEscape(org))
 	settingsURL := fmt.Sprintf("https://github.com/organizations/%s/settings/member_privileges", org)
+	settings := orgMemberDefaultSettings()
 	var applied []string
-	for _, s := range orgMemberDefaultSettings() {
-		body, err := json.Marshal(map[string]any{s.field: s.value})
-		if err != nil {
-			return fmt.Errorf("encode body: %w", err)
+	criticalMissed := false
+	for i, s := range settings {
+		body, encErr := json.Marshal(map[string]any{s.field: s.value})
+		if encErr != nil {
+			return false, fmt.Errorf("encode body: %w", encErr)
 		}
-		resp, err := client.Request(http.MethodPatch, path, bytes.NewReader(body))
-		if err != nil {
-			if isHTTPStatus(err, http.StatusForbidden) || isHTTPStatus(err, http.StatusUnprocessableEntity) {
+		resp, reqErr := client.Request(http.MethodPatch, path, bytes.NewReader(body))
+		if reqErr != nil {
+			// A secondary-rate-limit 403 is NOT a plan-gated field
+			// rejection: retrying per-field amplifies the throttle and a
+			// "set it manually" hint would be wrong (the toggle works).
+			// Treat it like any other transient error — report the
+			// partial state and abort so a re-run can finish cleanly.
+			if isSecondaryRateLimit(reqErr) {
+				reportPartialMemberDefaults(errOut, org, settings, applied, i, settingsURL)
+				return false, fmt.Errorf("PATCH %s: secondary rate limit: %w", path, reqErr)
+			}
+			if isHTTPStatus(reqErr, http.StatusForbidden) || isHTTPStatus(reqErr, http.StatusUnprocessableEntity) {
+				if s.critical {
+					criticalMissed = true
+				}
 				_, _ = fmt.Fprintf(errOut, "Warning: %s: couldn't set %s (%v); %s at %s\n",
-					org, s.desc, err, s.manualFix, settingsURL)
+					org, s.desc, reqErr, s.manualFix, settingsURL)
 				continue
 			}
-			return fmt.Errorf("PATCH %s: %w", path, err)
+			// Transient/unexpected error (429/5xx/network): the org is
+			// now partially mutated. Report what landed and what was
+			// never attempted before aborting, so the teacher can finish
+			// the lockdown manually or re-run from a known state.
+			reportPartialMemberDefaults(errOut, org, settings, applied, i, settingsURL)
+			return false, fmt.Errorf("PATCH %s: %w", path, reqErr)
 		}
 		_, _ = io.Copy(io.Discard, resp.Body)
 		_ = resp.Body.Close()
 		if resp.StatusCode != http.StatusOK {
-			return fmt.Errorf("PATCH %s: unexpected status %d", path, resp.StatusCode)
+			reportPartialMemberDefaults(errOut, org, settings, applied, i, settingsURL)
+			return false, fmt.Errorf("PATCH %s: unexpected status %d", path, resp.StatusCode)
 		}
 		applied = append(applied, s.desc)
 	}
 	if len(applied) > 0 {
 		_, _ = fmt.Fprintf(out, "%s: org member defaults set (%s)\n", org, strings.Join(applied, ", "))
 	}
-	return nil
+	return !criticalMissed, nil
+}
+
+// reportPartialMemberDefaults warns that a transient error left the org
+// member-privilege lockdown half-applied, naming the policies that
+// landed and the ones at index failedIdx onward that were never
+// attempted — so a teacher (or a script parsing stderr) can reconcile
+// manually or re-run init rather than assuming a clean failure.
+func reportPartialMemberDefaults(errOut io.Writer, org string, settings []orgMemberDefaultSetting, applied []string, failedIdx int, settingsURL string) {
+	notAttempted := make([]string, 0, len(settings)-failedIdx)
+	for _, s := range settings[failedIdx:] {
+		notAttempted = append(notAttempted, s.desc)
+	}
+	appliedList := "none"
+	if len(applied) > 0 {
+		appliedList = strings.Join(applied, ", ")
+	}
+	_, _ = fmt.Fprintf(errOut,
+		"Warning: %s: org member-privilege lockdown was left PARTIALLY APPLIED by a transient error. Applied: %s. Not yet attempted (including the field that errored): %s. The org is in a half-locked state — re-run `gh teacher init` to finish, or set the remaining policies at %s.\n",
+		org, appliedList, strings.Join(notAttempted, ", "), settingsURL)
 }
 
 // orgActionsPermissions is the subset of GET
