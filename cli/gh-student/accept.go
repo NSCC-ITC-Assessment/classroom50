@@ -360,10 +360,18 @@ type GeneratedRepo struct {
 // `gh teacher download` return zero repos and misidentifies every
 // submission in scores.json.
 func assignmentRepoName(classroom, assignment, username string) string {
-	return fmt.Sprintf("%s-%s-%s",
+	return assignmentRepoPrefix(classroom, assignment) + strings.ToLower(username)
+}
+
+// assignmentRepoPrefix is the single source of the group/individual repo
+// name prefix `<classroom>-<assignment>-` (all lowercased). Both the
+// producer (assignmentRepoName) and the consumer (groupRepoOwner, which
+// strips this prefix to recover the owner login) derive from it, so the
+// `<classroom>-<assignment>-<owner>` shape can only change in one place.
+func assignmentRepoPrefix(classroom, assignment string) string {
+	return fmt.Sprintf("%s-%s-",
 		strings.ToLower(classroom),
 		strings.ToLower(assignment),
-		strings.ToLower(username),
 	)
 }
 
