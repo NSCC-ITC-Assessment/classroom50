@@ -102,7 +102,7 @@ func IsInteractiveTTY() bool {
 }
 
 // IsCharDevice reports whether f is a character device (a TTY). Exported
-// because callers (e.g. the collect-token prompt) check stdin/stderr
+// because callers (e.g. the service-token prompt) check stdin/stderr
 // independently, not just the combined interactive check.
 func IsCharDevice(f *os.File) bool {
 	fi, err := f.Stat()

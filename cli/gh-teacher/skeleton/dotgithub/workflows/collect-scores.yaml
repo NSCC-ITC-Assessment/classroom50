@@ -42,8 +42,8 @@ jobs:
           # <classroom>-* student repos. Required for the
           # per-repo `releases/latest` + `result.json` asset
           # downloads. Rotated via
-          # `gh teacher rotate-collect-token <org>`.
-          CLASSROOM50_COLLECT_TOKEN: ${{ secrets.CLASSROOM50_COLLECT_TOKEN }}
+          # `gh teacher rotate-service-token <org>`.
+          CLASSROOM50_SERVICE_TOKEN: ${{ secrets.CLASSROOM50_SERVICE_TOKEN }}
           # Optional restriction to a single classroom; empty
           # means "collect all classrooms in this config repo".
           CLASSROOM_FILTER: ${{ github.event.inputs.classroom || '' }}

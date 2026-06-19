@@ -600,7 +600,7 @@ class TestGroupCollectClassroom:
                 {"username": "bob", "github_id": "2"},
                 {"username": "carol", "github_id": "3"},
             ],
-            collect_token="token",
+            service_token="token",
         )
         assert len(results) == 1
         assert results[0]["usernames"] == ["alice", "bob", "carol"]
@@ -629,7 +629,7 @@ class TestGroupCollectClassroom:
                 {"username": "alice", "github_id": "1"},
                 {"username": "bob", "github_id": "2"},
             ],
-            collect_token="token",
+            service_token="token",
         )
         assert results[0]["usernames"] == ["alice", "bob"]
         assert "intruder" not in results[0]["usernames"]
@@ -661,7 +661,7 @@ class TestGroupCollectClassroom:
             classroom_short="cs-principles",
             assignments=self._group_assignments(),
             roster=[{"username": "alice", "github_id": "1"}],
-            collect_token="token",
+            service_token="token",
         )
         # The injected "victim" must NOT survive into scores.
         assert results[0]["usernames"] == ["alice"]
@@ -694,7 +694,7 @@ class TestGroupCollectClassroom:
             classroom_short="cs-principles",
             assignments=self._group_assignments(),
             roster=[{"username": "alice", "github_id": "1"}],
-            collect_token="token",
+            service_token="token",
         )
         assert results[0]["usernames"] == ["alice"]
         assert "malformed" in capsys.readouterr().err
@@ -721,7 +721,7 @@ class TestGroupCollectClassroom:
                 {"username": "alice", "github_id": "1"},
                 {"username": "bob", "github_id": "2"},
             ],
-            collect_token="token",
+            service_token="token",
         )
         # One submission (alice's repo), fanned to both.
         assert len(results) == 1
@@ -826,7 +826,7 @@ class TestLateness:
             classroom_short="cs-principles",
             assignments={"assignments": [{"slug": "hello", "due": "2026-09-15T23:59:00-04:00"}]},
             roster=[{"username": "alice", "github_id": "111"}],
-            collect_token="token",
+            service_token="token",
         )
 
         assert results[0]["late"] is True
@@ -1210,7 +1210,7 @@ class TestReleaseLookup:
             classroom_short="cs-principles",
             assignments={"assignments": [{"slug": "hello"}]},
             roster=[{"username": "alice", "github_id": "111"}],
-            collect_token="token",
+            service_token="token",
         )
         assert results == []
         assert "latest release response malformed" in capsys.readouterr().err
@@ -1273,7 +1273,7 @@ class TestMain:
 
         monkeypatch.setenv("GITHUB_WORKSPACE", str(tmp_path))
         monkeypatch.setenv("GITHUB_REPOSITORY_OWNER", "cs50")
-        monkeypatch.setenv("CLASSROOM50_COLLECT_TOKEN", "token")
+        monkeypatch.setenv("CLASSROOM50_SERVICE_TOKEN", "token")
         monkeypatch.setenv("GITHUB_API_URL", "https://ghe.example.test/api/v3")
         monkeypatch.setattr(cs, "collect_classroom", fake_collect)
 
@@ -1301,12 +1301,12 @@ class TestMain:
 
         monkeypatch.setenv("GITHUB_WORKSPACE", str(tmp_path))
         monkeypatch.setenv("GITHUB_REPOSITORY_OWNER", "cs50")
-        monkeypatch.setenv("CLASSROOM50_COLLECT_TOKEN", "bad-token")
+        monkeypatch.setenv("CLASSROOM50_SERVICE_TOKEN", "bad-token")
         monkeypatch.setattr(cs, "collect_classroom", fail_collect)
 
         assert cs.main() == 1
         err = capsys.readouterr().err
-        assert "rotate-collect-token cs50" in err
+        assert "rotate-service-token cs50" in err
         assert "HTTP 401" in err
 
     def test_network_hard_error_prints_non_token_message(self, tmp_path, monkeypatch, capsys):
@@ -1323,16 +1323,16 @@ class TestMain:
 
         monkeypatch.setenv("GITHUB_WORKSPACE", str(tmp_path))
         monkeypatch.setenv("GITHUB_REPOSITORY_OWNER", "cs50")
-        monkeypatch.setenv("CLASSROOM50_COLLECT_TOKEN", "token")
+        monkeypatch.setenv("CLASSROOM50_SERVICE_TOKEN", "token")
         monkeypatch.setattr(cs, "collect_classroom", fail_collect)
 
         assert cs.main() == 1
         err = capsys.readouterr().err
         assert "HTTP 599" in err
-        assert "rotate-collect-token" not in err
+        assert "rotate-service-token" not in err
 
     def test_warns_when_zero_submissions_across_roster(self, tmp_path, monkeypatch, capsys):
-        # The 404 blind spot: a collect token that can't read the
+        # The 404 blind spot: a service token that can't read the
         # student repos makes collect_classroom report everyone as
         # unsubmitted, so the run exits 0 with an empty gradebook and
         # no signal. A non-empty roster x assignment set that yields
@@ -1341,14 +1341,14 @@ class TestMain:
         write_minimal_classroom(tmp_path)
         monkeypatch.setenv("GITHUB_WORKSPACE", str(tmp_path))
         monkeypatch.setenv("GITHUB_REPOSITORY_OWNER", "cs50")
-        monkeypatch.setenv("CLASSROOM50_COLLECT_TOKEN", "token")
+        monkeypatch.setenv("CLASSROOM50_SERVICE_TOKEN", "token")
         monkeypatch.setattr(cs, "collect_classroom", lambda **kwargs: [])
 
         assert cs.main() == 0
         err = capsys.readouterr().err
         assert "::warning::" in err
         assert "collected 0 submissions" in err
-        assert "rotate-collect-token cs50" in err
+        assert "rotate-service-token cs50" in err
         # The gradebook is left untouched -- no false rows written.
         scores = json.loads((tmp_path / "cs-principles" / "scores.json").read_text())
         assert scores["submissions"] == {}
@@ -1359,7 +1359,7 @@ class TestMain:
         write_minimal_classroom(tmp_path)
         monkeypatch.setenv("GITHUB_WORKSPACE", str(tmp_path))
         monkeypatch.setenv("GITHUB_REPOSITORY_OWNER", "cs50")
-        monkeypatch.setenv("CLASSROOM50_COLLECT_TOKEN", "token")
+        monkeypatch.setenv("CLASSROOM50_SERVICE_TOKEN", "token")
         monkeypatch.setattr(
             cs, "collect_classroom", lambda **kwargs: [make_result(username="alice")]
         )
@@ -1375,7 +1375,7 @@ class TestMain:
         write_roster(tmp_path / "cs-principles" / "students.csv", [])
         monkeypatch.setenv("GITHUB_WORKSPACE", str(tmp_path))
         monkeypatch.setenv("GITHUB_REPOSITORY_OWNER", "cs50")
-        monkeypatch.setenv("CLASSROOM50_COLLECT_TOKEN", "token")
+        monkeypatch.setenv("CLASSROOM50_SERVICE_TOKEN", "token")
         monkeypatch.setattr(cs, "collect_classroom", lambda **kwargs: [])
 
         assert cs.main() == 0
@@ -1391,7 +1391,7 @@ class TestMain:
         )
         monkeypatch.setenv("GITHUB_WORKSPACE", str(tmp_path))
         monkeypatch.setenv("GITHUB_REPOSITORY_OWNER", "cs50")
-        monkeypatch.setenv("CLASSROOM50_COLLECT_TOKEN", "token")
+        monkeypatch.setenv("CLASSROOM50_SERVICE_TOKEN", "token")
         monkeypatch.setattr(cs, "collect_classroom", lambda **kwargs: [])
 
         assert cs.main() == 0

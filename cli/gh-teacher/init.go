@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 
 	"github.com/foundation50/classroom50-cli-shared/contract"
@@ -16,44 +18,62 @@ const configRepoName = contract.ConfigRepoName
 
 func initCmd() *cobra.Command {
 	var (
-		confirmSvc  bool
 		skipConfirm bool
+		dryRun      bool
+		asJSON      bool
+		quiet       bool
 	)
 
 	cmd := &cobra.Command{
 		Use:   "init <org>",
 		Short: "Bootstrap the classroom50 config repo in an organization",
-		Long: "Bootstrap the classroom50 config repo for a teaching organization.\n\n" +
-			"Performs in order: org plan check (Team/Enterprise required for\n" +
-			"GitHub Pages from a private repo), org-level member defaults\n" +
-			"(base permission = none, public repo creation disabled,\n" +
-			"members can create private repos), enabling GitHub Actions\n" +
-			"for the org if off, creating the private classroom50 config\n" +
-			"repo with auto_init (re-enabling Actions on it), single-commit\n" +
-			"skeleton drop, Pages enablement, branch protection on the\n" +
-			"default branch, workflow permissions, and the repo-level\n" +
-			"CLASSROOM50_COLLECT_TOKEN secret.\n\n" +
-			"The org member-default lockdown ENFORCES org-wide Pages creation\n" +
-			"(members_can_create_pages / _public_pages) so the config repo can\n" +
-			"publish its public assignments.json site — re-running init resets\n" +
-			"these to enabled even if you tightened them afterward. Disable\n" +
-			"Pages creation manually only if you've moved the config site\n" +
-			"elsewhere.\n\n" +
-			"The collect token is read from the CLASSROOM50_COLLECT_TOKEN\n" +
-			"environment variable, falling back to a hidden stdin prompt when\n" +
-			"run interactively. No --collect-token flag is offered: PAT values\n" +
-			"on the command line leak via shell history, process listings, and\n" +
-			"CI logs. The token needs `Contents: read` on all org repos:\n" +
-			"student repos are created on demand by accept, so an\n" +
-			"\"Only select repositories\" scope silently misses them.\n\n" +
-			"Idempotent: re-running picks up where the prior run left off.\n" +
-			"When the skeleton is already present, re-running also refreshes\n" +
-			"any skeleton files that differ from this CLI's embedded version\n" +
-			"(so orgs gain new features like declarative tests) — after a\n" +
-			"confirmation prompt, since hand-customized skeleton files would\n" +
-			"be reset. Pass --yes to skip that prompt (scripted runs only).",
-		Example: "  CLASSROOM50_COLLECT_TOKEN=ghp_xxx gh teacher init cs50-fall-2026\n" +
-			"  gh teacher init cs50-fall-2026   # interactive prompt for the token",
+		Long: "Bootstrap the classroom50 config repo for a teaching organization.\n" +
+			"Run once per org; safe to re-run (idempotent).\n\n" +
+			"What it sets up (in order):\n" +
+			"  1.  Org member-privilege lockdown (least-privilege: the only\n" +
+			"      enabled member capabilities are private-repo creation and\n" +
+			"      public Pages creation).\n" +
+			"  2.  GitHub Actions enabled for the org.\n" +
+			"  3.  Actions allowed to create pull requests (for Feedback PRs).\n" +
+			"  4.  Branch rulesets protecting submission history + Feedback base.\n" +
+			"  5.  The private classroom50 config repo (auto-initialized).\n" +
+			"  6.  Repo-level Actions re-enabled.\n" +
+			"  7.  The embedded skeleton workflows/scripts (single commit).\n" +
+			"  8.  GitHub Pages (workflow build, visibility public).\n" +
+			"  9.  Branch protection on the default branch.\n" +
+			"  10. Workflow GITHUB_TOKEN permissions.\n" +
+			"  11. Reusable-workflow access for the org.\n" +
+			"  12. The repo-level CLASSROOM50_SERVICE_TOKEN secret.\n\n" +
+			"Preflight: before any change, init verifies your OAuth scopes,\n" +
+			"org access and ownership, the org plan, and that a service token\n" +
+			"is available — and stops without mutating if a hard check fails.\n\n" +
+			"Service token: read from the CLASSROOM50_SERVICE_TOKEN environment\n" +
+			"variable, else a hidden interactive prompt on first setup. There\n" +
+			"is no --token flag (PATs on the command line leak via shell\n" +
+			"history, process listings, and CI logs). Create a fine-grained PAT\n" +
+			"with Resource owner = your org, Repository access = All\n" +
+			"repositories, and Contents: Read-only — student repos are created\n" +
+			"on demand, so an \"Only select repositories\" scope silently misses\n" +
+			"them. Since init requires you to be an org owner, your own PAT is\n" +
+			"auto-approved. init validates the token before storing it (and a\n" +
+			"re-run leaves an already-configured token untouched; replace it\n" +
+			"with `gh teacher rotate-service-token <org>`).\n\n" +
+			"Re-running is safe: init picks up where a prior run left off and\n" +
+			"refreshes skeleton files that differ from this CLI's embedded\n" +
+			"version (so orgs gain new features) after a confirmation prompt;\n" +
+			"--yes skips that prompt for scripted runs.\n\n" +
+			"Four org member-privilege settings have no REST API; init reports\n" +
+			"them as a manual checklist (and in --json's\n" +
+			"manual_hardening_required). See the CLI Teacher Guide for the full\n" +
+			"hardening context.\n\n" +
+			"Flags: --dry-run (preflight + planned steps, no changes),\n" +
+			"--json (machine-readable summary on stdout, implies --quiet),\n" +
+			"--quiet/-q (suppress progress chatter), --yes (skip skeleton-\n" +
+			"refresh prompt).",
+		Example: "  CLASSROOM50_SERVICE_TOKEN=github_pat_xxx gh teacher init cs50-fall-2026\n" +
+			"  gh teacher init cs50-fall-2026              # interactive prompt for the token\n" +
+			"  gh teacher init cs50-fall-2026 --dry-run    # preview without changes\n" +
+			"  gh teacher init cs50-fall-2026 --json       # machine-readable summary",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cmd.SilenceUsage = true
@@ -69,31 +89,135 @@ func initCmd() *cobra.Command {
 			out := cmd.OutOrStdout()
 			errOut := cmd.ErrOrStderr()
 
-			// Plan check is read-only: warns on free tiers where
-			// Pages-from-private isn't supported, then continues.
-			if err := checkOrgPlan(client, errOut, org); err != nil {
-				return err
+			// --json implies --quiet so stdout stays a single
+			// machine-readable object and no human chatter interleaves.
+			if asJSON {
+				quiet = true
 			}
+			u := newUI(errOut)
+
+			// Preflight: read-only checks before any mutation. A hard
+			// failure (missing scope, org not found, not an owner, no
+			// token + no prompt) stops here so init never leaves a
+			// half-configured org. Plan is read once and reused by the
+			// lockdown read-back's plan-aware warning.
+			tok := currentTokenSource()
+			pre := runPreflight(client, org, tok)
+			renderPreflight(u, pre, quiet)
+			if pre.Failed {
+				return preflightFailError(pre)
+			}
+
+			if dryRun {
+				if asJSON {
+					s := newInitSummary(org)
+					s.DryRun = true
+					s.Plan = pre.Plan
+					s.Preflight = pre.Checks
+					s.finalize()
+					return s.renderJSON(out)
+				}
+				renderDryRunSteps(errOut)
+				return nil
+			}
+
+			// summary is the canonical record every renderer reads from.
+			// Plan came from preflight (read once); the manual-hardening
+			// checklist is pre-populated.
+			summary := newInitSummary(org)
+			summary.Plan = pre.Plan
+			summary.Preflight = pre.Checks
+
+			total := len(initStepLabels)
+			prog := u.newProgress(total)
+			interactive := prog.active()
+
+			// On an interactive terminal, fold the per-step output into one
+			// self-rewriting progress line ([1/12] → [12/12] Done): route
+			// the helpers' stdout (success lines) to a discard and their
+			// stderr (warnings) to a buffer that's replayed once the
+			// progress line is finalized, so nothing scrolls the line away.
+			// On a non-TTY / piped / --quiet / --json run, keep the stable
+			// per-line output (stepOut = real stdout, stepErr = real stderr)
+			// so machine consumers and logs are unchanged.
+			stepOut, stepErr := out, errOut
+			var capturedErr bytes.Buffer
+			if interactive {
+				stepOut = io.Discard
+				stepErr = &capturedErr
+			}
+			stepNum := 0
+			step := func(label string) {
+				stepNum++
+				switch {
+				case asJSON:
+					// no progress output
+				case interactive:
+					prog.update(stepNum, label)
+				case !quiet:
+					u.step(stepNum, total, label)
+				}
+			}
+			// flushStepWarnings replays any warnings the helpers buffered
+			// during the interactive progress phase (rare edge-case
+			// Warning: lines), after the progress line is done.
+			flushStepWarnings := func() {
+				if interactive && capturedErr.Len() > 0 {
+					_, _ = io.Copy(errOut, &capturedErr)
+				}
+			}
+
+			// (The org plan was already checked read-only in preflight —
+			// pre.Plan — and its advisory is surfaced there, so init no
+			// longer re-fetches /orgs/{org} for a second plan warning.)
 
 			// Tighten org-level member defaults before any repos
 			// land so the classroom starts in a known-safe state.
-			lockdownComplete, err := applyOrgMemberDefaults(client, out, errOut, org)
+			step(initStepLabels[0])
+			lockdownComplete, unenforced, err := applyOrgMemberDefaults(client, stepOut, stepErr, org, pre.Plan)
 			if err != nil {
+				prog.abort()
 				return err
 			}
+			summary.LockdownComplete = lockdownComplete
+			// Build one consolidated, verified checklist of the settings
+			// init couldn't apply (whether plan-gated 422 or silently
+			// ignored) from the authoritative read-back. Each carries the
+			// exact GitHub-UI instruction, so the teacher gets a single
+			// "do this by hand" list instead of three overlapping warnings.
+			settingsURL := fmt.Sprintf("https://github.com/organizations/%s/settings/member_privileges", org)
+			for _, item := range unenforced {
+				summary.LockdownManualSteps = append(summary.LockdownManualSteps, manualStep{Setting: item.manualFix, URL: settingsURL})
+			}
 			if !lockdownComplete {
-				// The org-level locks are the only thing that defangs the
-				// repo-admin that `gh student accept` grants each founder
-				// (#112). If a critical lockdown field was rejected, that
-				// safety invariant does NOT hold — say so loudly rather
-				// than letting a half-locked org hide behind init's later
-				// success output.
-				_, _ = fmt.Fprintf(errOut, "Warning: %s: org member-privilege lockdown is INCOMPLETE — one or more critical policies could not be applied (see the warnings above). Repo-admin is NOT fully defanged org-wide, so the `admin` collaborator that `gh student accept` grants each founder may retain dangerous powers (delete/transfer/visibility). Apply the missing policies at https://github.com/organizations/%s/settings/member_privileges, then re-run `gh teacher init`.\n", org, org)
+				// The org-level locks are what defang the repo-admin that
+				// `gh student accept` grants each founder (#112). Record the
+				// warning; the actionable checklist is rendered at the end
+				// (with the summary) so it isn't lost above the progress
+				// line.
+				summary.addWarning("%s: org member-privilege lockdown INCOMPLETE — %d setting(s) need to be set by hand at %s (see the summary checklist). Until then, the repo-admin that `gh student accept` grants founders is not fully defanged org-wide.", org, len(unenforced), settingsURL)
+			}
+
+			// On Team/Free, "private repos only" doesn't exist: GitHub
+			// couples public+private repo creation into one switch, and the
+			// student flow REQUIRES private creation, so init can't lock
+			// public creation off (the field is enterpriseOnly and filtered
+			// out). Note it so a clean "lockdown complete" banner isn't read
+			// as "members can't create public repos" — they still can on
+			// these plans.
+			if pre.Plan != "enterprise" {
+				planName := pre.Plan
+				if planName == "" {
+					planName = "your"
+				}
+				summary.addNote("Member public-repo creation stays enabled on the %s plan: GitHub couples public+private repo creation into one control and the student flow needs private creation, so \"private repos only\" (an Enterprise Cloud capability) can't be applied here.", planName)
 			}
 
 			// Enable Actions before any repo/Pages/workflow setup --
 			// the classroom workflows all depend on it.
-			if err := ensureOrgActionsEnabled(client, out, errOut, org); err != nil {
+			step(initStepLabels[1])
+			if err := ensureOrgActionsEnabled(client, stepOut, stepErr, org); err != nil {
+				prog.abort()
 				return err
 			}
 
@@ -102,8 +226,10 @@ func initCmd() *cobra.Command {
 			// creation; a maintain student can't set it per-repo. Even
 			// with pull-requests: write, PR creation is rejected unless
 			// this org toggle is on, and it defaults off.
-			prCreateReady, err := ensureOrgCanCreatePRs(client, out, errOut, org)
+			step(initStepLabels[2])
+			prCreateReady, err := ensureOrgCanCreatePRs(client, stepOut, stepErr, org)
 			if err != nil {
+				prog.abort()
 				return err
 			}
 
@@ -112,22 +238,27 @@ func initCmd() *cobra.Command {
 			// level so they auto-cover every current/future student
 			// repo; warn-and-continue if the org's plan/policy blocks
 			// them.
-			rulesetsReady, err := ensureClassroomRulesets(client, out, errOut, org)
+			step(initStepLabels[3])
+			rulesetsReady, err := ensureClassroomRulesets(client, stepOut, stepErr, org)
 			if err != nil {
+				prog.abort()
 				return err
 			}
 
 			// Default branch comes from the create/fetch response —
 			// org policy can rename it.
+			step(initStepLabels[4])
 			repo, created, err := ensureConfigRepo(client, org)
 			if err != nil {
+				prog.abort()
 				return err
 			}
 			if created {
-				_, _ = fmt.Fprintf(out, "%s/%s: created %s\n", org, configRepoName, repo.HTMLURL)
+				_, _ = fmt.Fprintf(stepOut, "%s/%s: created %s\n", org, configRepoName, repo.HTMLURL)
 			} else {
-				_, _ = fmt.Fprintf(out, "%s/%s: already exists, continuing setup\n", org, configRepoName)
+				_, _ = fmt.Fprintf(stepOut, "%s/%s: already exists, continuing setup\n", org, configRepoName)
 			}
+			summary.ConfigRepo = repoSummary{Name: configRepoName, URL: repo.HTMLURL, Created: created}
 			branch := repo.DefaultBranch
 			if branch == "" {
 				branch = "main"
@@ -135,42 +266,59 @@ func initCmd() *cobra.Command {
 
 			// Re-enable repo-level Actions before the skeleton push
 			// so the workflows' first run isn't blocked.
-			if err := ensureRepoActionsEnabled(client, out, errOut, org, configRepoName); err != nil {
+			step(initStepLabels[5])
+			if err := ensureRepoActionsEnabled(client, stepOut, stepErr, org, configRepoName); err != nil {
+				prog.abort()
 				return err
 			}
 
-			if err := commitSkeleton(client, cmd.InOrStdin(), out, errOut, org, configRepoName, branch, skipConfirm); err != nil {
+			step(initStepLabels[6])
+			// commitSkeleton may prompt (skeleton-refresh confirmation) on
+			// stderr and read stdin. A prompt must be visible and not
+			// buffered behind the progress line, so clear the in-place line
+			// first and give it the REAL stderr (its rare warnings show
+			// too); its success chatter still goes to the discarded stepOut.
+			if interactive {
+				prog.abort()
+			}
+			if err := commitSkeleton(client, cmd.InOrStdin(), stepOut, errOut, org, configRepoName, branch, skipConfirm); err != nil {
+				prog.abort()
 				return err
 			}
-			if err := enablePages(client, out, errOut, org, configRepoName); err != nil {
+			step(initStepLabels[7])
+			if err := enablePages(client, stepOut, stepErr, org, configRepoName); err != nil {
+				prog.abort()
 				return err
 			}
-			if err := applyBranchProtection(client, out, org, configRepoName, branch); err != nil {
+			step(initStepLabels[8])
+			if err := applyBranchProtection(client, stepOut, org, configRepoName, branch); err != nil {
+				prog.abort()
 				return err
 			}
-			if err := setWorkflowPermissions(client, out, org, configRepoName); err != nil {
+			step(initStepLabels[9])
+			if err := setWorkflowPermissions(client, stepOut, org, configRepoName); err != nil {
+				prog.abort()
 				return err
 			}
-			if err := enableReusableWorkflowAccess(client, out, errOut, org, configRepoName); err != nil {
+			step(initStepLabels[10])
+			if err := enableReusableWorkflowAccess(client, stepOut, stepErr, org, configRepoName); err != nil {
+				prog.abort()
 				return err
 			}
 
-			printServiceAccountReminder(errOut, confirmSvc)
-			token, err := readCollectToken(cmd)
-			if err != nil {
-				return err
-			}
-			if err := provisionCollectSecret(client, out, org, configRepoName, token, "stored"); err != nil {
+			step(initStepLabels[11])
+			// The service-token prompt (when needed) must not be hidden
+			// behind the progress line: finalize progress and flush any
+			// buffered warnings before any prompt/notice.
+			prog.done()
+			flushStepWarnings()
+			if err := provisionServiceToken(cmd, client, summary, org, pre.SecretExists); err != nil {
 				return err
 			}
 
-			// Consolidated Feedback PR readiness summary so a teacher (or
-			// a script parsing init output) gets one clear signal about
-			// whether the opt-in Feedback PR (issue #86) prerequisites are
-			// in place, rather than only scattered per-step warnings.
-			if prCreateReady && rulesetsReady {
-				_, _ = fmt.Fprintf(out, "%s: Feedback PR prerequisites ready (Actions-PR setting + branch rulesets)\n", org)
-			} else {
+			// Consolidated Feedback PR readiness signal (issue #86).
+			summary.FeedbackPRReady = prCreateReady && rulesetsReady
+			if !summary.FeedbackPRReady {
 				var missing []string
 				if !prCreateReady {
 					missing = append(missing, "the org Actions-PR setting")
@@ -178,21 +326,32 @@ func initCmd() *cobra.Command {
 				if !rulesetsReady {
 					missing = append(missing, "the submission-history / feedback-base rulesets")
 				}
-				_, _ = fmt.Fprintf(errOut, "Warning: %s: Feedback PR prerequisites incomplete — %s could not be applied (see the warnings above). Assignments created with `--feedback-pr` may not open PRs or may leave submissions unprotected until you apply these at https://github.com/organizations/%s/settings, then re-run `gh teacher init`.\n",
+				summary.addWarning("%s: Feedback PR prerequisites incomplete — %s could not be applied. Assignments created with `--feedback-pr` may not open PRs or may leave submissions unprotected until you apply these at https://github.com/organizations/%s/settings, then re-run `gh teacher init`.",
 					org, strings.Join(missing, " and "), org)
 			}
 
 			// Pages takes a few seconds after the first publish-pages
 			// run before the URL serves.
-			pagesURL := fmt.Sprintf("https://%s.github.io/%s/", org, configRepoName)
-			_, _ = fmt.Fprintf(out, "Pages will serve at %s once publish-pages completes its first run.\n", pagesURL)
-			printManualHardeningReminder(errOut, org)
-			_, _ = fmt.Fprintf(out, "Next: gh teacher classroom add %s <short-name>\n", org)
+			summary.PagesURL = fmt.Sprintf("https://%s.github.io/%s/", org, configRepoName)
+			summary.finalize()
+
+			// Render the canonical summary: JSON to stdout (the only
+			// machine surface), or the human report to stderr. The human
+			// report (banner + setup status + one action checklist + next
+			// step) conveys everything the recorded warnings say, so we
+			// don't separately replay summary.Warnings to the terminal —
+			// they remain in --json for machine consumers.
+			if asJSON {
+				return summary.renderJSON(out)
+			}
+			summary.renderHuman(u)
 			return nil
 		},
 	}
 
-	addServiceAccountConfirmFlag(cmd, &confirmSvc)
 	cmd.Flags().BoolVar(&skipConfirm, "yes", false, "Skip the skeleton-refresh confirmation prompt (scripted runs only)")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Run read-only preflight checks and list the steps init would perform, without making any changes")
+	cmd.Flags().BoolVar(&asJSON, "json", false, "Emit a machine-readable JSON summary on stdout (implies --quiet); suppresses human output")
+	cmd.Flags().BoolVarP(&quiet, "quiet", "q", false, "Suppress per-step progress and success chatter; keep warnings and the final summary")
 	return cmd
 }

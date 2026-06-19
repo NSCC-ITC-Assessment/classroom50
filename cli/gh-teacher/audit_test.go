@@ -1,0 +1,234 @@
+package main
+
+import (
+	"bytes"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+)
+
+// orgLiveFromSettings builds a live org field map where every in-scope
+// member-default reads at its desired (locked-down) value, so a test can
+// start from a fully-enforced baseline and then flip individual fields to
+// simulate drift.
+func orgLiveFromSettings(plan string) map[string]any {
+	live := map[string]any{}
+	for _, s := range orgMemberDefaultSettings(plan) {
+		live[s.field] = s.value
+	}
+	return live
+}
+
+func TestBuildAuditReport_AllEnforced(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Errorf("audit must be read-only; got %s %s", r.Method, r.URL.Path)
+		}
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(orgLiveFromSettings("team"))
+	}))
+	t.Cleanup(server.Close)
+	client := newTestRESTClient(t, server)
+
+	report := buildAuditReport(client, "cs50-fall-2026", "team")
+
+	if !report.ReadOK {
+		t.Fatal("ReadOK = false, want true")
+	}
+	if !report.LockdownComplete {
+		t.Errorf("LockdownComplete = false, want true when every field matches")
+	}
+	if len(report.Unenforced) != 0 {
+		t.Errorf("Unenforced = %+v, want none", report.Unenforced)
+	}
+	if want := len(orgMemberDefaultSettings("team")); len(report.Enforced) != want {
+		t.Errorf("Enforced = %d, want %d (all in-scope settings)", len(report.Enforced), want)
+	}
+	// The four web-UI-only settings are always surfaced as unreadable.
+	if len(report.ManualUnreadable) != 4 {
+		t.Errorf("ManualUnreadable = %d, want 4 (the API-less hardening steps)", len(report.ManualUnreadable))
+	}
+}
+
+func TestBuildAuditReport_CriticalDriftFails(t *testing.T) {
+	// A teacher who re-checked "delete or transfer repositories" leaves a
+	// critical lockdown field un-set: audit must flag it and report the
+	// lockdown INCOMPLETE (non-zero exit for scripts).
+	const drifted = "members_can_delete_repositories"
+	live := orgLiveFromSettings("team")
+	live[drifted] = true // re-opened the privilege
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(live)
+	}))
+	t.Cleanup(server.Close)
+	client := newTestRESTClient(t, server)
+
+	report := buildAuditReport(client, "cs50-fall-2026", "team")
+
+	if report.LockdownComplete {
+		t.Errorf("a critical field (%s) drifted; LockdownComplete must be false", drifted)
+	}
+	if len(report.Unenforced) != 1 || report.Unenforced[0].Field != drifted {
+		t.Fatalf("Unenforced = %+v, want one entry for %s", report.Unenforced, drifted)
+	}
+	if report.Unenforced[0].Fix == "" {
+		t.Errorf("unenforced setting should carry a fix instruction")
+	}
+	if !report.Unenforced[0].Critical {
+		t.Errorf("%s is a critical lockdown field; Critical should be true", drifted)
+	}
+}
+
+func TestBuildAuditReport_NonCriticalDriftStillComplete(t *testing.T) {
+	// A non-critical field (private repo creation enabled) drifting does
+	// NOT fail the lockdown invariant — it's reported but LockdownComplete
+	// stays true, mirroring init's notion of "ready".
+	const drifted = "members_can_create_private_repositories"
+	live := orgLiveFromSettings("team")
+	live[drifted] = false
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(live)
+	}))
+	t.Cleanup(server.Close)
+	client := newTestRESTClient(t, server)
+
+	report := buildAuditReport(client, "cs50-fall-2026", "team")
+
+	if !report.LockdownComplete {
+		t.Errorf("a non-critical field drifted; LockdownComplete should stay true")
+	}
+	found := false
+	for _, s := range report.Unenforced {
+		if s.Field == drifted {
+			found = true
+			if s.Critical {
+				t.Errorf("%s should be non-critical", drifted)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("Unenforced should still list the drifted non-critical field %s", drifted)
+	}
+}
+
+func TestBuildAuditReport_ReadFailureIsInconclusive(t *testing.T) {
+	// A read failure must NOT report a clean lockdown: ReadOK=false and
+	// LockdownComplete=false so the scriptable exit status is a
+	// conservative failure rather than a false all-clear.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"message":"Forbidden"}`))
+	}))
+	t.Cleanup(server.Close)
+	client := newTestRESTClient(t, server)
+
+	report := buildAuditReport(client, "cs50-fall-2026", "team")
+
+	if report.ReadOK {
+		t.Errorf("ReadOK = true on a 403, want false")
+	}
+	if report.LockdownComplete {
+		t.Errorf("LockdownComplete = true on a read failure, want false (inconclusive)")
+	}
+}
+
+func TestBuildAuditReport_PlanScopesEnterpriseFields(t *testing.T) {
+	// On Team, enterprise-only fields are out of scope: even if they read
+	// as "wrong", audit must not include or fail on them. Build a Team
+	// baseline (which omits them) and confirm the audit ignores them.
+	live := orgLiveFromSettings("team")
+	// Inject an enterprise-only field at a non-locked value — audit on
+	// Team must not flag it.
+	live["members_can_view_dependency_insights"] = true
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(live)
+	}))
+	t.Cleanup(server.Close)
+	client := newTestRESTClient(t, server)
+
+	report := buildAuditReport(client, "cs50-fall-2026", "team")
+
+	if !report.LockdownComplete {
+		t.Errorf("an enterprise-only field is out of scope on Team; lockdown should be complete")
+	}
+	for _, s := range append(report.Enforced, report.Unenforced...) {
+		if s.Field == "members_can_view_dependency_insights" {
+			t.Errorf("enterprise-only field must not appear in a Team-plan audit")
+		}
+	}
+}
+
+func TestAuditReport_RenderHumanShowsAllThreeSections(t *testing.T) {
+	// Plain (forced-no-color) human render must show: the INCOMPLETE
+	// banner, the unenforced checklist item, and the unreadable manual
+	// section — the whole point of the command.
+	report := auditReport{
+		Org:              "cs50",
+		Plan:             "team",
+		ReadOK:           true,
+		LockdownComplete: false,
+		Enforced:         []auditSetting{{Field: "default_repository_permission", Desc: `base repository permission "none"`, Critical: true}},
+		Unenforced: []auditSetting{{
+			Field: "members_can_delete_repositories", Desc: "member repo deletion/transfer disabled",
+			Critical: true, Fix: `uncheck "Allow members to delete or transfer repositories for this organization"`,
+		}},
+		ManualUnreadable: manualHardeningSteps("cs50"),
+		SettingsURL:      "https://github.com/organizations/cs50/settings/member_privileges",
+	}
+
+	var buf bytes.Buffer
+	report.renderHuman(newUIForced(&buf, false))
+	got := buf.String()
+	for _, want := range []string{
+		"cs50: member-privilege lockdown INCOMPLETE",
+		"Verified (read from the API)",
+		// Each verified setting is listed with a checked box (plain mode).
+		`[x] base repository permission "none"`,
+		"Action required",
+		`uncheck "Allow members to delete or transfer repositories`,
+		"Confirm by hand",
+		"Open https://github.com/organizations/cs50/settings/member_privileges and confirm",
+		`1. Set "App access requests"`,
+		"https://github.com/organizations/cs50/settings/member_privileges",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("human render missing %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestAuditReport_RenderJSONStable(t *testing.T) {
+	report := auditReport{
+		Org:              "cs50",
+		Plan:             "team",
+		ReadOK:           true,
+		LockdownComplete: true,
+		Enforced:         []auditSetting{},
+		Unenforced:       []auditSetting{},
+		ManualUnreadable: manualHardeningSteps("cs50"),
+		SettingsURL:      "https://github.com/organizations/cs50/settings/member_privileges",
+	}
+	var buf bytes.Buffer
+	if err := report.renderJSON(&buf); err != nil {
+		t.Fatalf("renderJSON: %v", err)
+	}
+	var round auditReport
+	if err := json.Unmarshal(buf.Bytes(), &round); err != nil {
+		t.Fatalf("round-trip unmarshal: %v", err)
+	}
+	if round.Org != "cs50" || !round.LockdownComplete || !round.ReadOK {
+		t.Errorf("round-tripped report lost fields: %+v", round)
+	}
+	// `>` in fix instructions must stay literal (HTML escaping off).
+	if strings.Contains(buf.String(), "\\u003e") {
+		t.Errorf("JSON should not HTML-escape '>': %s", buf.String())
+	}
+}

@@ -285,67 +285,102 @@ func TestApplyOrgMemberDefaults_HappyPath(t *testing.T) {
 	// Pin all three field values on a single PATCH so a refactor
 	// can't silently flip a default.
 	var (
-		mu      sync.Mutex
-		gotBody map[string]any
-		calls   int
+		mu        sync.Mutex
+		gotBody   map[string]any
+		patchCall int
+		getCall   int
 	)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
 		defer mu.Unlock()
-		calls++
-		if r.Method != http.MethodPatch {
-			t.Errorf("unexpected method: %s", r.Method)
-		}
 		if r.URL.Path != "/orgs/cs50-fall-2026" {
 			t.Errorf("unexpected path: %s", r.URL.Path)
 		}
-		body, _ := io.ReadAll(r.Body)
-		_ = json.Unmarshal(body, &gotBody)
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{}`))
+		switch r.Method {
+		case http.MethodPatch:
+			patchCall++
+			body, _ := io.ReadAll(r.Body)
+			_ = json.Unmarshal(body, &gotBody)
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{}`))
+		case http.MethodGet:
+			// The post-PATCH read-back: echo every desired value so the
+			// verification confirms the lockdown took effect.
+			getCall++
+			live := map[string]any{}
+			for _, s := range orgMemberDefaultSettings("team") {
+				live[s.field] = s.value
+			}
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(live)
+		default:
+			t.Errorf("unexpected method: %s", r.Method)
+		}
 	}))
 	t.Cleanup(server.Close)
 	client := newTestRESTClient(t, server)
 
 	var out, errOut bytes.Buffer
-	complete, err := applyOrgMemberDefaults(client, &out, &errOut, "cs50-fall-2026")
+	complete, _, err := applyOrgMemberDefaults(client, &out, &errOut, "cs50-fall-2026", "team")
 	if err != nil {
 		t.Fatalf("applyOrgMemberDefaults: %v", err)
 	}
 	if !complete {
-		t.Errorf("combined-PATCH success should report a complete lockdown")
+		t.Errorf("combined-PATCH success with a verified read-back should report a complete lockdown; stderr: %q", errOut.String())
 	}
 
 	mu.Lock()
 	defer mu.Unlock()
-	if calls != 1 {
-		t.Errorf("calls = %d, want 1", calls)
+	if patchCall != 1 {
+		t.Errorf("PATCH calls = %d, want 1", patchCall)
+	}
+	if getCall != 1 {
+		t.Errorf("read-back GET calls = %d, want 1", getCall)
 	}
 	if gotBody["default_repository_permission"] != "none" {
 		t.Errorf("default_repository_permission = %v, want none", gotBody["default_repository_permission"])
 	}
-	if gotBody["members_can_create_public_repositories"] != false {
-		t.Errorf("members_can_create_public_repositories = %v, want false", gotBody["members_can_create_public_repositories"])
-	}
 	if gotBody["members_can_create_private_repositories"] != true {
 		t.Errorf("members_can_create_private_repositories = %v, want true", gotBody["members_can_create_private_repositories"])
 	}
-	// Issue #112 lockdown fields must all be present and false in the
-	// combined PATCH — a regression that drops one silently re-opens a
-	// member privilege.
+	// The master repo-creation switch must be sent true: on Team the
+	// granular private boolean is slaved to it, so omitting it leaves
+	// BOTH public and private OFF (members can create no repos), which
+	// breaks gh student accept. This is the fix for the "both unchecked
+	// after init" symptom.
+	if gotBody["members_can_create_repositories"] != true {
+		t.Errorf("members_can_create_repositories = %v, want true (master switch; without it Team leaves both repo-creation options off)", gotBody["members_can_create_repositories"])
+	}
+	// Issue #112 lockdown fields available on Team must all be present
+	// and false in the combined PATCH — a regression that drops one
+	// silently re-opens a member privilege.
 	for _, f := range []string{
-		"members_can_create_internal_repositories",
 		"members_can_delete_repositories",
 		"members_can_change_repo_visibility",
 		"members_can_delete_issues",
 		"members_can_create_teams",
 		"members_can_fork_private_repositories",
-		"members_can_invite_outside_collaborators",
 		"readers_can_create_discussions",
 		"members_can_create_private_pages",
 	} {
 		if v, ok := gotBody[f]; !ok || v != false {
 			t.Errorf("combined PATCH field %s = %v (present=%v), want false", f, v, ok)
+		}
+	}
+	// Enterprise-only fields must be OMITTED on a Team plan (Team doesn't
+	// expose these toggles — sending them is wasted and confusing).
+	// members_can_create_public_repositories=false is enterpriseOnly
+	// because "private repos only" exists only on Enterprise Cloud; on
+	// Team, public/private are coupled and the student flow needs private
+	// creation, so init can't lock public off and must not attempt it.
+	for _, f := range []string{
+		"members_can_create_public_repositories",
+		"members_can_create_internal_repositories",
+		"members_can_view_dependency_insights",
+		"members_can_invite_outside_collaborators",
+	} {
+		if _, ok := gotBody[f]; ok {
+			t.Errorf("enterprise-only field %s must NOT be in the Team-plan PATCH body", f)
 		}
 	}
 	// Pages creation is ENFORCED true so the config repo's public Pages
@@ -356,11 +391,11 @@ func TestApplyOrgMemberDefaults_HappyPath(t *testing.T) {
 			t.Errorf("combined PATCH field %s = %v (present=%v), want true", f, v, ok)
 		}
 	}
-	// The success line is derived from orgMemberDefaultSettings()
+	// The success line is derived from orgMemberDefaultSettings(plan)
 	// (orgMemberDefaultsSummary), so assert every policy's desc appears
 	// — this is what catches a hand-written prose summary drifting out
 	// of sync with the canonical slice.
-	for _, s := range orgMemberDefaultSettings() {
+	for _, s := range orgMemberDefaultSettings("team") {
 		if !strings.Contains(out.String(), s.desc) {
 			t.Errorf("success line missing policy %q, got: %q", s.desc, out.String())
 		}
@@ -374,19 +409,39 @@ func TestApplyOrgMemberDefaults_HappyPath(t *testing.T) {
 }
 
 func TestApplyOrgMemberDefaults_ForbiddenWarnsButSucceeds(t *testing.T) {
-	// 403 on the combined PATCH (e.g. an enterprise-locked org)
-	// also falls back to per-field PATCHes. When every field is
-	// rejected, each warns independently with its own reachable
-	// manual fix -- never the old plan-impossible combined checkbox
-	// instruction -- warnings stay on stderr, and init still runs.
+	// 403 on the combined PATCH (e.g. an enterprise-locked org) falls
+	// back to per-field PATCHes. When every field is rejected, the
+	// function does NOT warn per-field — it returns the authoritative
+	// read-back list of everything still unenforced (each with its
+	// manual-fix instruction) so init can render one checklist. init
+	// must still finish (no error).
 	var (
-		mu    sync.Mutex
-		calls int
+		mu        sync.Mutex
+		patchCall int
+		getCall   int
 	)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
-		calls++
-		mu.Unlock()
+		defer mu.Unlock()
+		if r.Method == http.MethodGet {
+			// Post-PATCH read-back. Every field was 403-rejected, so the
+			// org still holds its pre-init (un-locked) values: echo the
+			// OPPOSITE of each desired value so every setting reads as
+			// unenforced.
+			getCall++
+			live := map[string]any{}
+			for _, s := range orgMemberDefaultSettings("enterprise") {
+				if b, ok := s.value.(bool); ok {
+					live[s.field] = !b
+				} else {
+					live[s.field] = "unchanged"
+				}
+			}
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(live)
+			return
+		}
+		patchCall++
 		w.WriteHeader(http.StatusForbidden)
 		_, _ = w.Write([]byte(`{"message":"Resource not accessible by integration"}`))
 	}))
@@ -394,7 +449,7 @@ func TestApplyOrgMemberDefaults_ForbiddenWarnsButSucceeds(t *testing.T) {
 	client := newTestRESTClient(t, server)
 
 	var out, errOut bytes.Buffer
-	complete, err := applyOrgMemberDefaults(client, &out, &errOut, "locked-org")
+	complete, unenforced, err := applyOrgMemberDefaults(client, &out, &errOut, "locked-org", "enterprise")
 	if err != nil {
 		t.Fatalf("applyOrgMemberDefaults should not return an error on 403: %v", err)
 	}
@@ -404,32 +459,27 @@ func TestApplyOrgMemberDefaults_ForbiddenWarnsButSucceeds(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
-	n := len(orgMemberDefaultSettings())
-	if calls != n+1 {
-		t.Errorf("PATCH calls = %d, want %d (combined + one per field)", calls, n+1)
+	n := len(orgMemberDefaultSettings("enterprise"))
+	if patchCall != n+1 {
+		t.Errorf("PATCH calls = %d, want %d (combined + one per field)", patchCall, n+1)
 	}
-	if got := strings.Count(errOut.String(), "Warning:"); got != n {
-		t.Errorf("warnings = %d, want %d (one per rejected field):\n%s", got, n, errOut.String())
+	if getCall != 1 {
+		t.Errorf("read-back GET calls = %d, want 1", getCall)
 	}
-	for _, desc := range []string{
-		`base repository permission "none"`,
-		"public repo creation disabled",
-		"private repo creation enabled",
-		"member repo deletion/transfer disabled",
-		"member-invited outside collaborators disabled",
-	} {
-		if !strings.Contains(errOut.String(), desc) {
-			t.Errorf("warning should name policy %q: %q", desc, errOut.String())
+	// Every setting is unenforced; the returned list covers them all,
+	// each carrying a manual-fix instruction.
+	if len(unenforced) != n {
+		t.Fatalf("unenforced = %d, want %d (all settings rejected)", len(unenforced), n)
+	}
+	for _, u := range unenforced {
+		if u.manualFix == "" {
+			t.Errorf("unenforced entry %q should carry a manualFix", u.field)
 		}
 	}
-	if !strings.Contains(errOut.String(), "settings/member_privileges") {
-		t.Errorf("warning should point at the org settings page: %q", errOut.String())
-	}
-	if strings.Contains(errOut.String(), "uncheck Public and check Private") {
-		t.Errorf("warning must not suggest the plan-impossible checkbox combo: %q", errOut.String())
-	}
-	if strings.Contains(out.String(), "Warning") {
-		t.Errorf("warnings must not land on stdout, got: %q", out.String())
+	// The function itself no longer warns per-field — the consolidated
+	// checklist is rendered by init from the returned list.
+	if strings.Contains(errOut.String(), "Warning:") {
+		t.Errorf("the fallback must not warn per-field anymore; init renders one checklist: %q", errOut.String())
 	}
 	if strings.Contains(out.String(), "org member defaults set") {
 		t.Errorf("stdout must not claim success when every field was rejected: %q", out.String())
@@ -446,7 +496,7 @@ func TestApplyOrgMemberDefaults_TransportFailurePropagates(t *testing.T) {
 	client := newTestRESTClient(t, server)
 
 	var out, errOut bytes.Buffer
-	_, err := applyOrgMemberDefaults(client, &out, &errOut, "o")
+	_, _, err := applyOrgMemberDefaults(client, &out, &errOut, "o", "team")
 	if err == nil {
 		t.Fatal("expected error on PATCH 500, got nil")
 	}
@@ -456,15 +506,33 @@ func TestApplyOrgMemberDefaults_TransportFailurePropagates(t *testing.T) {
 }
 
 func TestApplyOrgMemberDefaults_UnprocessableFallsBackPerField(t *testing.T) {
-	// A 422 on the combined PATCH (one plan-gated field) must fall
-	// back to per-field PATCHes so the settable policies still
-	// apply, and the warning must name only the rejected one.
-	// Mirrors the Team-plan report in public issue #22.
+	// A 422 on the combined PATCH (one plan-gated/pinned field) must fall
+	// back to per-field PATCHes so the settable policies still apply.
+	// The function no longer warns per-field; it returns the one
+	// still-unenforced setting (from the read-back) for init to render.
+	// Uses the enterprise plan so the public-repo lockdown field is in
+	// play — on Team it's filtered out (enterpriseOnly), since "private
+	// repos only" doesn't exist there. Mirrors an enterprise org where an
+	// enterprise owner has pinned members_can_create_public_repositories.
+	const rejectedField = "members_can_create_public_repositories"
 	var (
 		mu     sync.Mutex
 		bodies []map[string]any
 	)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			// Post-PATCH read-back: accepted fields read at their desired
+			// value; the rejected field stays at the OPPOSITE (still
+			// un-locked) so the read-back flags exactly it.
+			live := map[string]any{}
+			for _, s := range orgMemberDefaultSettings("enterprise") {
+				live[s.field] = s.value
+			}
+			live[rejectedField] = true // rejected → stayed un-locked
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(live)
+			return
+		}
 		body, _ := io.ReadAll(r.Body)
 		var fields map[string]any
 		_ = json.Unmarshal(body, &fields)
@@ -472,8 +540,8 @@ func TestApplyOrgMemberDefaults_UnprocessableFallsBackPerField(t *testing.T) {
 		bodies = append(bodies, fields)
 		mu.Unlock()
 		// Reject the combined PATCH and the public-repo-creation
-		// field; accept the other two single-field PATCHes.
-		_, rejected := fields["members_can_create_public_repositories"]
+		// field; accept the other single-field PATCHes.
+		_, rejected := fields[rejectedField]
 		if len(fields) > 1 || rejected {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusUnprocessableEntity)
@@ -487,17 +555,17 @@ func TestApplyOrgMemberDefaults_UnprocessableFallsBackPerField(t *testing.T) {
 	client := newTestRESTClient(t, server)
 
 	var out, errOut bytes.Buffer
-	complete, err := applyOrgMemberDefaults(client, &out, &errOut, "team-plan-org")
+	complete, unenforced, err := applyOrgMemberDefaults(client, &out, &errOut, "enterprise-org", "enterprise")
 	if err != nil {
 		t.Fatalf("applyOrgMemberDefaults: %v", err)
 	}
 	if complete {
-		t.Errorf("a critical field (members_can_create_public_repositories) was rejected; lockdown must report INCOMPLETE")
+		t.Errorf("a critical field (%s) was rejected; lockdown must report INCOMPLETE", rejectedField)
 	}
 
 	mu.Lock()
 	defer mu.Unlock()
-	if want := len(orgMemberDefaultSettings()) + 1; len(bodies) != want {
+	if want := len(orgMemberDefaultSettings("enterprise")) + 1; len(bodies) != want {
 		t.Fatalf("PATCH calls = %d, want %d (combined + one per field)", len(bodies), want)
 	}
 	for _, fields := range bodies[1:] {
@@ -505,17 +573,16 @@ func TestApplyOrgMemberDefaults_UnprocessableFallsBackPerField(t *testing.T) {
 			t.Errorf("fallback PATCH should carry exactly one field, got %v", fields)
 		}
 	}
-	if got := strings.Count(errOut.String(), "Warning:"); got != 1 {
-		t.Errorf("warnings = %d, want exactly 1 (only the rejected field):\n%s", got, errOut.String())
+	// Exactly the rejected field is returned as unenforced, with its
+	// manual fix; the function emits no per-field warnings.
+	if len(unenforced) != 1 || unenforced[0].field != rejectedField {
+		t.Fatalf("unenforced = %+v, want one entry for %s", unenforced, rejectedField)
 	}
-	if !strings.Contains(errOut.String(), "public repo creation disabled") {
-		t.Errorf("warning should name the rejected policy: %q", errOut.String())
+	if !strings.Contains(unenforced[0].manualFix, "private repositories only") {
+		t.Errorf("the rejected field's manualFix should mention restricting to private repositories only: %q", unenforced[0].manualFix)
 	}
-	if !strings.Contains(errOut.String(), "Validation Failed") {
-		t.Errorf("warning should quote GitHub's error message: %q", errOut.String())
-	}
-	if strings.Contains(errOut.String(), "uncheck Public and check Private") {
-		t.Errorf("warning must not suggest the plan-impossible checkbox combo: %q", errOut.String())
+	if strings.Contains(errOut.String(), "Warning:") {
+		t.Errorf("the fallback must not warn per-field; init renders one checklist: %q", errOut.String())
 	}
 	if !strings.Contains(out.String(), `base repository permission "none"`) ||
 		!strings.Contains(out.String(), "private repo creation enabled") {
@@ -546,7 +613,7 @@ func TestApplyOrgMemberDefaults_FallbackTransportFailurePropagates(t *testing.T)
 	client := newTestRESTClient(t, server)
 
 	var out, errOut bytes.Buffer
-	complete, err := applyOrgMemberDefaults(client, &out, &errOut, "o")
+	complete, _, err := applyOrgMemberDefaults(client, &out, &errOut, "o", "team")
 	if err == nil {
 		t.Fatal("expected error on fallback PATCH 500, got nil")
 	}
@@ -566,23 +633,257 @@ func TestApplyOrgMemberDefaults_FallbackTransportFailurePropagates(t *testing.T)
 	}
 }
 
-func TestPrintManualHardeningReminder(t *testing.T) {
-	var errOut bytes.Buffer
-	printManualHardeningReminder(&errOut, "cs50-fall-2026")
-	got := errOut.String()
-	// Names the org's member-privileges settings page.
-	if !strings.Contains(got, "https://github.com/organizations/cs50-fall-2026/settings/member_privileges") {
-		t.Errorf("reminder should link the org member-privileges page: %q", got)
+func TestApplyOrgMemberDefaults_SilentNoOpDetectedByReadBack(t *testing.T) {
+	// The enterprise-pinned case: the combined PATCH returns 200 OK, but
+	// a critical field (members_can_invite_outside_collaborators) is
+	// silently kept at its enterprise-policy value. Only the post-PATCH
+	// read-back catches it — the write looked successful. init must
+	// report the lockdown INCOMPLETE and name the enterprise layer.
+	const pinnedField = "members_can_invite_outside_collaborators"
+	var (
+		mu        sync.Mutex
+		patchCall int
+		getCall   int
+	)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		switch r.Method {
+		case http.MethodPatch:
+			patchCall++
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{}`))
+		case http.MethodGet:
+			getCall++
+			live := map[string]any{}
+			for _, s := range orgMemberDefaultSettings("enterprise") {
+				live[s.field] = s.value
+			}
+			// Enterprise keeps this one at the opposite of what we asked
+			// despite the 200 on PATCH.
+			live[pinnedField] = true
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(live)
+		default:
+			t.Errorf("unexpected method: %s", r.Method)
+		}
+	}))
+	t.Cleanup(server.Close)
+	client := newTestRESTClient(t, server)
+
+	var out, errOut bytes.Buffer
+	complete, unenforced, err := applyOrgMemberDefaults(client, &out, &errOut, "enterprise-org", "enterprise")
+	if err != nil {
+		t.Fatalf("applyOrgMemberDefaults: %v", err)
 	}
-	// Lists the four web-UI-only settings that init can't PATCH.
+	if complete {
+		t.Errorf("a silently-ignored critical field must make the lockdown report INCOMPLETE")
+	}
+	// The unenforced list must surface the pinned field with its manual
+	// fix (init renders these as the consolidated checklist).
+	if len(unenforced) != 1 || unenforced[0].field != pinnedField {
+		t.Fatalf("unenforced = %+v, want one entry for %s", unenforced, pinnedField)
+	}
+	if unenforced[0].manualFix == "" {
+		t.Errorf("unenforced entry should carry a manualFix instruction: %+v", unenforced[0])
+	}
+	if !unenforced[0].critical {
+		t.Errorf("the pinned field is critical and should be marked so: %+v", unenforced[0])
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if patchCall != 1 {
+		t.Errorf("PATCH calls = %d, want 1 (combined PATCH succeeded with 200)", patchCall)
+	}
+	if getCall != 1 {
+		t.Errorf("read-back GET calls = %d, want 1", getCall)
+	}
+}
+
+func TestApplyOrgMemberDefaults_SilentNoOpTeamPlanWording(t *testing.T) {
+	// Same silent no-op (200 on PATCH, value unchanged) but on a Team
+	// plan: the cause is a plan limitation, NOT an enterprise override,
+	// so the warning must say so (the bug the live Team-plan run exposed,
+	// where a plan limitation was mislabeled "ENTERPRISE").
+	const pinnedField = "members_can_delete_repositories"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodPatch:
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{}`))
+		case http.MethodGet:
+			live := map[string]any{}
+			for _, s := range orgMemberDefaultSettings("team") {
+				live[s.field] = s.value
+			}
+			live[pinnedField] = true // unchanged despite 200
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(live)
+		default:
+			t.Errorf("unexpected method: %s", r.Method)
+		}
+	}))
+	t.Cleanup(server.Close)
+	client := newTestRESTClient(t, server)
+
+	var out, errOut bytes.Buffer
+	complete, unenforced, err := applyOrgMemberDefaults(client, &out, &errOut, "team-org", "team")
+	if err != nil {
+		t.Fatalf("applyOrgMemberDefaults: %v", err)
+	}
+	if complete {
+		t.Errorf("a silent no-op on Team must report INCOMPLETE")
+	}
+	if len(unenforced) != 1 || unenforced[0].field != pinnedField {
+		t.Fatalf("unenforced = %+v, want one entry for %s", unenforced, pinnedField)
+	}
+	if unenforced[0].manualFix == "" {
+		t.Errorf("unenforced entry should carry a manualFix instruction: %+v", unenforced[0])
+	}
+}
+
+func TestOrgMemberDefaultSettings_PlanFilter(t *testing.T) {
+	enterpriseOnlyFields := map[string]bool{
+		"members_can_create_public_repositories":   true,
+		"members_can_create_internal_repositories": true,
+		"members_can_view_dependency_insights":     true,
+		"members_can_invite_outside_collaborators": true,
+	}
+
+	// Enterprise gets the full canonical set, including the
+	// enterprise-only fields.
+	ent := orgMemberDefaultSettings("enterprise")
+	full := allOrgMemberDefaultSettings()
+	if len(ent) != len(full) {
+		t.Errorf("enterprise plan should get all %d settings, got %d", len(full), len(ent))
+	}
+	entHas := map[string]bool{}
+	for _, s := range ent {
+		entHas[s.field] = true
+	}
+	for f := range enterpriseOnlyFields {
+		if !entHas[f] {
+			t.Errorf("enterprise plan should include enterprise-only field %s", f)
+		}
+	}
+
+	// Team/Free/unknown plans must exclude the enterprise-only fields
+	// (Team doesn't expose those toggles).
+	for _, plan := range []string{"team", "free", ""} {
+		got := orgMemberDefaultSettings(plan)
+		if len(got) != len(full)-len(enterpriseOnlyFields) {
+			t.Errorf("plan %q should drop %d enterprise-only settings; got %d of %d", plan, len(enterpriseOnlyFields), len(got), len(full))
+		}
+		for _, s := range got {
+			if enterpriseOnlyFields[s.field] {
+				t.Errorf("plan %q must not include enterprise-only field %s", plan, s.field)
+			}
+		}
+	}
+}
+
+func TestUnenforcedCause_PlanAware(t *testing.T) {
+	// The plan-aware cause sentence init prints above the manual-fix
+	// checklist (the bug the live Team-plan run exposed, where a plan
+	// limitation was mislabeled as an enterprise override).
+	enterprise := unenforcedCause("enterprise")
+	if !strings.Contains(enterprise, "enterprise") {
+		t.Errorf("enterprise cause should mention the enterprise level: %q", enterprise)
+	}
+
+	team := unenforcedCause("team")
+	if !strings.Contains(team, "set them by hand") {
+		t.Errorf("team cause should tell the teacher to set them by hand: %q", team)
+	}
+	// Team-plan teachers can't realistically switch plans, so don't
+	// suggest an Enterprise Cloud upgrade, and don't claim an enterprise pin.
+	if strings.Contains(team, "Enterprise Cloud") {
+		t.Errorf("team cause must NOT suggest an Enterprise Cloud upgrade: %q", team)
+	}
+	if strings.Contains(team, "pinned at the enterprise") {
+		t.Errorf("team cause must NOT claim an enterprise pin: %q", team)
+	}
+
+	// Unknown/empty plan gets a neutral note, not an enterprise claim.
+	unknown := unenforcedCause("")
+	if strings.Contains(unknown, "pinned at the enterprise level") {
+		t.Errorf("unknown-plan cause must not assert an enterprise pin: %q", unknown)
+	}
+}
+
+func TestApplyOrgMemberDefaults_ReadBackFailureIsNonBlocking(t *testing.T) {
+	// A transient failure on the read-back GET must not manufacture a
+	// false "lockdown INCOMPLETE": the writes returned success, so we
+	// warn (couldn't verify) but still report complete.
+	var (
+		mu      sync.Mutex
+		getCall int
+	)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		if r.Method == http.MethodGet {
+			getCall++
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	t.Cleanup(server.Close)
+	client := newTestRESTClient(t, server)
+
+	var out, errOut bytes.Buffer
+	complete, _, err := applyOrgMemberDefaults(client, &out, &errOut, "o", "team")
+	if err != nil {
+		t.Fatalf("applyOrgMemberDefaults: %v", err)
+	}
+	if !complete {
+		t.Errorf("a failed read-back must NOT downgrade a successful write to INCOMPLETE")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if getCall != 1 {
+		t.Errorf("read-back GET calls = %d, want 1", getCall)
+	}
+	if !strings.Contains(errOut.String(), "couldn't read the org back") {
+		t.Errorf("a read-back failure should warn that verification couldn't run: %q", errOut.String())
+	}
+}
+
+func TestManualHardeningSteps(t *testing.T) {
+	steps := manualHardeningSteps("cs50-fall-2026")
+	if len(steps) != 4 {
+		t.Fatalf("manualHardeningSteps = %d steps, want 4", len(steps))
+	}
+	url := "https://github.com/organizations/cs50-fall-2026/settings/member_privileges"
+	// Lists the four web-UI-only settings that init can't PATCH, each
+	// pointing at the org member-privileges page.
+	var joined string
+	for _, s := range steps {
+		joined += s.Setting + "\n"
+		if s.URL != url {
+			t.Errorf("step %q URL = %q, want %q", s.Setting, s.URL, url)
+		}
+	}
 	for _, want := range []string{
 		"App access requests",
 		"GitHub Apps",
 		"Projects base permissions",
 		"Branch renames",
 	} {
-		if !strings.Contains(got, want) {
-			t.Errorf("reminder missing %q:\n%s", want, got)
+		if !strings.Contains(joined, want) {
+			t.Errorf("manual hardening steps missing %q:\n%s", want, joined)
+		}
+	}
+	// Each instruction must be verb-first/imperative so the teacher
+	// knows the exact action (the verb matches the GitHub control:
+	// "Uncheck" for checkboxes, "Set" for dropdowns).
+	for _, s := range steps {
+		if !strings.HasPrefix(s.Setting, "Uncheck ") && !strings.HasPrefix(s.Setting, "Set ") {
+			t.Errorf("manual hardening step should start with an action verb (Uncheck/Set): %q", s.Setting)
 		}
 	}
 }
@@ -619,6 +920,10 @@ func TestEnablePages_CreatesAndSetsPublic(t *testing.T) {
 			putCalls++
 			_ = json.Unmarshal(body, &putBody)
 			w.WriteHeader(http.StatusNoContent)
+		case http.MethodGet:
+			// Visibility read-back: confirms the PUT stuck.
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"public":true}`))
 		default:
 			t.Errorf("unexpected method: %s", r.Method)
 		}
@@ -670,6 +975,9 @@ func TestEnablePages_AlreadyEnabledStillSetsPublic(t *testing.T) {
 			putCalls++
 			mu.Unlock()
 			w.WriteHeader(http.StatusNoContent)
+		case http.MethodGet:
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"public":true}`))
 		}
 	}))
 	t.Cleanup(server.Close)
@@ -693,6 +1001,70 @@ func TestEnablePages_AlreadyEnabledStillSetsPublic(t *testing.T) {
 	}
 	if errOut.Len() != 0 {
 		t.Errorf("happy path should leave stderr empty, got: %q", errOut.String())
+	}
+}
+
+func TestEnablePages_VisibilityReadBackCatchesSilentNoOp(t *testing.T) {
+	// PUT returns 204 (success) but a read-back shows the site is still
+	// private — an org/enterprise policy silently pinned visibility.
+	// Same 200-but-ignored bug class as the org lockdown: warn-only,
+	// non-blocking, but the teacher must be told (a private Pages site
+	// breaks the unauthenticated assignments.json fetch).
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodPost:
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{"url":"https://api.github.com/repos/o/r/pages","public":false}`))
+		case http.MethodPut:
+			w.WriteHeader(http.StatusNoContent)
+		case http.MethodGet:
+			// Visibility didn't stick despite the 204.
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"public":false}`))
+		}
+	}))
+	t.Cleanup(server.Close)
+	client := newTestRESTClient(t, server)
+
+	var out, errOut bytes.Buffer
+	if err := enablePages(client, &out, &errOut, "o", "r"); err != nil {
+		t.Fatalf("enablePages: %v", err)
+	}
+	if !strings.Contains(errOut.String(), "read-back shows it still private") {
+		t.Errorf("a silent visibility no-op should warn via read-back: %q", errOut.String())
+	}
+	if strings.Contains(out.String(), "Pages visibility set to public") {
+		t.Errorf("must not claim success when the read-back shows private: %q", out.String())
+	}
+}
+
+func TestEnablePages_VisibilityReadBackFailureIsNonBlocking(t *testing.T) {
+	// A failed read-back GET must not invent a false warning: the PUT
+	// reported success, so we stay quiet (mirrors the org-lockdown
+	// read-back's non-blocking behavior).
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodPost:
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{"url":"https://api.github.com/repos/o/r/pages","public":false}`))
+		case http.MethodPut:
+			w.WriteHeader(http.StatusNoContent)
+		case http.MethodGet:
+			w.WriteHeader(http.StatusInternalServerError)
+		}
+	}))
+	t.Cleanup(server.Close)
+	client := newTestRESTClient(t, server)
+
+	var out, errOut bytes.Buffer
+	if err := enablePages(client, &out, &errOut, "o", "r"); err != nil {
+		t.Fatalf("enablePages: %v", err)
+	}
+	if errOut.Len() != 0 {
+		t.Errorf("a failed visibility read-back must not warn: %q", errOut.String())
+	}
+	if !strings.Contains(out.String(), "Pages visibility set to public") {
+		t.Errorf("a 204 PUT with an unverifiable read-back should still report success: %q", out.String())
 	}
 }
 

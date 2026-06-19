@@ -25,7 +25,7 @@ release is not an error (student hasn't accepted/submitted yet);
 the per-assignment "X of Y submitted" log shows roster coverage.
 
 Environment (set by `collect-scores.yaml`):
-  CLASSROOM50_COLLECT_TOKEN — fine-grained PAT, Contents: read.
+  CLASSROOM50_SERVICE_TOKEN — fine-grained PAT, Contents: read.
   CLASSROOM_FILTER          — optional single-classroom limit.
   GITHUB_REPOSITORY_OWNER   — org name (auto-set by Actions).
   GITHUB_API_URL            — API URL on GHES runners.
@@ -35,7 +35,7 @@ Exit codes:
   0 — success.
   1 — operational failure (missing token, malformed scores.json,
       unrecoverable network error). The run log points the teacher
-      at `gh teacher rotate-collect-token` for PAT issues.
+      at `gh teacher rotate-service-token` for PAT issues.
 """
 
 from __future__ import annotations
@@ -104,9 +104,9 @@ def main() -> int:
         emit_error("GITHUB_REPOSITORY_OWNER is empty — this script must run inside a GitHub Actions workflow")
         return 1
 
-    collect_token = (os.environ.get("CLASSROOM50_COLLECT_TOKEN") or "").strip()
-    if not collect_token:
-        emit_error("CLASSROOM50_COLLECT_TOKEN is empty — run `gh teacher rotate-collect-token <org>` to provision it")
+    service_token = (os.environ.get("CLASSROOM50_SERVICE_TOKEN") or "").strip()
+    if not service_token:
+        emit_error("CLASSROOM50_SERVICE_TOKEN is empty — run `gh teacher rotate-service-token <org>` to provision it")
         return 1
 
     api_url = (
@@ -139,13 +139,13 @@ def main() -> int:
                 classroom_short=classroom_short,
                 assignments=assignments,
                 roster=roster,
-                collect_token=collect_token,
+                service_token=service_token,
             )
         except urllib.error.HTTPError as exc:
             if exc.code in (401, 403):
                 emit_error(
-                    f"{classroom_short}: collect token was rejected with HTTP {exc.code} "
-                    f"({exc.reason or 'no reason'}) — run `gh teacher rotate-collect-token {org}` "
+                    f"{classroom_short}: service token was rejected with HTTP {exc.code} "
+                    f"({exc.reason or 'no reason'}) — run `gh teacher rotate-service-token {org}` "
                     f"with a fine-grained PAT scoped to Contents: read on the student repos"
                 )
             else:
@@ -155,7 +155,7 @@ def main() -> int:
                 )
             return 1
 
-        # A collect token that can't read the student repos returns
+        # A service token that can't read the student repos returns
         # 404 for every repo (GitHub hides repo existence), which is
         # indistinguishable from "not submitted" -- so collect_classroom
         # reports the whole roster as unsubmitted and the run still exits
@@ -169,11 +169,11 @@ def main() -> int:
             emit_warning(
                 f"{classroom_short}: collected 0 submissions across "
                 f"{len(roster)} student(s) x {assignment_count} assignment(s). "
-                f"If you expected submissions, the CLASSROOM50_COLLECT_TOKEN may "
+                f"If you expected submissions, the CLASSROOM50_SERVICE_TOKEN may "
                 f"lack read access to the student repos (a fine-grained PAT "
                 f"returns 404 for repos outside its scope, which is "
                 f'indistinguishable from "not submitted"). Re-scope it to all '
-                f"org repos: gh teacher rotate-collect-token {org}"
+                f"org repos: gh teacher rotate-service-token {org}"
             )
 
         n_changes = apply_updates(scores, updates)
@@ -316,7 +316,7 @@ def collect_classroom(
     classroom_short: str,
     assignments: dict[str, Any],
     roster: list[dict[str, str]],
-    collect_token: str,
+    service_token: str,
 ) -> list[dict[str, Any]]:
     """Return validated result payloads for every (student,
     assignment) pair. Per-repo failures warn and skip; hard
@@ -350,7 +350,7 @@ def collect_classroom(
             repo_name = assignment_repo_name(classroom_short, slug, username)
 
             try:
-                release = latest_submit_release_or_none(api_url, org, repo_name, collect_token)
+                release = latest_submit_release_or_none(api_url, org, repo_name, service_token)
             except urllib.error.HTTPError as exc:
                 if is_hard_http_error(exc):
                     raise
@@ -369,7 +369,7 @@ def collect_classroom(
                 continue
 
             try:
-                payload = download_result_asset(api_url, release, collect_token)
+                payload = download_result_asset(api_url, release, service_token)
             except urllib.error.HTTPError as exc:
                 if is_hard_http_error(exc):
                     raise
@@ -402,7 +402,7 @@ def collect_classroom(
             # leaking an injected username into scores.json.
             if is_group:
                 payload["usernames"], degraded_warning = attribute_group_members(
-                    api_url, org, repo_name, username, collect_token, roster_logins
+                    api_url, org, repo_name, username, service_token, roster_logins
                 )
                 if degraded_warning is not None:
                     group_attribution_degraded += 1
@@ -434,8 +434,8 @@ def collect_classroom(
         emit_warning(
             f"{classroom_short}: {group_attribution_degraded} group submission(s) "
             f"credited to the repo owner only because the collaborator read failed "
-            f"(teammates not credited). This usually means CLASSROOM50_COLLECT_TOKEN "
-            f"lacks the collaborator-read permission — rotate it with `gh teacher rotate-collect-token`."
+            f"(teammates not credited). This usually means CLASSROOM50_SERVICE_TOKEN "
+            f"lacks the collaborator-read permission — rotate it with `gh teacher rotate-service-token`."
         )
 
     return results
@@ -1063,8 +1063,8 @@ def attribute_group_members(
         return [owner_username], (
             f"{org}/{repo}: could not read group collaborators "
             f"(HTTP {exc.code} {exc.reason or 'no reason'}); crediting the "
-            f"repo owner {owner_username!r} only. Ensure CLASSROOM50_COLLECT_TOKEN "
-            f"can read repository collaborators (see the collect-token wiki)."
+            f"repo owner {owner_username!r} only. Ensure CLASSROOM50_SERVICE_TOKEN "
+            f"can read repository collaborators (see the service-token wiki)."
         )
     except (json.JSONDecodeError, ValueError) as exc:
         return [owner_username], (
@@ -1170,14 +1170,22 @@ def _http_get(
                 time.sleep(delay)
                 continue
             raise
-        except urllib.error.URLError as exc:
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            # urllib wraps a connect-phase failure in URLError, but a
+            # timeout (or reset) during resp.read() raises socket.timeout
+            # (= TimeoutError, an OSError) which is NOT a URLError — so a
+            # stalled response body would otherwise escape this retry path
+            # and crash the run with a bare traceback past main()'s
+            # HTTPError handler. Catch all three so a read-phase stall
+            # retries and then wraps into the synthetic 599 that
+            # is_hard_http_error already classifies as a hard failure.
             if attempt < _retries - 1:
                 time.sleep(2 ** attempt)
                 continue
             raise urllib.error.HTTPError(
                 url=url,
                 code=599,
-                msg=f"network error: {exc.reason}",
+                msg=f"network error: {exc}",
                 hdrs=None,  # type: ignore[arg-type]
                 fp=None,
             ) from exc

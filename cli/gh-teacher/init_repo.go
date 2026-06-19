@@ -42,22 +42,80 @@ type orgMemberDefaultSetting struct {
 	// non-critical: a rejected `members_can_create_public_pages` on a
 	// non-Enterprise plan is expected and harmless, not a safety gap.
 	critical bool
+	// enterpriseOnly marks settings whose member-privileges toggle only
+	// exists on GitHub Enterprise Cloud. On Team/Free orgs (the primary
+	// audience) GitHub doesn't expose these — the API silently ignores
+	// the PATCH and the settings page has no such control — so init skips
+	// them entirely on non-enterprise plans (it neither attempts, verifies,
+	// nor lists them in the manual checklist), avoiding doomed writes and
+	// noise the teacher can't act on. They stay in the canonical list so
+	// an Enterprise-Cloud org still gets them. The Enterprise-only ones:
+	//   - members_can_create_internal_repositories (internal visibility is
+	//     an Enterprise feature).
+	//   - members_can_view_dependency_insights (no Team control).
+	//   - members_can_invite_outside_collaborators (Team has no such
+	//     toggle; only owners invite outside collaborators).
+	//   - members_can_create_public_repositories=false ("private repos
+	//     only"): on Team/Free GitHub couples public+private into a single
+	//     "all or none" choice — the legacy members_allowed_repository_
+	//     creation_type has no Team-valid "private" value, and the UI
+	//     auto-checks Public when you check Private. Since the student flow
+	//     REQUIRES members_can_create_private_repositories=true (gh student
+	//     accept creates the private repo as the student), forcing public
+	//     off is impossible on those plans without also breaking private
+	//     creation. Restricting members to private-only is documented as a
+	//     GitHub Enterprise Cloud-only capability, so this lockdown is
+	//     attempted only there.
+	enterpriseOnly bool
 }
 
-// orgMemberDefaultSettings: the org-level member policies, in apply
-// order. The intent (issue #112) is a least-privilege org where the
-// only member capability is private-repo creation; every other member
-// privilege and dangerous repo-admin capability is locked to org
-// owners. Because `gh student accept` now keeps the founder as repo
-// `admin` (so a group founder can add teammates), these org-level locks
-// are what defang that admin org-wide (no delete/transfer/visibility-
-// change/etc.).
+// orgMemberDefaultSettings returns the org-level member policies to apply
+// for the given plan, filtering out enterpriseOnly settings on
+// non-enterprise plans (Team/Free don't expose those toggles, so trying
+// to set/verify/report them is wasted effort and confusing noise). Pass
+// the org plan slug from preflight; an empty/unknown plan is treated as
+// non-enterprise (the conservative default — we only include the
+// Enterprise-only fields when we're sure the org is on Enterprise Cloud).
+func orgMemberDefaultSettings(plan string) []orgMemberDefaultSetting {
+	all := allOrgMemberDefaultSettings()
+	if plan == "enterprise" {
+		return all
+	}
+	filtered := make([]orgMemberDefaultSetting, 0, len(all))
+	for _, s := range all {
+		if s.enterpriseOnly {
+			continue
+		}
+		filtered = append(filtered, s)
+	}
+	return filtered
+}
+
+// allOrgMemberDefaultSettings: the full canonical list of org-level
+// member policies, in apply order. The intent (issue #112) is a
+// least-privilege org where the only member capability is private-repo
+// creation; every other member privilege and dangerous repo-admin
+// capability is locked to org owners. Because `gh student accept` now
+// keeps the founder as repo `admin` (so a group founder can add
+// teammates), these org-level locks are what defang that admin org-wide
+// (no delete/transfer/visibility-change/etc.). orgMemberDefaultSettings
+// filters this by plan for actual use.
 //
 // Notable entries:
 //   - default_repository_permission "none": new members get no implicit
 //     read access to other repos.
+//   - members_can_create_repositories true: master switch. On Team/Free
+//     the granular public/private booleans are slaved to it (true => both
+//     on, false => both off), so it must be true for the student flow to
+//     create private repos. Sending only the private boolean without this
+//     leaves BOTH off ("members can create no repositories").
 //   - members_can_create_private_repositories true: the one allowed
 //     member capability — gh student accept needs it.
+//   - members_can_create_public_repositories false (enterpriseOnly):
+//     "private repos only" exists only on GitHub Enterprise Cloud. On
+//     Team/Free, public and private are coupled into one "all or none"
+//     choice, and the student flow needs private creation ON — so init
+//     can't lock public off there and skips the field on those plans.
 //   - members_can_create_pages / _public_pages true: ENFORCED so the
 //     classroom50 config repo can publish its *public* Pages site (the
 //     unauthenticated assignments.json fetch the student flow depends
@@ -71,7 +129,7 @@ type orgMemberDefaultSetting struct {
 // access requests, repo-admin GitHub App installs, Projects base
 // permissions, branch renames) are NOT here — they can't be PATCHed;
 // init prints a manual-hardening reminder for them instead.
-func orgMemberDefaultSettings() []orgMemberDefaultSetting {
+func allOrgMemberDefaultSettings() []orgMemberDefaultSetting {
 	return []orgMemberDefaultSetting{
 		{
 			field:     "default_repository_permission",
@@ -81,24 +139,44 @@ func orgMemberDefaultSettings() []orgMemberDefaultSetting {
 			critical:  true,
 		},
 		{
+			// Master repo-creation switch. On Team/Free the granular
+			// public/private booleans are NOT independently settable —
+			// GitHub slaves them to this field: true => members may
+			// create repos (both public and private, since "private
+			// only" is Enterprise Cloud-only), false => members may
+			// create none. The student flow needs members to create
+			// their private repo (gh student accept), so this must be
+			// true. Sending only members_can_create_private_repositories
+			// without this leaves BOTH checkboxes off ("members can
+			// create no repositories"). On Enterprise Cloud the
+			// public-repo lockdown below narrows this to private-only.
+			field:     "members_can_create_repositories",
+			value:     true,
+			desc:      "member repo creation enabled",
+			manualFix: `under "Repository creation", allow members to create repositories`,
+			critical:  true,
+		},
+		{
 			field:     "members_can_create_private_repositories",
 			value:     true,
 			desc:      "private repo creation enabled",
 			manualFix: `under "Repository creation", check "Private" — without it, gh student accept can't create student repos`,
 		},
 		{
-			field:     "members_can_create_public_repositories",
-			value:     false,
-			desc:      "public repo creation disabled",
-			manualFix: `under "Repository creation", uncheck "Public" if your plan's settings page allows it`,
-			critical:  true,
+			field:          "members_can_create_public_repositories",
+			value:          false,
+			desc:           "public repo creation disabled",
+			manualFix:      `under "Repository creation", restrict members to private repositories only (GitHub Enterprise Cloud only)`,
+			critical:       true,
+			enterpriseOnly: true,
 		},
 		{
-			field:     "members_can_create_internal_repositories",
-			value:     false,
-			desc:      "internal repo creation disabled",
-			manualFix: `under "Repository creation", uncheck "Internal" if your plan offers it`,
-			critical:  true,
+			field:          "members_can_create_internal_repositories",
+			value:          false,
+			desc:           "internal repo creation disabled",
+			manualFix:      `under "Repository creation", uncheck "Internal" if your plan offers it`,
+			critical:       true,
+			enterpriseOnly: true,
 		},
 		{
 			// Enforced TRUE: the classroom50 config repo publishes a
@@ -165,11 +243,12 @@ func orgMemberDefaultSettings() []orgMemberDefaultSetting {
 			critical:  true,
 		},
 		{
-			field:     "members_can_view_dependency_insights",
-			value:     false,
-			desc:      "member dependency-insights viewing disabled",
-			manualFix: `uncheck "Allow members to view dependency insights"`,
-			critical:  true,
+			field:          "members_can_view_dependency_insights",
+			value:          false,
+			desc:           "member dependency-insights viewing disabled",
+			manualFix:      `uncheck "Allow members to view dependency insights"`,
+			critical:       true,
+			enterpriseOnly: true,
 		},
 		{
 			field:     "members_can_fork_private_repositories",
@@ -179,11 +258,12 @@ func orgMemberDefaultSettings() []orgMemberDefaultSetting {
 			critical:  true,
 		},
 		{
-			field:     "members_can_invite_outside_collaborators",
-			value:     false,
-			desc:      "member-invited outside collaborators disabled",
-			manualFix: `uncheck "Allow members to invite outside collaborators to repositories for this organization"`,
-			critical:  true,
+			field:          "members_can_invite_outside_collaborators",
+			value:          false,
+			desc:           "member-invited outside collaborators disabled",
+			manualFix:      `uncheck "Allow members to invite outside collaborators to repositories for this organization"`,
+			critical:       true,
+			enterpriseOnly: true,
 		},
 	}
 }
@@ -200,38 +280,147 @@ func orgMemberDefaultSettings() []orgMemberDefaultSetting {
 // from which critical fields the org rejected. init surfaces an
 // explicit "lockdown INCOMPLETE" warning when complete=false so a
 // half-locked org never hides behind a clean success line.
-func applyOrgMemberDefaults(client *api.RESTClient, out, errOut io.Writer, org string) (complete bool, err error) {
-	combined := make(map[string]any, len(orgMemberDefaultSettings()))
-	for _, s := range orgMemberDefaultSettings() {
+func applyOrgMemberDefaults(client *api.RESTClient, out, errOut io.Writer, org, plan string) (complete bool, unenforced []unenforcedSetting, err error) {
+	settings := orgMemberDefaultSettings(plan)
+	combined := make(map[string]any, len(settings))
+	for _, s := range settings {
 		combined[s.field] = s.value
 	}
 	body, err := json.Marshal(combined)
 	if err != nil {
-		return false, fmt.Errorf("encode body: %w", err)
+		return false, nil, fmt.Errorf("encode body: %w", err)
 	}
 	path := fmt.Sprintf("orgs/%s", url.PathEscape(org))
 	resp, err := client.Request(http.MethodPatch, path, bytes.NewReader(body))
 	if err != nil {
 		// A secondary-rate-limit 403 must not drop into the per-field
-		// fallback — that fires 15 more PATCHes and amplifies the
-		// throttle. Surface it as a transient error so a re-run retries.
+		// fallback — that fires one more PATCH per policy and amplifies
+		// the throttle. Surface it as a transient error so a re-run retries.
 		if isSecondaryRateLimit(err) {
-			return false, fmt.Errorf("PATCH %s: secondary rate limit (retry shortly): %w", path, err)
+			return false, nil, fmt.Errorf("PATCH %s: secondary rate limit (retry shortly): %w", path, err)
 		}
 		if isHTTPStatus(err, http.StatusForbidden) || isHTTPStatus(err, http.StatusUnprocessableEntity) {
-			return applyOrgMemberDefaultsPerField(client, out, errOut, org)
+			return applyOrgMemberDefaultsPerField(client, out, errOut, org, plan)
 		}
-		return false, fmt.Errorf("PATCH %s: %w", path, err)
+		return false, nil, fmt.Errorf("PATCH %s: %w", path, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	_, _ = io.Copy(io.Discard, resp.Body)
 	// go-gh returns non-2xx as err (handled above); this only
 	// catches a stray non-200 2xx.
 	if resp.StatusCode != http.StatusOK {
-		return false, fmt.Errorf("PATCH %s: unexpected status %d", path, resp.StatusCode)
+		return false, nil, fmt.Errorf("PATCH %s: unexpected status %d", path, resp.StatusCode)
 	}
-	_, _ = fmt.Fprintf(out, "%s: org member defaults locked down (%s)\n", org, orgMemberDefaultsSummary())
-	return true, nil
+	_, _ = fmt.Fprintf(out, "%s: org member defaults locked down (%s)\n", org, orgMemberDefaultsSummary(plan))
+	// A 200 is not proof the values stuck: enterprise-owned orgs accept
+	// the PATCH but silently keep enterprise-pinned fields at their
+	// policy value (e.g. members_can_invite_outside_collaborators). Read
+	// the org back and confirm the fields actually changed — the only
+	// way to catch a silent no-op, and the authoritative residual state.
+	ok, unenforced := verifyOrgDefaults(client, errOut, org, plan)
+	return ok, unenforced, nil
+}
+
+// unenforcedSetting is one org member-privilege policy whose live value
+// (read back from the org) does not match what init wants. It carries
+// the exact GitHub-UI instruction (manualFix) so init can render a
+// single, actionable "fix these by hand" checklist instead of a wall of
+// per-attempt warnings.
+type unenforcedSetting struct {
+	field     string
+	manualFix string
+	critical  bool
+}
+
+// orgDefaultVerdict is one setting's live-classification result, produced
+// by classifyOrgDefaults. It carries the source setting (so callers can
+// read field/desc/manualFix/critical) plus whether the live org value
+// matched the desired lockdown value. Both init's read-back
+// (verifyOrgDefaults) and audit's report (buildAuditReport) derive their
+// own output structs from this single classification so the
+// "compare live[field] to desired, track critical" logic lives in one
+// place.
+type orgDefaultVerdict struct {
+	setting  orgMemberDefaultSetting
+	enforced bool
+}
+
+// classifyOrgDefaults compares each in-scope (plan-filtered) member-default
+// setting against the live org values and reports per-setting whether it's
+// enforced, plus whether any *critical* setting is unenforced. It is the
+// single source of truth for interpreting a GET /orgs/{org} response
+// against the desired lockdown — shared by init's verifyOrgDefaults and
+// audit's buildAuditReport so the two can't drift.
+func classifyOrgDefaults(live map[string]any, plan string) (verdicts []orgDefaultVerdict, criticalMissed bool) {
+	settings := orgMemberDefaultSettings(plan)
+	verdicts = make([]orgDefaultVerdict, 0, len(settings))
+	for _, s := range settings {
+		enforced := orgFieldMatches(live[s.field], s.value)
+		verdicts = append(verdicts, orgDefaultVerdict{setting: s, enforced: enforced})
+		if !enforced && s.critical {
+			criticalMissed = true
+		}
+	}
+	return verdicts, criticalMissed
+}
+
+// verifyOrgDefaults reads the org back and returns every member-default
+// policy whose live value still doesn't match what init wants —
+// regardless of whether the earlier PATCH was rejected (422) or silently
+// ignored (200-but-unchanged). This single read-back is the authoritative
+// source of truth: it reflects what the teacher would actually see in the
+// settings UI, so init reports the real residual state rather than
+// replaying what it *tried* to do. ok is true when nothing critical is
+// unenforced. A read failure returns ok=true with a single warning (the
+// writes reported success; don't manufacture a false checklist).
+func verifyOrgDefaults(client *api.RESTClient, errOut io.Writer, org, plan string) (ok bool, unenforced []unenforcedSetting) {
+	path := fmt.Sprintf("orgs/%s", url.PathEscape(org))
+	var live map[string]any
+	if err := client.Get(path, &live); err != nil {
+		_, _ = fmt.Fprintf(errOut, "Warning: %s: couldn't read the org back to verify the member-privilege lockdown took effect (%v); spot-check https://github.com/organizations/%s/settings/member_privileges\n",
+			org, err, org)
+		return true, nil
+	}
+
+	verdicts, criticalMissed := classifyOrgDefaults(live, plan)
+	for _, v := range verdicts {
+		if v.enforced {
+			continue
+		}
+		unenforced = append(unenforced, unenforcedSetting{field: v.setting.field, manualFix: v.setting.manualFix, critical: v.setting.critical})
+	}
+	return !criticalMissed, unenforced
+}
+
+// unenforcedCause renders the plan-appropriate one-line explanation for
+// why init couldn't apply some member-privilege settings.
+//
+// On Team/Free plans (the common case for teachers) GitHub doesn't expose
+// these member-privilege toggles via the org API, so init can't set them —
+// the teacher just applies them by hand. We deliberately do NOT suggest
+// "upgrade to Enterprise Cloud": the audience is overwhelmingly Team-plan
+// teachers who can't realistically switch plans, so that advice is noise.
+// (On Enterprise Cloud the same fields are settable via the API unless an
+// enterprise owner has pinned them at the enterprise layer, in which case
+// only an enterprise owner can change them.) An enterprise org therefore
+// gets a different message; an unknown plan gets a neutral note.
+func unenforcedCause(plan string) string {
+	switch plan {
+	case "enterprise":
+		return "These are likely pinned at the enterprise level; an org owner can't change them from org settings — ask an enterprise owner, or set them by hand below."
+	case "team", "free", "":
+		return "GitHub doesn't expose these settings via the API on your plan, so set them by hand below."
+	default:
+		return "GitHub didn't apply these via the API; set them by hand below."
+	}
+}
+
+// orgFieldMatches compares a desired lockdown value against the value
+// GitHub returned for that field. JSON decoding renders booleans as
+// bool and strings as string, so a direct compare works for both the
+// bool toggles and the one string field (default_repository_permission).
+func orgFieldMatches(live, desired any) bool {
+	return live == desired
 }
 
 // isSecondaryRateLimit reports whether err is GitHub's secondary
@@ -255,12 +444,12 @@ func isSecondaryRateLimit(err error) bool {
 }
 
 // orgMemberDefaultsSummary renders the applied policies straight from
-// orgMemberDefaultSettings() so the combined-PATCH success line can't
+// orgMemberDefaultSettings(plan) so the combined-PATCH success line can't
 // drift from the canonical slice (it previously hand-listed the
 // policies in prose and silently fell out of sync). Reports the policy
 // count and joins each setting's `desc`.
-func orgMemberDefaultsSummary() string {
-	settings := orgMemberDefaultSettings()
+func orgMemberDefaultsSummary(plan string) string {
+	settings := orgMemberDefaultSettings(plan)
 	descs := make([]string, 0, len(settings))
 	for _, s := range settings {
 		descs = append(descs, s.desc)
@@ -269,44 +458,37 @@ func orgMemberDefaultsSummary() string {
 }
 
 // applyOrgMemberDefaultsPerField is the 403/422 fallback: one PATCH
-// per policy so one rejected field can't sink the others. Rejected
-// fields warn (with GitHub's error and a reachable manual fix);
-// applied ones are summarized to out.
-//
-// Returns complete=false when any *critical* lockdown field was
-// rejected (the caller turns that into a loud "repo-admin NOT defanged"
-// warning). A transient (non-403/422) error mid-loop still aborts init,
-// but first reports which policies were already applied and which were
-// never attempted — the org is left partially mutated and the teacher
-// needs to know exactly where, rather than getting a bare PATCH error.
-func applyOrgMemberDefaultsPerField(client *api.RESTClient, out, errOut io.Writer, org string) (complete bool, err error) {
+// per policy so one plan-gated field can't sink the others. It does NOT
+// warn per rejection — the authoritative residual state comes from the
+// single read-back at the end (verifyOrgDefaults), which reflects what
+// the teacher would actually see in the settings UI regardless of which
+// PATCHes were rejected vs. silently ignored. A transient (non-403/422)
+// error mid-loop still aborts init, but first reports which policies were
+// already applied and which were never attempted — the org is left
+// partially mutated and the teacher needs to know exactly where.
+func applyOrgMemberDefaultsPerField(client *api.RESTClient, out, errOut io.Writer, org, plan string) (complete bool, unenforced []unenforcedSetting, err error) {
 	path := fmt.Sprintf("orgs/%s", url.PathEscape(org))
 	settingsURL := fmt.Sprintf("https://github.com/organizations/%s/settings/member_privileges", org)
-	settings := orgMemberDefaultSettings()
+	settings := orgMemberDefaultSettings(plan)
 	var applied []string
-	criticalMissed := false
 	for i, s := range settings {
 		body, encErr := json.Marshal(map[string]any{s.field: s.value})
 		if encErr != nil {
-			return false, fmt.Errorf("encode body: %w", encErr)
+			return false, nil, fmt.Errorf("encode body: %w", encErr)
 		}
 		resp, reqErr := client.Request(http.MethodPatch, path, bytes.NewReader(body))
 		if reqErr != nil {
 			// A secondary-rate-limit 403 is NOT a plan-gated field
-			// rejection: retrying per-field amplifies the throttle and a
-			// "set it manually" hint would be wrong (the toggle works).
+			// rejection: retrying per-field amplifies the throttle.
 			// Treat it like any other transient error — report the
 			// partial state and abort so a re-run can finish cleanly.
 			if isSecondaryRateLimit(reqErr) {
 				reportPartialMemberDefaults(errOut, org, settings, applied, i, settingsURL)
-				return false, fmt.Errorf("PATCH %s: secondary rate limit: %w", path, reqErr)
+				return false, nil, fmt.Errorf("PATCH %s: secondary rate limit: %w", path, reqErr)
 			}
 			if isHTTPStatus(reqErr, http.StatusForbidden) || isHTTPStatus(reqErr, http.StatusUnprocessableEntity) {
-				if s.critical {
-					criticalMissed = true
-				}
-				_, _ = fmt.Fprintf(errOut, "Warning: %s: couldn't set %s (%v); %s at %s\n",
-					org, s.desc, reqErr, s.manualFix, settingsURL)
+				// Plan-gated rejection: don't warn here. The read-back
+				// below reports the true residual state as one checklist.
 				continue
 			}
 			// Transient/unexpected error (429/5xx/network): the org is
@@ -314,20 +496,25 @@ func applyOrgMemberDefaultsPerField(client *api.RESTClient, out, errOut io.Write
 			// never attempted before aborting, so the teacher can finish
 			// the lockdown manually or re-run from a known state.
 			reportPartialMemberDefaults(errOut, org, settings, applied, i, settingsURL)
-			return false, fmt.Errorf("PATCH %s: %w", path, reqErr)
+			return false, nil, fmt.Errorf("PATCH %s: %w", path, reqErr)
 		}
 		_, _ = io.Copy(io.Discard, resp.Body)
 		_ = resp.Body.Close()
 		if resp.StatusCode != http.StatusOK {
 			reportPartialMemberDefaults(errOut, org, settings, applied, i, settingsURL)
-			return false, fmt.Errorf("PATCH %s: unexpected status %d", path, resp.StatusCode)
+			return false, nil, fmt.Errorf("PATCH %s: unexpected status %d", path, resp.StatusCode)
 		}
 		applied = append(applied, s.desc)
 	}
 	if len(applied) > 0 {
 		_, _ = fmt.Fprintf(out, "%s: org member defaults set (%s)\n", org, strings.Join(applied, ", "))
 	}
-	return !criticalMissed, nil
+	// The read-back is the single source of truth for what didn't land —
+	// covering both 422 rejections and 200-but-silently-ignored fields —
+	// so init can render one actionable checklist instead of per-field
+	// warnings.
+	ok, unenforced := verifyOrgDefaults(client, errOut, org, plan)
+	return ok, unenforced, nil
 }
 
 // reportPartialMemberDefaults warns that a transient error left the org
@@ -531,30 +718,9 @@ func ensureRepoActionsEnabled(client *api.RESTClient, out, errOut io.Writer, own
 	return nil
 }
 
-// checkOrgPlan warns when the org's plan can't serve Pages from a
-// private repo. Advisory — if Pages enable fails later, the teacher
-// gets a concrete error there.
-func checkOrgPlan(client *api.RESTClient, errOut io.Writer, org string) error {
-	path := fmt.Sprintf("orgs/%s", url.PathEscape(org))
-	var resp struct {
-		Plan struct {
-			Name string `json:"name"`
-		} `json:"plan"`
-	}
-	if err := client.Get(path, &resp); err != nil {
-		return fmt.Errorf("GET %s: %w", path, err)
-	}
-	if resp.Plan.Name == "" {
-		// Org responses omit `plan` for callers without billing
-		// visibility; nothing to warn about.
-		return nil
-	}
-	if !plansThatSupportPrivatePages[resp.Plan.Name] {
-		_, _ = fmt.Fprintf(errOut, "Warning: %s is on plan %q; GitHub Pages from a private repo requires GitHub Team or Enterprise Cloud. The repo will be created, but `publish-pages.yaml` may fail to deploy.\n",
-			org, resp.Plan.Name)
-	}
-	return nil
-}
+// checkOrgPlan was removed: the org plan is read once in preflight
+// (checkOrgAccess + planCheck) and its advisory surfaced there, so init
+// no longer makes a second GET /orgs/{org} for the same warning.
 
 type configRepo struct {
 	ID            int64  `json:"id"`
@@ -670,8 +836,32 @@ func setPagesPublic(client *api.RESTClient, out, errOut io.Writer, owner, repo s
 			owner, repo, resp.StatusCode, owner, repo)
 		return nil
 	}
+	// A 204 doesn't prove the value stuck: `public` is an
+	// undocumented body field and an org/enterprise policy could pin
+	// visibility. Read it back and confirm — warn-only (non-blocking),
+	// and a read failure is silent (the PUT reported success; don't
+	// invent a false alarm), mirroring the org-lockdown read-back.
+	if public, known := readPagesPublic(client, owner, repo); known && !public {
+		_, _ = fmt.Fprintf(errOut, "Warning: %s/%s: set Pages visibility to public but a read-back shows it still private — likely pinned by an org or enterprise policy. Students fetch assignments.json unauthenticated, so a private Pages site breaks `gh student accept`. Set it manually at https://github.com/%s/%s/settings/pages → Visibility.\n",
+			owner, repo, owner, repo)
+		return nil
+	}
 	_, _ = fmt.Fprintf(out, "%s/%s: Pages visibility set to public\n", owner, repo)
 	return nil
+}
+
+// readPagesPublic GETs the repo Pages config and returns whether the
+// site is public. known=false on any read failure so the caller treats
+// an unverifiable read-back as non-blocking (no false alarm).
+func readPagesPublic(client *api.RESTClient, owner, repo string) (public, known bool) {
+	path := fmt.Sprintf("repos/%s/%s/pages", url.PathEscape(owner), url.PathEscape(repo))
+	var resp struct {
+		Public bool `json:"public"`
+	}
+	if err := client.Get(path, &resp); err != nil {
+		return false, false
+	}
+	return resp.Public, true
 }
 
 // applyBranchProtection sets minimal protection on the default
