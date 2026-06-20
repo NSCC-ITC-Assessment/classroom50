@@ -579,13 +579,22 @@ type classroomMigratedFromRef struct {
 }
 
 // scoresJSON: the gradebook written by `collect-scores.yaml`'s
-// collect_scores.py. `submissions` is keyed by assignment slug; each
-// value is that assignment's rows (one per student). The map is
-// non-nil (`{}`, not null) at scaffold time so the collect script
-// sees a well-formed file on first run.
+// collect_scores.py. The root `assignments` map is keyed by assignment
+// slug; each value is an assignmentBucket (`{type, entries}`). The map is
+// non-nil (`{}`, not null) at scaffold time so the collect script sees a
+// well-formed file on first run.
 type scoresJSON struct {
 	Schema      string                      `json:"schema"`
-	Submissions map[string][]map[string]any `json:"submissions"`
+	Assignments map[string]assignmentBucket `json:"assignments"`
+}
+
+// assignmentBucket: one assignment's gradebook — its mode (`type`) plus
+// the per-repo entries. Each entry decodes as a tolerant map[string]any
+// (download reads only a handful of well-known keys: owner,
+// member_usernames, submissions).
+type assignmentBucket struct {
+	Type    string           `json:"type"`
+	Entries []map[string]any `json:"entries"`
 }
 
 // classroomScaffold returns destination-path → content for the
@@ -623,7 +632,7 @@ func classroomScaffold(org, shortName, name, term string, entries []assignmentEn
 
 	scores := scoresJSON{
 		Schema:      scoresSchemaV1,
-		Submissions: map[string][]map[string]any{},
+		Assignments: map[string]assignmentBucket{},
 	}
 	scoresBytes, err := encodeJSONPretty(scores)
 	if err != nil {

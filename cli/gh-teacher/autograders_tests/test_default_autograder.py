@@ -79,7 +79,12 @@ class TestDefaultAutograder:
         assert result["schema"] == "classroom50/result/v1"
         assert result["classroom"] == BASE_ENV["CLASSROOM"]
         assert result["assignment"] == BASE_ENV["ASSIGNMENT"]
-        assert result["usernames"] == [BASE_ENV["USERNAME"]]
+        # No `usernames` field anymore; identity is `owner` (falls back to
+        # USERNAME when OWNER is unset) and `assignment_type` (defaults to
+        # individual when ASSIGNMENT_TYPE is unset).
+        assert "usernames" not in result
+        assert result["owner"] == BASE_ENV["USERNAME"]
+        assert result["assignment_type"] == "individual"
         assert result["submission"] == BASE_ENV["SUBMISSION_TAG"]
         assert result["commit"] == BASE_ENV["COMMIT_URL"]
         assert result["release"] == BASE_ENV["RELEASE_URL"]
@@ -183,4 +188,7 @@ class TestDefaultAutograder:
 
         result = json.loads((tmp_path / "result.json").read_text())
         assert result["schema"] == "classroom50/result/v1"
-        assert result["usernames"] == [""]
+        # owner falls back to the (empty) USERNAME; no usernames field.
+        assert "usernames" not in result
+        assert result["owner"] == ""
+        assert result["assignment_type"] == "individual"

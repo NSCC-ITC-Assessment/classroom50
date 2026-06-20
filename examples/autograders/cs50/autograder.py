@@ -31,7 +31,9 @@ CHECK50_SPEC_PREFIX = "cs50/problems/2026/x/"
 # Read everything the runner gave us.
 classroom = os.environ.get("CLASSROOM", "")
 assignment = os.environ.get("ASSIGNMENT", "")
+assignment_type = os.environ.get("ASSIGNMENT_TYPE", "") or "individual"
 username = os.environ.get("USERNAME", "")
+owner = os.environ.get("OWNER", "") or username
 submission = os.environ.get("SUBMISSION_TAG", "")
 commit_url = os.environ.get("COMMIT_URL", "")
 release_url = os.environ.get("RELEASE_URL", "")
@@ -80,7 +82,8 @@ result = {
     "schema":     "classroom50/result/v1",
     "classroom":  classroom,
     "assignment": assignment,
-    "usernames":  [username],
+    "assignment_type": assignment_type,
+    "owner":      owner,
     "submission": submission,
     "commit":     commit_url,
     "release":    release_url,

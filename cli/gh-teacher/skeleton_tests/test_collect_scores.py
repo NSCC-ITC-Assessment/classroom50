@@ -31,14 +31,19 @@ def make_result(
     score: int = 10,
     max_score: int = 10,
     submission_tag: str = "submit/2026-06-01T14-32-05Z",
+    assignment_type: str = "individual",
     **overrides,
 ) -> dict:
-    """Return a valid v1 result payload, with overrides for the targeted field."""
+    """Return a valid v1 result payload, with overrides for the targeted
+    field. Carries `owner` (== username, the identity anchor) and
+    `assignment_type`. There is no `usernames` field — who pushed is
+    `submitted_by`, who owns the repo is `owner`."""
     base = {
         "schema": cs.RESULT_SCHEMA_V1,
         "classroom": classroom,
         "assignment": assignment,
-        "usernames": [username],
+        "assignment_type": assignment_type,
+        "owner": username,
         "submission": submission_tag,
         "commit": "https://github.com/cs50/cs-principles-hello-alice/commit/abc",
         "release": "https://github.com/cs50/cs-principles-hello-alice/releases/tag/submit%2F2026-06-01T14-32-05Z",
@@ -54,13 +59,24 @@ def make_result(
     return base
 
 
-def stored_row(**kwargs) -> dict:
-    """The gradebook row apply_updates stores: a result payload with
-    the `assignment` field dropped (it's the bucket key). Everything
-    else (schema, tests, submission, ...) is retained."""
-    row = make_result(**kwargs)
-    row.pop("assignment", None)
-    return row
+def stored_record(**kwargs) -> dict:
+    """A stored submission record: the result payload minus `assignment`
+    (the bucket key). owner + assignment_type are retained."""
+    rec = make_result(**kwargs)
+    rec.pop("assignment", None)
+    return rec
+
+
+def make_update(*, assignment: str = "hello", assignment_type: str = "individual", **kwargs) -> dict:
+    """An apply_updates input entry: a result-shaped record carrying the
+    transport hints `_assignment` (bucket slug) and `_type` (mode) that
+    apply_updates buckets on and strips on store. owner stays; the bucket
+    key `assignment` is dropped."""
+    rec = make_result(assignment=assignment, assignment_type=assignment_type, **kwargs)
+    rec.pop("assignment", None)
+    rec["_assignment"] = assignment
+    rec["_type"] = assignment_type
+    return rec
 
 
 def write_roster(path, rows: list[dict[str, str]]) -> None:
@@ -92,7 +108,7 @@ def write_minimal_classroom(root: pathlib.Path) -> pathlib.Path:
     )
     write_roster(classroom / "students.csv", [{"username": "alice", "github_id": "111"}])
     (classroom / "scores.json").write_text(
-        json.dumps({"schema": cs.SCORES_SCHEMA_V1, "submissions": {}})
+        json.dumps({"schema": cs.SCORES_SCHEMA_V1, "assignments": {}})
     )
     return classroom
 
@@ -101,255 +117,260 @@ def write_minimal_classroom(root: pathlib.Path) -> pathlib.Path:
 
 
 class TestRowKey:
-    def test_prefers_owner_field_lowercased(self):
-        # The stable key is the repo owner, not the credited usernames.
-        assert cs.row_key({"owner": "Alice", "usernames": ["alice", "bob"]}) == "alice"
+    def test_keys_on_owner_field_lowercased(self):
+        # The stable key is the repo owner.
+        assert cs.row_key({"owner": "Alice"}) == "alice"
 
-    def test_owner_invariant_across_changing_usernames(self):
-        # Same owner, different credited sets -> same key (the #104 fix).
-        full = {"owner": "alice", "usernames": ["alice", "bob"]}
-        degraded = {"owner": "alice", "usernames": ["alice"]}
+    def test_owner_invariant_across_changing_member_sets(self):
+        # Same owner, different credited member sets -> same key (the #104
+        # fix). member_usernames does not affect keying.
+        full = {"owner": "alice", "member_usernames": ["alice", "bob"]}
+        degraded = {"owner": "alice", "member_usernames": ["alice"]}
         assert cs.row_key(full) == cs.row_key(degraded) == "alice"
 
-    def test_falls_back_to_sole_username(self):
-        # A row without `owner` (individual, or written before owner
-        # existed) keys on its single username.
-        assert cs.row_key({"usernames": ["Alice"]}) == "alice"
+    def test_owner_required_no_fallback(self):
+        # row_key requires an explicit `owner`. A record carrying only
+        # `member_usernames` (no owner) is unkeyable — there is no
+        # fallback and no legacy migration; every canonical entry has owner.
+        assert cs.row_key({"member_usernames": ["alice"]}) is None
 
-    def test_missing_owner_and_usernames_returns_none(self):
+    def test_missing_owner_returns_none(self):
         assert cs.row_key({"datetime": "x"}) is None
 
-    def test_empty_usernames_returns_none(self):
-        assert cs.row_key({"usernames": []}) is None
+    def test_empty_owner_returns_none(self):
+        assert cs.row_key({"owner": ""}) is None
 
-    def test_non_string_username_returns_none(self):
-        assert cs.row_key({"usernames": [123]}) is None
-
-    def test_multi_username_without_owner_is_unkeyable(self):
-        # A legacy multi-username group row with no `owner` has no stable
-        # key here; apply_updates migrates it in place (adopts it for the
-        # owner-keyed update whose owner is a member). row_key returns None
-        # rather than guessing which member is the owner.
-        assert cs.row_key({"usernames": ["alice", "bob"]}) is None
+    def test_non_string_owner_returns_none(self):
+        assert cs.row_key({"owner": 123}) is None
 
 
 # apply_updates ---------------------------------------------------------------
 
 
 class TestApplyUpdates:
-    def test_appends_new_submission(self):
-        scores = {"schema": cs.SCORES_SCHEMA_V1, "submissions": {}}
-        changes = cs.apply_updates(scores, [make_result()])
+    def test_appends_new_entry(self):
+        scores = {"schema": cs.SCORES_SCHEMA_V1, "assignments": {}}
+        update = make_update()
+        changes = cs.apply_updates(scores, [update])
         assert changes == 1
-        assert scores["submissions"] == {"hello": [stored_row()]}
+        assert scores["assignments"]["hello"]["type"] == "individual"
+        assert scores["assignments"]["hello"]["entries"] == [cs.entry_from_result(update)]
 
     def test_buckets_by_assignment(self):
         # Each assignment is its own bucket, keyed by slug.
-        scores = {"schema": cs.SCORES_SCHEMA_V1, "submissions": {}}
-        changes = cs.apply_updates(
-            scores,
-            [
-                make_result(assignment="hello", username="alice"),
-                make_result(assignment="goodbye", username="alice"),
-            ],
-        )
+        scores = {"schema": cs.SCORES_SCHEMA_V1, "assignments": {}}
+        hello = make_update(assignment="hello", username="alice")
+        goodbye = make_update(assignment="goodbye", username="alice")
+        changes = cs.apply_updates(scores, [hello, goodbye])
         assert changes == 2
-        assert set(scores["submissions"]) == {"hello", "goodbye"}
-        assert scores["submissions"]["hello"] == [stored_row(assignment="hello", username="alice")]
-        assert scores["submissions"]["goodbye"] == [stored_row(assignment="goodbye", username="alice")]
+        assert set(scores["assignments"]) == {"hello", "goodbye"}
+        assert scores["assignments"]["hello"]["entries"] == [cs.entry_from_result(hello)]
+        assert scores["assignments"]["goodbye"]["entries"] == [cs.entry_from_result(goodbye)]
 
-    def test_stored_row_drops_assignment_keeps_other_fields(self):
-        # The bucket key is the assignment, so the row must not
-        # duplicate it, but schema/tests/submission are retained.
-        scores = {"schema": cs.SCORES_SCHEMA_V1, "submissions": {}}
-        cs.apply_updates(scores, [make_result()])
-        row = scores["submissions"]["hello"][0]
-        assert "assignment" not in row
-        assert row["schema"] == cs.RESULT_SCHEMA_V1
-        assert row["tests"]  # per-test breakdown retained
-        assert row["submission"].startswith("submit/")
+    def test_stored_entry_drops_transport_hints_keeps_other_fields(self):
+        # The bucket placement is driven by `_assignment`/`_type`, so the
+        # stored entry must not carry them, but owner/submissions are kept.
+        scores = {"schema": cs.SCORES_SCHEMA_V1, "assignments": {}}
+        cs.apply_updates(scores, [make_update()])
+        entry = scores["assignments"]["hello"]["entries"][0]
+        assert "_assignment" not in entry
+        assert "_type" not in entry
+        assert entry["owner"] == "alice"
 
-    def test_replaces_existing_submission_in_place(self):
-        # Row order within a bucket is preserved across collect runs.
-        first = stored_row(username="alice", score=10)
-        second = stored_row(username="bob", score=5)
-        scores = {"schema": cs.SCORES_SCHEMA_V1, "submissions": {"hello": [first, second]}}
-        updated_alice = make_result(
+    def test_replaces_existing_entry_in_place(self):
+        # Entry order within a bucket is preserved across collect runs.
+        first = make_update(username="alice", score=10)
+        second = make_update(username="bob", score=5)
+        scores = {"schema": cs.SCORES_SCHEMA_V1, "assignments": {}}
+        cs.apply_updates(scores, [first, second])
+
+        updated_alice = make_update(
             username="alice", score=20, submission_tag="submit/2026-06-02T10-00-00Z"
         )
         changes = cs.apply_updates(scores, [updated_alice])
         assert changes == 1
-        assert scores["submissions"]["hello"][0] == stored_row(
-            username="alice", score=20, submission_tag="submit/2026-06-02T10-00-00Z"
-        )
-        assert scores["submissions"]["hello"][1] == second  # bob is untouched
+        entries = scores["assignments"]["hello"]["entries"]
+        assert entries[0] == cs.entry_from_result(updated_alice)
+        assert entries[1] == cs.entry_from_result(second)  # bob is untouched
 
-    def test_skips_overridden_rows(self):
+    def test_skips_overridden_entries(self):
         # Override contract: teacher correction is final until cleared.
         # A fresh result must not silently overwrite it.
-        existing = stored_row(username="alice", score=20)
-        existing["override"] = True
-        scores = {"schema": cs.SCORES_SCHEMA_V1, "submissions": {"hello": [existing]}}
-        incoming = make_result(username="alice", score=5)
+        existing = make_update(username="alice", score=20)
+        scores = {"schema": cs.SCORES_SCHEMA_V1, "assignments": {}}
+        cs.apply_updates(scores, [existing])
+        scores["assignments"]["hello"]["entries"][0]["override"] = True
+        snapshot = dict(scores["assignments"]["hello"]["entries"][0])
+
+        incoming = make_update(username="alice", score=5)
         changes = cs.apply_updates(scores, [incoming])
         assert changes == 0
-        assert scores["submissions"]["hello"][0] == existing
+        assert scores["assignments"]["hello"]["entries"][0] == snapshot
 
     def test_override_false_is_not_a_skip_signal(self):
         # Explicit "override": false is treated like absent for
         # the refresh decision, but preserved on replacement.
-        existing = stored_row(username="alice", score=5)
-        existing["override"] = False
-        scores = {"schema": cs.SCORES_SCHEMA_V1, "submissions": {"hello": [existing]}}
-        incoming = make_result(username="alice", score=10)
+        scores = {"schema": cs.SCORES_SCHEMA_V1, "assignments": {}}
+        cs.apply_updates(scores, [make_update(username="alice", score=5)])
+        scores["assignments"]["hello"]["entries"][0]["override"] = False
+
+        incoming = make_update(username="alice", score=10)
         changes = cs.apply_updates(scores, [incoming])
         assert changes == 1
-        assert scores["submissions"]["hello"][0]["score"] == 10
-        assert scores["submissions"]["hello"][0]["override"] is False
+        entry = scores["assignments"]["hello"]["entries"][0]
+        assert entry["score"] == 10
+        assert entry["override"] is False
 
     def test_identical_incoming_is_a_noop(self):
         # `same_submission` gates re-runs: stable classroom → no commits.
-        existing = stored_row()
-        scores = {"schema": cs.SCORES_SCHEMA_V1, "submissions": {"hello": [existing]}}
-        changes = cs.apply_updates(scores, [make_result()])
+        scores = {"schema": cs.SCORES_SCHEMA_V1, "assignments": {}}
+        cs.apply_updates(scores, [make_update()])
+        changes = cs.apply_updates(scores, [make_update()])
         assert changes == 0
 
     def test_identical_modulo_override_field_is_a_noop(self):
         # "override": false on existing vs absent on incoming →
         # same effective data, no change.
-        existing = stored_row()
-        existing["override"] = False
-        scores = {"schema": cs.SCORES_SCHEMA_V1, "submissions": {"hello": [existing]}}
-        changes = cs.apply_updates(scores, [make_result()])
+        scores = {"schema": cs.SCORES_SCHEMA_V1, "assignments": {}}
+        cs.apply_updates(scores, [make_update()])
+        scores["assignments"]["hello"]["entries"][0]["override"] = False
+        changes = cs.apply_updates(scores, [make_update()])
         assert changes == 0
         # Existing override field is preserved (no overwrite).
-        assert scores["submissions"]["hello"][0]["override"] is False
+        assert scores["assignments"]["hello"]["entries"][0]["override"] is False
 
-    def test_handles_malformed_existing_row_gracefully(self):
+    def test_handles_malformed_existing_entry_gracefully(self):
         # A hand-edited non-dict entry doesn't crash the collector;
-        # apply_updates ignores it and appends the new row.
-        scores = {"schema": cs.SCORES_SCHEMA_V1, "submissions": {"hello": ["junk"]}}
-        changes = cs.apply_updates(scores, [make_result()])
+        # apply_updates ignores it and appends the new entry.
+        scores = {
+            "schema": cs.SCORES_SCHEMA_V1,
+            "assignments": {"hello": {"type": "individual", "entries": ["junk"]}},
+        }
+        update = make_update()
+        changes = cs.apply_updates(scores, [update])
         assert changes == 1
-        # The junk row stays where it was; the new row appends.
-        assert scores["submissions"]["hello"][0] == "junk"
-        assert scores["submissions"]["hello"][1] == stored_row()
+        entries = scores["assignments"]["hello"]["entries"]
+        # The junk entry stays where it was; the new entry appends.
+        assert entries[0] == "junk"
+        assert entries[1] == cs.entry_from_result(update)
 
     def test_multiple_updates_apply_in_order(self):
-        scores = {"schema": cs.SCORES_SCHEMA_V1, "submissions": {}}
+        scores = {"schema": cs.SCORES_SCHEMA_V1, "assignments": {}}
         updates = [
-            make_result(username="alice"),
-            make_result(username="bob"),
-            make_result(username="alice", score=99),  # Replaces.
+            make_update(username="alice"),
+            make_update(username="bob"),
+            make_update(username="alice", score=99),  # Replaces.
         ]
         changes = cs.apply_updates(scores, updates)
         assert changes == 3  # alice insert, bob insert, alice replace
-        bucket = scores["submissions"]["hello"]
-        assert [s["usernames"][0] for s in bucket] == ["alice", "bob"]
-        assert bucket[0]["score"] == 99
+        entries = scores["assignments"]["hello"]["entries"]
+        assert [e["owner"] for e in entries] == ["alice", "bob"]
+        assert entries[0]["score"] == 99
 
-    def test_adds_late_field_to_existing_matching_row(self):
-        # Upgrading the collector should refresh old rows when the
-        # only data change is the newly-derived lateness field.
-        existing = stored_row(username="alice")
-        scores = {"schema": cs.SCORES_SCHEMA_V1, "submissions": {"hello": [existing]}}
-        incoming = make_result(username="alice", late=False)
+    def test_adds_late_field_to_existing_matching_entry(self):
+        # Upgrading the collector should refresh old entries when the
+        # only data change is the newly-derived lateness field on a record.
+        scores = {"schema": cs.SCORES_SCHEMA_V1, "assignments": {}}
+        cs.apply_updates(scores, [make_update(username="alice")])
+        incoming = make_update(username="alice", late=False)
 
         changes = cs.apply_updates(scores, [incoming])
 
         assert changes == 1
-        assert scores["submissions"]["hello"][0]["late"] is False
+        assert scores["assignments"]["hello"]["entries"][0]["late"] is False
 
     def test_group_degraded_recollect_replaces_not_duplicates(self):
         # Issue #104 / F2 regression. First collect credits a group's full
         # member list; a later collect whose collaborator read degraded to
-        # owner-only must REPLACE the same row (keyed on the owner), not
-        # append a second one. Before the owner-keying fix this left two
-        # rows (("alice","bob") and ("alice",)).
-        scores = {"schema": cs.SCORES_SCHEMA_V1, "submissions": {}}
-        full = make_result(username="alice", owner="alice",
-                           usernames=["alice", "bob"], score=8)
+        # owner-only must REPLACE the same entry (keyed on the owner), not
+        # append a second one.
+        scores = {"schema": cs.SCORES_SCHEMA_V1, "assignments": {}}
+        full = make_update(username="alice", assignment_type="group", score=8)
+        full["member_usernames"] = ["alice", "bob"]
         assert cs.apply_updates(scores, [full]) == 1
-        assert len(scores["submissions"]["hello"]) == 1
+        assert len(scores["assignments"]["hello"]["entries"]) == 1
 
-        degraded = make_result(username="alice", owner="alice",
-                               usernames=["alice"], score=8)
+        degraded = make_update(username="alice", assignment_type="group", score=8)
+        degraded["member_usernames"] = ["alice"]
         changes = cs.apply_updates(scores, [degraded])
         assert changes == 1
-        bucket = scores["submissions"]["hello"]
-        assert len(bucket) == 1, f"expected exactly one row, got {bucket!r}"
-        assert bucket[0]["usernames"] == ["alice"]
+        entries = scores["assignments"]["hello"]["entries"]
+        assert len(entries) == 1, f"expected exactly one entry, got {entries!r}"
+        assert entries[0]["member_usernames"] == ["alice"]
 
-    def test_group_membership_change_replaces_same_owner_row(self):
+    def test_group_membership_change_replaces_same_owner_entry(self):
         # A teammate is added/removed between collects: same owner -> same
-        # row, updated in place.
-        scores = {"schema": cs.SCORES_SCHEMA_V1, "submissions": {}}
-        cs.apply_updates(scores, [make_result(owner="alice", usernames=["alice"], score=5)])
-        cs.apply_updates(scores, [make_result(owner="alice", usernames=["alice", "bob"], score=5)])
-        bucket = scores["submissions"]["hello"]
-        assert len(bucket) == 1
-        assert bucket[0]["usernames"] == ["alice", "bob"]
+        # entry, updated in place.
+        scores = {"schema": cs.SCORES_SCHEMA_V1, "assignments": {}}
+        first = make_update(username="alice", assignment_type="group", score=5)
+        first["member_usernames"] = ["alice"]
+        cs.apply_updates(scores, [first])
+        second = make_update(username="alice", assignment_type="group", score=5)
+        second["member_usernames"] = ["alice", "bob"]
+        cs.apply_updates(scores, [second])
+        entries = scores["assignments"]["hello"]["entries"]
+        assert len(entries) == 1
+        assert entries[0]["member_usernames"] == ["alice", "bob"]
 
-    def test_owner_field_persisted_in_row(self):
-        # The owner is a first-class row field (download.go reads rows as
-        # map[string]any, so the extra key is tolerated) and survives ingest.
-        scores = {"schema": cs.SCORES_SCHEMA_V1, "submissions": {}}
-        cs.apply_updates(scores, [make_result(owner="alice", usernames=["alice", "bob"])])
-        assert scores["submissions"]["hello"][0]["owner"] == "alice"
+    def test_owner_field_persisted_in_entry(self):
+        # The owner is a first-class entry field and survives ingest.
+        scores = {"schema": cs.SCORES_SCHEMA_V1, "assignments": {}}
+        cs.apply_updates(scores, [make_update(username="alice")])
+        assert scores["assignments"]["hello"]["entries"][0]["owner"] == "alice"
 
-    def test_distinct_owners_are_distinct_rows(self):
+    def test_distinct_owners_are_distinct_entries(self):
         # Two different group repos (different owners) for the same
-        # assignment are separate rows even if their member sets overlap.
-        scores = {"schema": cs.SCORES_SCHEMA_V1, "submissions": {}}
-        cs.apply_updates(scores, [make_result(owner="alice", usernames=["alice", "bob"])])
-        cs.apply_updates(scores, [make_result(owner="carol", usernames=["carol", "bob"])])
-        assert len(scores["submissions"]["hello"]) == 2
+        # assignment are separate entries even if their member sets overlap.
+        scores = {"schema": cs.SCORES_SCHEMA_V1, "assignments": {}}
+        a = make_update(username="alice", assignment_type="group")
+        a["member_usernames"] = ["alice", "bob"]
+        c = make_update(username="carol", assignment_type="group")
+        c["member_usernames"] = ["carol", "bob"]
+        cs.apply_updates(scores, [a])
+        cs.apply_updates(scores, [c])
+        assert len(scores["assignments"]["hello"]["entries"]) == 2
 
-    def test_legacy_group_row_migrated_in_place(self):
-        # Migration: a pre-fix legacy group row (multi-username, NO owner —
-        # a #104 duplicate) is ADOPTED by the first owner-keyed update whose
-        # owner is among its members, not left as a permanent orphan.
-        legacy = stored_row(username="alice", score=8)
-        legacy["usernames"] = ["alice", "bob"]   # multi-username, no `owner`
+    def test_owner_less_existing_entry_is_not_adopted(self):
+        # Legacy migration removed: an existing owner-less entry is
+        # unkeyable, so an incoming owner-keyed update does NOT adopt it —
+        # it appends a fresh canonical entry and leaves the owner-less one
+        # untouched.
+        legacy = make_update(username="alice", score=8)
         legacy.pop("owner", None)
-        scores = {"schema": cs.SCORES_SCHEMA_V1, "submissions": {"hello": [legacy]}}
+        scores = {
+            "schema": cs.SCORES_SCHEMA_V1,
+            "assignments": {"hello": {"type": "individual", "entries": [legacy]}},
+        }
 
-        incoming = make_result(username="alice", owner="alice",
-                               usernames=["alice", "bob"], score=8)
+        incoming = make_update(username="alice", score=8)
         changes = cs.apply_updates(scores, [incoming])
-        bucket = scores["submissions"]["hello"]
-        assert len(bucket) == 1, f"legacy row should be migrated in place, got {bucket!r}"
-        assert bucket[0]["owner"] == "alice"
+        entries = scores["assignments"]["hello"]["entries"]
         assert changes == 1
+        assert len(entries) == 2  # owner-less entry left as-is; new one appended
+        assert "owner" not in entries[0]
+        assert entries[1]["owner"] == "alice"
 
-    def test_legacy_individual_row_matched_by_owner_update(self):
-        # Back-compat: an existing individual row written WITHOUT `owner`
-        # (usernames=[alice]) is matched (sole-username fallback) by an
-        # incoming owner-stamped update — replaced in place, no duplicate.
-        legacy = stored_row(username="alice", score=5)
-        legacy.pop("owner", None)
-        assert "owner" not in legacy
-        scores = {"schema": cs.SCORES_SCHEMA_V1, "submissions": {"hello": [legacy]}}
-        cs.apply_updates(scores, [make_result(username="alice", owner="alice", score=9)])
-        bucket = scores["submissions"]["hello"]
-        assert len(bucket) == 1
-        assert bucket[0]["score"] == 9
-        assert bucket[0]["owner"] == "alice"
+    def test_owner_less_update_is_skipped(self):
+        # An incoming update with no `owner` is unkeyable and skipped
+        # entirely (no fallback).
+        scores = {"schema": cs.SCORES_SCHEMA_V1, "assignments": {}}
+        update = make_update(username="alice")
+        update.pop("owner", None)
+        changes = cs.apply_updates(scores, [update])
+        assert changes == 0
+        assert scores["assignments"] == {}
 
-    def test_legacy_migration_respects_override(self):
-        # A legacy group row a teacher pinned (override:true) is NOT
-        # adopted/overwritten by migration.
-        legacy = stored_row(username="alice", score=8)
-        legacy["usernames"] = ["alice", "bob"]
-        legacy.pop("owner", None)
-        legacy["override"] = True
-        scores = {"schema": cs.SCORES_SCHEMA_V1, "submissions": {"hello": [legacy]}}
-        cs.apply_updates(scores, [make_result(username="alice", owner="alice", score=99)])
-        bucket = scores["submissions"]["hello"]
-        # Pinned legacy row preserved; nothing appended either.
-        assert len(bucket) == 1
-        assert bucket[0]["score"] == 8
-        assert bucket[0]["override"] is True
+    def test_update_with_invalid_type_is_skipped_no_bucket_persisted(self):
+        # An update whose `_type` is missing/garbage must be skipped — and
+        # crucially must NOT create a new bucket with a bad `type` via
+        # setdefault (the latent type:None path).
+        scores = {"schema": cs.SCORES_SCHEMA_V1, "assignments": {}}
+        for bad_type in (None, "", "squad", 123):
+            update = make_update(username="alice")
+            update["_type"] = bad_type
+            changes = cs.apply_updates(scores, [update])
+            assert changes == 0
+            assert scores["assignments"] == {}, f"bad _type {bad_type!r} created a bucket"
 
 
 # validate_result -------------------------------------------------------------
@@ -383,23 +404,28 @@ class TestValidateResult:
         with pytest.raises(ValueError, match="assignment"):
             cs.validate_result(payload, "cs-principles", "hello", "alice")
 
-    def test_rejects_mismatched_username(self):
-        # Username must match the roster-derived value — that's the
-        # link back to scores by student.
+    def test_rejects_mismatched_owner(self):
+        # owner must match the roster-derived value — that's the link
+        # back to scores by student.
         payload = make_result(username="mallory")
-        with pytest.raises(ValueError, match="usernames"):
+        with pytest.raises(ValueError, match="owner"):
             cs.validate_result(payload, "cs-principles", "hello", "alice")
 
-    def test_username_match_is_case_insensitive(self):
+    def test_owner_match_is_case_insensitive(self):
         # GitHub treats usernames case-insensitively; collect mirrors that.
         payload = make_result(username="Alice")
         cs.validate_result(payload, "cs-principles", "hello", "alice")
 
-    def test_rejects_multi_user_payload_in_v02(self):
-        # Individual mode is strict: exactly one username.
+    def test_rejects_missing_owner(self):
         payload = make_result()
-        payload["usernames"] = ["alice", "bob"]
-        with pytest.raises(ValueError, match="one-element"):
+        del payload["owner"]
+        with pytest.raises(ValueError, match="owner"):
+            cs.validate_result(payload, "cs-principles", "hello", "alice")
+
+    def test_rejects_assignment_type_mismatch_individual(self):
+        # An individual-mode check rejects a group-typed payload.
+        payload = make_result(assignment_type="group")
+        with pytest.raises(ValueError, match="assignment_type"):
             cs.validate_result(payload, "cs-principles", "hello", "alice")
 
     def test_rejects_non_submit_tag(self):
@@ -457,30 +483,56 @@ class TestValidateResult:
         payload["tests"] = []
         cs.validate_result(payload, "cs-principles", "hello", "alice")
 
-    def test_group_mode_accepts_owner_only_usernames(self):
-        # The runner emits usernames=[owner] for a group repo (it can't
-        # read collaborators); collection rewrites it afterward.
-        payload = make_result(username="alice")
+    def test_group_mode_accepts_group_typed_payload(self):
+        # A group-typed payload validates under is_group=True.
+        payload = make_result(username="alice", assignment_type="group")
         cs.validate_result(payload, "cs-principles", "hello", "alice", is_group=True)
 
-    def test_group_mode_accepts_owner_among_many(self):
-        payload = make_result()
-        payload["usernames"] = ["alice", "bob", "carol"]
-        cs.validate_result(payload, "cs-principles", "hello", "alice", is_group=True)
-
-    def test_group_mode_rejects_payload_missing_owner(self):
-        # Identity defense survives in group mode: the repo owner must
-        # be present in usernames.
-        payload = make_result()
-        payload["usernames"] = ["bob", "carol"]
-        with pytest.raises(ValueError, match="group owner"):
+    def test_group_mode_rejects_individual_typed_payload(self):
+        # assignment_type must match the manifest-implied mode.
+        payload = make_result(username="alice", assignment_type="individual")
+        with pytest.raises(ValueError, match="assignment_type"):
             cs.validate_result(payload, "cs-principles", "hello", "alice", is_group=True)
 
-    def test_group_mode_rejects_empty_usernames(self):
-        payload = make_result()
-        payload["usernames"] = []
-        with pytest.raises(ValueError, match="non-empty list"):
+    def test_individual_mode_rejects_group_typed_payload(self):
+        payload = make_result(username="alice", assignment_type="group")
+        with pytest.raises(ValueError, match="assignment_type"):
+            cs.validate_result(payload, "cs-principles", "hello", "alice", is_group=False)
+
+    def test_group_mode_rejects_mismatched_owner(self):
+        # Identity defense survives in group mode: owner must match the
+        # repo-name-derived owner.
+        payload = make_result(username="bob", assignment_type="group")
+        with pytest.raises(ValueError, match="owner"):
             cs.validate_result(payload, "cs-principles", "hello", "alice", is_group=True)
+
+    def test_accepts_valid_submitted_by(self):
+        payload = make_result()
+        payload["submitted_by"] = {"username": "bob", "id": 222}
+        cs.validate_result(payload, "cs-principles", "hello", "alice")
+
+    def test_accepts_submitted_by_with_null_id(self):
+        payload = make_result()
+        payload["submitted_by"] = {"username": "bob", "id": None}
+        cs.validate_result(payload, "cs-principles", "hello", "alice")
+
+    def test_absent_submitted_by_is_valid(self):
+        # Back-compat: results produced before submitted_by existed.
+        payload = make_result()
+        assert "submitted_by" not in payload
+        cs.validate_result(payload, "cs-principles", "hello", "alice")
+
+    def test_rejects_submitted_by_missing_username(self):
+        payload = make_result()
+        payload["submitted_by"] = {"id": 222}
+        with pytest.raises(ValueError, match="submitted_by.username"):
+            cs.validate_result(payload, "cs-principles", "hello", "alice")
+
+    def test_rejects_submitted_by_non_int_id(self):
+        payload = make_result()
+        payload["submitted_by"] = {"username": "bob", "id": "222"}
+        with pytest.raises(ValueError, match="submitted_by.id"):
+            cs.validate_result(payload, "cs-principles", "hello", "alice")
 
 
 # Group attribution -----------------------------------------------------------
@@ -495,8 +547,26 @@ class TestGroupMemberUsernames:
             "https://api.github.com", "cs50", "cs-principles-hello-alice", "alice", "token",
             {"alice", "bob", "carol"},
         )
-        # Sorted, case-insensitively deduped, owner present.
-        assert members == ["alice", "bob", "Carol"]
+        # Sorted, case-insensitively deduped, owner present. Non-owner
+        # members are normalized to lowercase (deterministic across collects,
+        # so a casing change from GitHub's /collaborators can't churn the
+        # gradebook); the owner keeps its repo-derived casing.
+        assert members == ["alice", "bob", "carol"]
+
+    def test_member_casing_is_deterministic_across_collects(self, monkeypatch):
+        # Regression for gradebook churn: GitHub's /collaborators may return
+        # a login under different casing between collects. Non-owner members
+        # must normalize to a stable (lowercase) form so two collects of an
+        # unchanged group produce identical member_usernames.
+        def run(logins):
+            monkeypatch.setattr(cs, "list_repo_collaborator_logins", lambda *a, **k: logins)
+            return cs.group_member_usernames(
+                "https://api.github.com", "cs50", "cs-principles-hello-alice", "alice", "token",
+                {"alice", "bob", "carol"},
+            )
+        first = run(["Bob", "Carol"])
+        second = run(["bob", "carol"])  # same people, different API casing
+        assert first == second == ["alice", "bob", "carol"]
 
     def test_owner_guaranteed_even_if_not_listed(self, monkeypatch):
         # A partial/eventually-consistent collaborator read might omit
@@ -543,9 +613,44 @@ class TestGroupMemberUsernames:
         )
         assert members == ["Alice", "bob"]
 
+    def test_rostered_admin_teammate_is_credited(self, monkeypatch):
+        # Regression: a teammate who is an org OWNER is `admin` on every
+        # repo. The old code dropped all admins, crediting only the repo
+        # owner. Now crediting is roster-gated, so a rostered admin
+        # teammate is credited.
+        monkeypatch.setattr(
+            cs, "list_repo_collaborator_logins",
+            lambda *a, **k: ["cs50-duck"],
+        )
+        members = cs.group_member_usernames(
+            "https://api.github.com", "cs50", "cs-principles-hello-alice", "alice", "token",
+            {"alice", "cs50-duck"},
+        )
+        assert members == ["alice", "cs50-duck"]
+
+    def test_non_rostered_admin_is_excluded(self, monkeypatch):
+        # An instructor/TA who is admin but NOT on the roster is still
+        # excluded — the roster is the gate, and they aren't on it.
+        monkeypatch.setattr(
+            cs, "list_repo_collaborator_logins", lambda *a, **k: ["instructor", "bob"]
+        )
+        members = cs.group_member_usernames(
+            "https://api.github.com", "cs50", "cs-principles-hello-alice", "alice", "token",
+            {"alice", "bob"},
+        )
+        assert members == ["alice", "bob"]
+        assert "instructor" not in members
+
 
 class TestListRepoCollaboratorLogins:
-    def test_excludes_admins_and_paginates(self, monkeypatch):
+    def test_returns_all_collaborators_including_admins_and_paginates(self, monkeypatch):
+        # Crediting is gated on roster membership downstream
+        # (group_member_usernames), NOT on permission level, so this
+        # function returns EVERY collaborator regardless of role_name.
+        # A group teammate who is an org owner (admin on every repo) or a
+        # founder kept as repo admin must NOT be dropped here — that was
+        # the attribution bug. Instructors/TAs are filtered later by the
+        # roster intersection, not by an admin check.
         page1 = [{"login": f"u{i}", "role_name": "write"} for i in range(100)]
         page2 = [
             {"login": "owner-admin", "role_name": "admin"},
@@ -574,8 +679,9 @@ class TestListRepoCollaboratorLogins:
         logins = cs.list_repo_collaborator_logins(
             "https://api.github.com", "cs50", "cs-principles-hello-alice", "token"
         )
-        assert "owner-admin" not in logins
-        assert "ta-admin" not in logins
+        # Admins are now RETAINED (roster gate applies downstream).
+        assert "owner-admin" in logins
+        assert "ta-admin" in logins
         assert "student" in logins
         assert len([x for x in logins if x.startswith("u")]) == 100
 
@@ -675,25 +781,26 @@ class TestGroupCollectClassroom:
         return {"assignments": [{"slug": "project", "mode": "group", "max_group_size": 3}]}
 
     def _stub_release(self, monkeypatch):
-        def fake_latest(*args, **kwargs):
-            return {
+        def fake_all(*args, **kwargs):
+            return [{
                 "tag_name": "submit/2026-09-16T04-00-00Z",
                 "assets": [{"name": "result.json", "url": "https://api.github.com/assets/1"}],
-            }
+            }]
 
-        monkeypatch.setattr(cs, "latest_submit_release_or_none", fake_latest)
+        monkeypatch.setattr(cs, "all_submit_releases", fake_all)
 
-    def test_group_score_fans_out_to_members(self, monkeypatch):
+    def test_group_score_credits_members(self, monkeypatch):
         self._stub_release(monkeypatch)
         monkeypatch.setattr(
             cs, "download_result_asset",
-            lambda *a, **k: make_result(classroom="cs-principles", assignment="project", username="alice"),
+            lambda *a, **k: make_result(classroom="cs-principles", assignment="project",
+                                        username="alice", assignment_type="group"),
         )
         monkeypatch.setattr(
             cs, "list_repo_collaborator_logins", lambda *a, **k: ["alice", "bob", "carol"]
         )
 
-        results = cs.collect_classroom(
+        results, _ = cs.collect_classroom(
             api_url="https://api.github.com",
             org="cs50",
             classroom_short="cs-principles",
@@ -706,24 +813,25 @@ class TestGroupCollectClassroom:
             service_token="token",
         )
         assert len(results) == 1
-        assert results[0]["usernames"] == ["alice", "bob", "carol"]
+        assert results[0]["member_usernames"] == ["alice", "bob", "carol"]
         # End-to-end: collect_classroom stamps the stable owner (the repo
-        # owner from the roster), not the fanned-out member set (#104 fix).
+        # owner from the roster), not the credited member set (#104 fix).
         assert results[0]["owner"] == "alice"
 
-    def test_group_fanout_excludes_non_rostered_collaborator(self, monkeypatch):
+    def test_group_excludes_non_rostered_collaborator(self, monkeypatch):
         # A collaborator added out-of-band who is not on the roster must
         # not be credited a score.
         self._stub_release(monkeypatch)
         monkeypatch.setattr(
             cs, "download_result_asset",
-            lambda *a, **k: make_result(classroom="cs-principles", assignment="project", username="alice"),
+            lambda *a, **k: make_result(classroom="cs-principles", assignment="project",
+                                        username="alice", assignment_type="group"),
         )
         monkeypatch.setattr(
             cs, "list_repo_collaborator_logins", lambda *a, **k: ["alice", "bob", "intruder"]
         )
 
-        results = cs.collect_classroom(
+        results, _ = cs.collect_classroom(
             api_url="https://api.github.com",
             org="cs50",
             classroom_short="cs-principles",
@@ -734,31 +842,28 @@ class TestGroupCollectClassroom:
             ],
             service_token="token",
         )
-        assert results[0]["usernames"] == ["alice", "bob"]
-        assert "intruder" not in results[0]["usernames"]
+        assert results[0]["member_usernames"] == ["alice", "bob"]
+        assert "intruder" not in results[0]["member_usernames"]
 
-    def test_group_read_failure_falls_back_to_owner_dropping_injected_usernames(self, monkeypatch, capsys):
-        # Regression guard: a student could hand-edit result.json to add
-        # an extra username. On a collaborator-read failure the fallback
-        # MUST reduce usernames to the owner only — never trust the
-        # runner/student-supplied list.
+    def test_group_read_failure_falls_back_to_owner_only(self, monkeypatch, capsys):
+        # Regression guard: on a collaborator-read failure the credited
+        # member set MUST reduce to the owner only. member_usernames comes
+        # solely from the collaborator∩roster read, never from the record.
         import urllib.error
 
         self._stub_release(monkeypatch)
-
-        def injected(*a, **k):
-            payload = make_result(classroom="cs-principles", assignment="project", username="alice")
-            payload["usernames"] = ["alice", "victim"]  # student-injected extra
-            return payload
-
-        monkeypatch.setattr(cs, "download_result_asset", injected)
+        monkeypatch.setattr(
+            cs, "download_result_asset",
+            lambda *a, **k: make_result(classroom="cs-principles", assignment="project",
+                                        username="alice", assignment_type="group"),
+        )
 
         def boom(*a, **k):
             raise urllib.error.HTTPError("u", 403, "Forbidden", None, None)
 
         monkeypatch.setattr(cs, "list_repo_collaborator_logins", boom)
 
-        results = cs.collect_classroom(
+        results, _ = cs.collect_classroom(
             api_url="https://api.github.com",
             org="cs50",
             classroom_short="cs-principles",
@@ -766,32 +871,29 @@ class TestGroupCollectClassroom:
             roster=[{"username": "alice", "github_id": "1"}],
             service_token="token",
         )
-        # The injected "victim" must NOT survive into scores.
-        assert results[0]["usernames"] == ["alice"]
+        # Only the owner is credited on the entry.
+        assert results[0]["member_usernames"] == ["alice"]
         err = capsys.readouterr().err
         assert "could not read group collaborators" in err
         # Aggregate degraded-attribution signal fired.
         assert "credited to the repo owner only" in err
 
-    def test_group_malformed_listing_falls_back_to_owner_dropping_injected(self, monkeypatch, capsys):
+    def test_group_malformed_listing_falls_back_to_owner_only(self, monkeypatch, capsys):
         # The malformed-listing (ValueError) branch must also reset to
-        # owner-only and drop any injected username — same security
-        # guarantee as the HTTPError branch.
+        # owner-only — same security guarantee as the HTTPError branch.
         self._stub_release(monkeypatch)
-
-        def injected(*a, **k):
-            payload = make_result(classroom="cs-principles", assignment="project", username="alice")
-            payload["usernames"] = ["alice", "victim"]
-            return payload
-
-        monkeypatch.setattr(cs, "download_result_asset", injected)
+        monkeypatch.setattr(
+            cs, "download_result_asset",
+            lambda *a, **k: make_result(classroom="cs-principles", assignment="project",
+                                        username="alice", assignment_type="group"),
+        )
 
         def malformed(*a, **k):
             raise ValueError("expected JSON array, got dict")
 
         monkeypatch.setattr(cs, "list_repo_collaborator_logins", malformed)
 
-        results = cs.collect_classroom(
+        results, _ = cs.collect_classroom(
             api_url="https://api.github.com",
             org="cs50",
             classroom_short="cs-principles",
@@ -799,23 +901,24 @@ class TestGroupCollectClassroom:
             roster=[{"username": "alice", "github_id": "1"}],
             service_token="token",
         )
-        assert results[0]["usernames"] == ["alice"]
+        assert results[0]["member_usernames"] == ["alice"]
         assert "malformed" in capsys.readouterr().err
 
     def test_teammate_without_repo_is_not_a_miss(self, monkeypatch):
         # bob joined alice's repo, so bob's derived repo 404s
         # (release None). He should not appear as a separate submission;
-        # his score comes via alice's fanned-out row.
+        # his score comes via alice's entry's member_usernames.
         self._stub_release_only_for(monkeypatch, owner="alice")
         monkeypatch.setattr(
             cs, "download_result_asset",
-            lambda *a, **k: make_result(classroom="cs-principles", assignment="project", username="alice"),
+            lambda *a, **k: make_result(classroom="cs-principles", assignment="project",
+                                        username="alice", assignment_type="group"),
         )
         monkeypatch.setattr(
             cs, "list_repo_collaborator_logins", lambda *a, **k: ["alice", "bob"]
         )
 
-        results = cs.collect_classroom(
+        results, _ = cs.collect_classroom(
             api_url="https://api.github.com",
             org="cs50",
             classroom_short="cs-principles",
@@ -826,20 +929,45 @@ class TestGroupCollectClassroom:
             ],
             service_token="token",
         )
-        # One submission (alice's repo), fanned to both.
+        # One submission (alice's repo), crediting both.
         assert len(results) == 1
-        assert results[0]["usernames"] == ["alice", "bob"]
+        assert results[0]["member_usernames"] == ["alice", "bob"]
 
     def _stub_release_only_for(self, monkeypatch, *, owner):
-        def fake_latest(api_url, org, repo, token):
+        def fake_all(api_url, org, repo, token):
             if repo.endswith(f"-{owner}"):
-                return {
+                return [{
                     "tag_name": "submit/2026-09-16T04-00-00Z",
                     "assets": [{"name": "result.json", "url": "https://api.github.com/assets/1"}],
-                }
-            return None
+                }]
+            return []
 
-        monkeypatch.setattr(cs, "latest_submit_release_or_none", fake_latest)
+        monkeypatch.setattr(cs, "all_submit_releases", fake_all)
+
+    def test_group_owner_only_emits_warning(self, monkeypatch, capsys):
+        # A group submission where collaborator read succeeds but finds no
+        # other rostered member must WARN (not silently credit owner only) —
+        # the symptom of the attribution bug the teacher hit.
+        self._stub_release(monkeypatch)
+        monkeypatch.setattr(
+            cs, "download_result_asset",
+            lambda *a, **k: make_result(classroom="cs-principles", assignment="project",
+                                        username="alice", assignment_type="group"),
+        )
+        monkeypatch.setattr(cs, "list_repo_collaborator_logins", lambda *a, **k: ["alice"])
+
+        results, _ = cs.collect_classroom(
+            api_url="https://api.github.com",
+            org="cs50",
+            classroom_short="cs-principles",
+            assignments=self._group_assignments(),
+            roster=[{"username": "alice", "github_id": "1"}],
+            service_token="token",
+        )
+        assert results[0]["member_usernames"] == ["alice"]
+        err = capsys.readouterr().err
+        assert "credited to the owner" in err
+        assert "students.csv" in err
 
 
 # assignment_repo_name --------------------------------------------------------
@@ -911,19 +1039,19 @@ class TestLateness:
         assert "late" not in payload
 
     def test_collect_classroom_marks_lateness_on_payloads(self, monkeypatch):
-        def fake_latest(*args, **kwargs):
-            return {
+        def fake_all(*args, **kwargs):
+            return [{
                 "tag_name": "submit/2026-09-16T04-00-00Z",
                 "assets": [{"name": "result.json", "url": "https://api.github.com/assets/1"}],
-            }
+            }]
 
         def fake_download(*args, **kwargs):
             return make_result(datetime="2026-09-16T04:00:00Z")
 
-        monkeypatch.setattr(cs, "latest_submit_release_or_none", fake_latest)
+        monkeypatch.setattr(cs, "all_submit_releases", fake_all)
         monkeypatch.setattr(cs, "download_result_asset", fake_download)
 
-        results = cs.collect_classroom(
+        results, _ = cs.collect_classroom(
             api_url="https://api.github.com",
             org="cs50",
             classroom_short="cs-principles",
@@ -932,7 +1060,8 @@ class TestLateness:
             service_token="token",
         )
 
-        assert results[0]["late"] is True
+        # Lateness is marked per submission, inside the row's submissions list.
+        assert results[0]["submissions"][0]["late"] is True
 
 
 # read_students_csv -----------------------------------------------------------
@@ -1036,13 +1165,13 @@ class TestReadStudentsCSV:
 class TestScoresIO:
     def test_load_returns_skeleton_for_missing_file(self, tmp_path):
         scores = cs.load_scores(tmp_path / "scores.json")
-        assert scores == {"schema": cs.SCORES_SCHEMA_V1, "submissions": {}}
+        assert scores == {"schema": cs.SCORES_SCHEMA_V1, "assignments": {}}
 
     def test_load_returns_skeleton_for_empty_file(self, tmp_path):
         path = tmp_path / "scores.json"
         path.write_text("")
         scores = cs.load_scores(path)
-        assert scores == {"schema": cs.SCORES_SCHEMA_V1, "submissions": {}}
+        assert scores == {"schema": cs.SCORES_SCHEMA_V1, "assignments": {}}
 
     def test_load_raises_on_malformed_json(self, tmp_path):
         path = tmp_path / "scores.json"
@@ -1052,80 +1181,78 @@ class TestScoresIO:
 
     def test_load_raises_on_wrong_schema(self, tmp_path):
         path = tmp_path / "scores.json"
-        path.write_text(json.dumps({"schema": "classroom50/scores/v2", "submissions": {}}))
+        path.write_text(json.dumps({"schema": "classroom50/scores/v2", "assignments": {}}))
         with pytest.raises(cs.ScoresFileError, match="schema"):
             cs.load_scores(path)
 
-    def test_load_normalizes_null_submissions(self, tmp_path):
-        # `"submissions": null` normalizes to {} so a hand-edit
+    def test_load_normalizes_null_assignments(self, tmp_path):
+        # `"assignments": null` normalizes to {} so a hand-edit
         # doesn't crash the collector.
         path = tmp_path / "scores.json"
-        path.write_text(json.dumps({"schema": cs.SCORES_SCHEMA_V1, "submissions": None}))
+        path.write_text(json.dumps({"schema": cs.SCORES_SCHEMA_V1, "assignments": None}))
         scores = cs.load_scores(path)
-        assert scores["submissions"] == {}
+        assert scores["assignments"] == {}
 
-    def test_load_tolerates_stringified_empty_map(self, tmp_path):
-        # Two of the target repo's classrooms ship `"submissions":"{}"`
-        # (a JSON-string wrapper). Unwrap it instead of crashing.
+    def test_load_rejects_stringified_map(self, tmp_path):
+        # Legacy "{}" string wrapper is no longer migrated — hard-fail.
         path = tmp_path / "scores.json"
-        path.write_text(json.dumps({"schema": cs.SCORES_SCHEMA_V1, "submissions": "{}"}))
-        scores = cs.load_scores(path)
-        assert scores["submissions"] == {}
+        path.write_text(json.dumps({"schema": cs.SCORES_SCHEMA_V1, "assignments": "{}"}))
+        with pytest.raises(cs.ScoresFileError, match="must be an object"):
+            cs.load_scores(path)
 
-    def test_load_migrates_legacy_flat_array(self, tmp_path):
-        # An old v1 file still using the flat array regroups by
-        # assignment, dropping the now-redundant key from each row.
+    def test_load_rejects_legacy_flat_array(self, tmp_path):
+        # A legacy flat-array assignments value is no longer migrated —
+        # backward compatibility was intentionally dropped; hard-fail.
         path = tmp_path / "scores.json"
         path.write_text(
             json.dumps(
                 {
                     "schema": cs.SCORES_SCHEMA_V1,
-                    "submissions": [
-                        make_result(assignment="hello", username="alice"),
-                        make_result(assignment="goodbye", username="bob"),
-                    ],
+                    "assignments": [make_result(assignment="hello", username="alice")],
                 }
             )
         )
-        scores = cs.load_scores(path)
-        assert set(scores["submissions"]) == {"hello", "goodbye"}
-        assert scores["submissions"]["hello"] == [stored_row(assignment="hello", username="alice")]
-        assert "assignment" not in scores["submissions"]["hello"][0]
-
-    def test_load_raises_on_legacy_row_without_assignment(self, tmp_path):
-        # A legacy-array row we can't bucket must fail the run, not get
-        # silently dropped on the next write (teacher data protection).
-        path = tmp_path / "scores.json"
-        bad = make_result()
-        del bad["assignment"]
-        path.write_text(
-            json.dumps({"schema": cs.SCORES_SCHEMA_V1, "submissions": [bad]})
-        )
-        with pytest.raises(cs.ScoresFileError, match="assignment"):
+        with pytest.raises(cs.ScoresFileError, match="must be an object"):
             cs.load_scores(path)
 
-    def test_load_raises_on_non_dict_legacy_row(self, tmp_path):
-        # Same protection for a stray non-object row in a legacy array.
-        path = tmp_path / "scores.json"
-        path.write_text(
-            json.dumps(
-                {
-                    "schema": cs.SCORES_SCHEMA_V1,
-                    "submissions": [make_result(), "junk"],
-                }
-            )
-        )
-        with pytest.raises(cs.ScoresFileError, match="not an object"):
-            cs.load_scores(path)
-
-    def test_load_raises_when_bucket_is_not_a_list(self, tmp_path):
-        # Defensive -- a dict-shaped bucket value is corrupt; don't
+    def test_load_raises_when_bucket_entries_is_not_a_list(self, tmp_path):
+        # Defensive -- a dict-shaped `entries` value is corrupt; don't
         # silently repair it.
         path = tmp_path / "scores.json"
         path.write_text(
-            json.dumps({"schema": cs.SCORES_SCHEMA_V1, "submissions": {"hello": {}}})
+            json.dumps(
+                {
+                    "schema": cs.SCORES_SCHEMA_V1,
+                    "assignments": {"hello": {"type": "individual", "entries": {}}},
+                }
+            )
         )
         with pytest.raises(cs.ScoresFileError, match="must be a list"):
+            cs.load_scores(path)
+
+    def test_load_raises_when_bucket_missing_type(self, tmp_path):
+        # A bucket without a `type` is not canonical — hard-fail.
+        path = tmp_path / "scores.json"
+        path.write_text(
+            json.dumps(
+                {"schema": cs.SCORES_SCHEMA_V1, "assignments": {"hello": {"entries": []}}}
+            )
+        )
+        with pytest.raises(cs.ScoresFileError, match="type"):
+            cs.load_scores(path)
+
+    def test_load_raises_when_bucket_has_bad_type(self, tmp_path):
+        # A bucket with an out-of-domain `type` hard-fails.
+        path = tmp_path / "scores.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "schema": cs.SCORES_SCHEMA_V1,
+                    "assignments": {"hello": {"type": "solo", "entries": []}},
+                }
+            )
+        )
+        with pytest.raises(cs.ScoresFileError, match="type"):
             cs.load_scores(path)
 
     def test_load_rejects_non_finite_numbers(self, tmp_path):
@@ -1133,14 +1260,20 @@ class TestScoresIO:
         # doesn't. scores.json has to stay valid for both.
         path = tmp_path / "scores.json"
         path.write_text(
-            '{"schema":"classroom50/scores/v1","submissions":{"hello":[{"usernames":["alice"],"score":NaN}]}}'
+            '{"schema":"classroom50/scores/v1","assignments":'
+            '{"hello":{"type":"individual","entries":[{"owner":"alice","score":NaN}]}}}'
         )
         with pytest.raises(cs.ScoresFileError, match="non-finite"):
             cs.load_scores(path)
 
     def test_save_writes_atomically_and_cleans_up_tmp(self, tmp_path):
         path = tmp_path / "scores.json"
-        scores = {"schema": cs.SCORES_SCHEMA_V1, "submissions": {"hello": [stored_row()]}}
+        scores = {
+            "schema": cs.SCORES_SCHEMA_V1,
+            "assignments": {
+                "hello": {"type": "individual", "entries": [cs.entry_from_result(make_update())]}
+            },
+        }
         cs.save_scores(path, scores)
 
         round_trip = json.loads(path.read_text())
@@ -1153,8 +1286,12 @@ class TestScoresIO:
         # allow_nan=False keeps a bad custom score from writing
         # Go-invalid JSON.
         path = tmp_path / "scores.json"
-        scores = {"schema": cs.SCORES_SCHEMA_V1, "submissions": {"hello": [stored_row(score=1)]}}
-        scores["submissions"]["hello"][0]["score"] = float("nan")
+        entry = cs.entry_from_result(make_update(score=1))
+        entry["score"] = float("nan")
+        scores = {
+            "schema": cs.SCORES_SCHEMA_V1,
+            "assignments": {"hello": {"type": "individual", "entries": [entry]}},
+        }
         with pytest.raises(cs.ScoresFileError, match="encode failed"):
             cs.save_scores(path, scores)
         assert not path.exists()
@@ -1163,7 +1300,7 @@ class TestScoresIO:
         # On os.replace failure (e.g. permissions), the original is
         # untouched and the temp file is cleaned up.
         path = tmp_path / "scores.json"
-        path.write_text(json.dumps({"schema": cs.SCORES_SCHEMA_V1, "submissions": {}}))
+        path.write_text(json.dumps({"schema": cs.SCORES_SCHEMA_V1, "assignments": {}}))
         original = path.read_text()
 
         def fail_replace(*args, **kwargs):
@@ -1173,7 +1310,15 @@ class TestScoresIO:
         with pytest.raises(cs.ScoresFileError, match="atomic write failed"):
             cs.save_scores(
                 path,
-                {"schema": cs.SCORES_SCHEMA_V1, "submissions": {"hello": [stored_row()]}},
+                {
+                    "schema": cs.SCORES_SCHEMA_V1,
+                    "assignments": {
+                        "hello": {
+                            "type": "individual",
+                            "entries": [cs.entry_from_result(make_update())],
+                        }
+                    },
+                },
             )
 
         assert path.read_text() == original
@@ -1301,13 +1446,13 @@ class TestReleaseLookup:
         assert release["tag_name"] == "submit/2026-06-01T14-32-05Z"
 
     def test_collect_classroom_warns_and_skips_malformed_latest_release(self, monkeypatch, capsys):
-        # One malformed latest-release response is a per-repo
+        # One malformed release listing is a per-repo
         # failure, not a run-killer like auth/network errors.
-        def malformed_latest(*args, **kwargs):
-            raise ValueError("expected JSON object")
+        def malformed_listing(*args, **kwargs):
+            raise ValueError("expected JSON array")
 
-        monkeypatch.setattr(cs, "latest_submit_release_or_none", malformed_latest)
-        results = cs.collect_classroom(
+        monkeypatch.setattr(cs, "all_submit_releases", malformed_listing)
+        results, _ = cs.collect_classroom(
             api_url="https://api.github.com",
             org="cs50",
             classroom_short="cs-principles",
@@ -1316,7 +1461,7 @@ class TestReleaseLookup:
             service_token="token",
         )
         assert results == []
-        assert "latest release response malformed" in capsys.readouterr().err
+        assert "release listing malformed" in capsys.readouterr().err
 
 
 # asset URL rewrite ------------------------------------------------------------
@@ -1360,6 +1505,200 @@ class TestRewriteAssetURL:
         )
 
 
+# multi-submission history ----------------------------------------------------
+
+
+class TestCollectAllSubmissions:
+    def _stub_releases(self, monkeypatch, tags):
+        # all_submit_releases returns releases newest-first; each tag maps
+        # to a distinct result payload via download_result_asset below.
+        releases = [
+            {"tag_name": t, "assets": [{"name": "result.json", "url": f"https://api.github.com/{t}"}]}
+            for t in tags
+        ]
+        monkeypatch.setattr(cs, "all_submit_releases", lambda *a, **k: releases)
+
+    def test_row_carries_full_history_newest_first(self, monkeypatch):
+        # A student who pushed three times yields one scored row (the
+        # newest) plus a `submissions` history of all three, newest first.
+        tags = [
+            "submit/2026-06-03T10-00-00Z",
+            "submit/2026-06-02T10-00-00Z",
+            "submit/2026-06-01T10-00-00Z",
+        ]
+        self._stub_releases(monkeypatch, tags)
+
+        def fake_download(api_url, release, token):
+            tag = release["tag_name"]
+            score = {tags[0]: 9, tags[1]: 6, tags[2]: 3}[tag]
+            return make_result(username="alice", score=score, max_score=10, submission_tag=tag)
+
+        monkeypatch.setattr(cs, "download_result_asset", fake_download)
+
+        results, _ = cs.collect_classroom(
+            api_url="https://api.github.com",
+            org="cs50",
+            classroom_short="cs-principles",
+            assignments={"assignments": [{"slug": "hello"}]},
+            roster=[{"username": "alice", "github_id": "1"}],
+            service_token="token",
+        )
+        assert len(results) == 1
+        row = results[0]
+        # The entry holds identity + the full submission history; the
+        # per-submission detail lives only inside `submissions`.
+        assert row["owner"] == "alice"
+        assert "score" not in row
+        assert "submission" not in row
+        # The history holds every submission, newest first.
+        history = row["submissions"]
+        assert [h["submission"] for h in history] == tags
+        assert [h["score"] for h in history] == [9, 6, 3]
+        # History records are result/v1 shapes (no nested `submissions`,
+        # no bucket-key `assignment`).
+        for h in history:
+            assert "submissions" not in h
+            assert "assignment" not in h
+
+    def test_bad_submission_in_history_is_skipped_not_fatal(self, monkeypatch, capsys):
+        # A single malformed/older result.json warns and is dropped from
+        # the history without sinking the other submissions.
+        tags = ["submit/2026-06-02T10-00-00Z", "submit/2026-06-01T10-00-00Z"]
+        self._stub_releases(monkeypatch, tags)
+
+        def fake_download(api_url, release, token):
+            if release["tag_name"] == tags[1]:
+                raise ValueError("malformed json")
+            return make_result(username="alice", submission_tag=tags[0])
+
+        monkeypatch.setattr(cs, "download_result_asset", fake_download)
+
+        results, _ = cs.collect_classroom(
+            api_url="https://api.github.com",
+            org="cs50",
+            classroom_short="cs-principles",
+            assignments={"assignments": [{"slug": "hello"}]},
+            roster=[{"username": "alice", "github_id": "1"}],
+            service_token="token",
+        )
+        assert len(results) == 1
+        assert [h["submission"] for h in results[0]["submissions"]] == [tags[0]]
+        assert "malformed" in capsys.readouterr().err
+
+    def test_all_submissions_invalid_yields_no_row(self, monkeypatch):
+        # If every submission fails validation/download there is nothing
+        # creditable — the repo produces no row.
+        self._stub_releases(monkeypatch, ["submit/2026-06-01T10-00-00Z"])
+        monkeypatch.setattr(
+            cs, "download_result_asset", lambda *a, **k: (_ for _ in ()).throw(ValueError("bad"))
+        )
+        results, _ = cs.collect_classroom(
+            api_url="https://api.github.com",
+            org="cs50",
+            classroom_short="cs-principles",
+            assignments={"assignments": [{"slug": "hello"}]},
+            roster=[{"username": "alice", "github_id": "1"}],
+            service_token="token",
+        )
+        assert results == []
+
+    def test_entry_has_no_duplicated_top_level_result_fields(self, monkeypatch):
+        # Regression for the flattening change: the entry must NOT repeat the
+        # newest submission's result fields at the top level. For an
+        # individual entry the keys are exactly {_assignment, _type, owner,
+        # submissions} (the transport hints are stripped only on store).
+        self._stub_releases(monkeypatch, ["submit/2026-06-01T10-00-00Z"])
+        monkeypatch.setattr(
+            cs, "download_result_asset",
+            lambda *a, **k: make_result(username="alice", score=7, max_score=10),
+        )
+        results, _ = cs.collect_classroom(
+            api_url="https://api.github.com",
+            org="cs50",
+            classroom_short="cs-principles",
+            assignments={"assignments": [{"slug": "hello"}]},
+            roster=[{"username": "alice", "github_id": "1"}],
+            service_token="token",
+        )
+        row = results[0]
+        assert set(row) == {"_assignment", "_type", "owner", "submissions"}
+        for leaked in ("score", "max-score", "datetime", "submission", "tests", "commit"):
+            assert leaked not in row, f"{leaked} leaked to the entry top level"
+
+    def test_apply_updates_stores_flattened_entry_and_is_idempotent(self, monkeypatch):
+        # End-to-end: a collected entry stores as {owner, submissions} (the
+        # transport hints stripped), and re-applying the identical entry is
+        # a no-op.
+        self._stub_releases(monkeypatch, ["submit/2026-06-01T10-00-00Z"])
+        monkeypatch.setattr(
+            cs, "download_result_asset",
+            lambda *a, **k: make_result(username="alice", score=7, max_score=10),
+        )
+        results, _ = cs.collect_classroom(
+            api_url="https://api.github.com",
+            org="cs50",
+            classroom_short="cs-principles",
+            assignments={"assignments": [{"slug": "hello"}]},
+            roster=[{"username": "alice", "github_id": "1"}],
+            service_token="token",
+        )
+        scores = {"schema": cs.SCORES_SCHEMA_V1, "assignments": {}}
+        assert cs.apply_updates(scores, results) == 1
+        stored = scores["assignments"]["hello"]["entries"][0]
+        assert set(stored) == {"owner", "submissions"}  # transport hints dropped
+        assert len(stored["submissions"]) == 1
+        # Re-applying the same collected results changes nothing.
+        assert cs.apply_updates(scores, results) == 0
+
+
+class TestAllSubmitReleases:
+    def test_filters_non_submit_and_keeps_order(self, monkeypatch):
+        body = json.dumps([
+            {"tag_name": "submit/2026-06-03T10-00-00Z"},
+            {"tag_name": "v2.0.0"},
+            {"tag_name": "submit/2026-06-01T10-00-00Z"},
+        ]).encode("utf-8")
+
+        class NoHeaders:
+            def get(self, name):
+                return None
+
+        monkeypatch.setattr(cs, "_http_get_with_headers", lambda *a, **k: (body, NoHeaders()))
+        releases = cs.all_submit_releases("https://api.github.com", "o", "r", "token")
+        assert [r["tag_name"] for r in releases] == [
+            "submit/2026-06-03T10-00-00Z",
+            "submit/2026-06-01T10-00-00Z",
+        ]
+
+    def test_404_returns_empty(self, monkeypatch):
+        def boom(*a, **k):
+            raise cs.urllib.error.HTTPError("u", 404, "Not Found", None, None)
+
+        monkeypatch.setattr(cs, "_http_get_with_headers", boom)
+        assert cs.all_submit_releases("https://api.github.com", "o", "r", "token") == []
+
+    def test_paginates_via_link_header(self, monkeypatch):
+        page1 = json.dumps([{"tag_name": f"submit/p1-{i}"} for i in range(100)]).encode("utf-8")
+        page2 = json.dumps([{"tag_name": "submit/last"}]).encode("utf-8")
+
+        class Headers:
+            def __init__(self, link):
+                self._link = link
+
+            def get(self, name):
+                return self._link if name == "Link" else None
+
+        def fake(url, token, *, accept, max_bytes=None):
+            if "cursor=two" in url:
+                return page2, Headers(None)
+            return page1, Headers('<https://api.github.com/x?cursor=two>; rel="next"')
+
+        monkeypatch.setattr(cs, "_http_get_with_headers", fake)
+        releases = cs.all_submit_releases("https://api.github.com", "o", "r", "token")
+        assert len(releases) == 101
+        assert releases[-1]["tag_name"] == "submit/last"
+
+
 # main() hard-failure handling -------------------------------------------------
 
 
@@ -1372,7 +1711,7 @@ class TestMain:
 
         def fake_collect(**kwargs):
             seen.append(kwargs["api_url"])
-            return []
+            return [], 0
 
         monkeypatch.setenv("GITHUB_WORKSPACE", str(tmp_path))
         monkeypatch.setenv("GITHUB_REPOSITORY_OWNER", "cs50")
@@ -1445,16 +1784,16 @@ class TestMain:
         monkeypatch.setenv("GITHUB_WORKSPACE", str(tmp_path))
         monkeypatch.setenv("GITHUB_REPOSITORY_OWNER", "cs50")
         monkeypatch.setenv("CLASSROOM50_SERVICE_TOKEN", "token")
-        monkeypatch.setattr(cs, "collect_classroom", lambda **kwargs: [])
+        monkeypatch.setattr(cs, "collect_classroom", lambda **kwargs: ([], 0))
 
         assert cs.main() == 0
         err = capsys.readouterr().err
         assert "::warning::" in err
         assert "collected 0 submissions" in err
         assert "rotate-service-token cs50" in err
-        # The gradebook is left untouched -- no false rows written.
+        # The gradebook is left untouched -- no false entries written.
         scores = json.loads((tmp_path / "cs-principles" / "scores.json").read_text())
-        assert scores["submissions"] == {}
+        assert scores["assignments"] == {}
 
     def test_no_warning_when_a_submission_is_collected(self, tmp_path, monkeypatch, capsys):
         # At least one readable submission proves the token works --
@@ -1464,7 +1803,7 @@ class TestMain:
         monkeypatch.setenv("GITHUB_REPOSITORY_OWNER", "cs50")
         monkeypatch.setenv("CLASSROOM50_SERVICE_TOKEN", "token")
         monkeypatch.setattr(
-            cs, "collect_classroom", lambda **kwargs: [make_result(username="alice")]
+            cs, "collect_classroom", lambda **kwargs: ([make_update(username="alice")], 0)
         )
 
         assert cs.main() == 0
@@ -1479,7 +1818,7 @@ class TestMain:
         monkeypatch.setenv("GITHUB_WORKSPACE", str(tmp_path))
         monkeypatch.setenv("GITHUB_REPOSITORY_OWNER", "cs50")
         monkeypatch.setenv("CLASSROOM50_SERVICE_TOKEN", "token")
-        monkeypatch.setattr(cs, "collect_classroom", lambda **kwargs: [])
+        monkeypatch.setattr(cs, "collect_classroom", lambda **kwargs: ([], 0))
 
         assert cs.main() == 0
         assert "collected 0 submissions" not in capsys.readouterr().err
@@ -1495,7 +1834,122 @@ class TestMain:
         monkeypatch.setenv("GITHUB_WORKSPACE", str(tmp_path))
         monkeypatch.setenv("GITHUB_REPOSITORY_OWNER", "cs50")
         monkeypatch.setenv("CLASSROOM50_SERVICE_TOKEN", "token")
-        monkeypatch.setattr(cs, "collect_classroom", lambda **kwargs: [])
+        monkeypatch.setattr(cs, "collect_classroom", lambda **kwargs: ([], 0))
 
         assert cs.main() == 0
         assert "collected 0 submissions" not in capsys.readouterr().err
+
+    def test_one_malformed_scores_json_does_not_block_other_classrooms(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        # Failure isolation: a malformed scores.json in ONE classroom must
+        # not abort the whole run and strand alphabetically-later classrooms.
+        # The bad classroom is skipped (run still exits non-zero), but the
+        # good one is collected and its gradebook updated.
+        # "a-bad" sorts before "z-good" so the old `return 1` would have
+        # skipped z-good entirely.
+        bad = tmp_path / "a-bad"
+        bad.mkdir()
+        (bad / "classroom.json").write_text(
+            json.dumps({"schema": cs.CLASSROOM_SCHEMA_V1, "short_name": "a-bad"})
+        )
+        (bad / "assignments.json").write_text(
+            json.dumps({"schema": cs.ASSIGNMENTS_SCHEMA_V1,
+                        "assignments": [{"slug": "hello", "name": "H", "mode": "individual", "tests": []}]})
+        )
+        write_roster(bad / "students.csv", [{"username": "alice", "github_id": "1"}])
+        # Malformed: assignments is a list, not the canonical object.
+        (bad / "scores.json").write_text(
+            json.dumps({"schema": cs.SCORES_SCHEMA_V1, "assignments": []})
+        )
+
+        good = tmp_path / "z-good"
+        good.mkdir()
+        (good / "classroom.json").write_text(
+            json.dumps({"schema": cs.CLASSROOM_SCHEMA_V1, "short_name": "z-good"})
+        )
+        (good / "assignments.json").write_text(
+            json.dumps({"schema": cs.ASSIGNMENTS_SCHEMA_V1,
+                        "assignments": [{"slug": "hello", "name": "H", "mode": "individual", "tests": []}]})
+        )
+        write_roster(good / "students.csv", [{"username": "alice", "github_id": "1"}])
+        (good / "scores.json").write_text(
+            json.dumps({"schema": cs.SCORES_SCHEMA_V1, "assignments": {}})
+        )
+
+        monkeypatch.setenv("GITHUB_WORKSPACE", str(tmp_path))
+        monkeypatch.setenv("GITHUB_REPOSITORY_OWNER", "cs50")
+        monkeypatch.setenv("CLASSROOM50_SERVICE_TOKEN", "token")
+        monkeypatch.setattr(
+            cs, "collect_classroom",
+            lambda **kwargs: ([make_update(username="alice")], 0) if kwargs["classroom_short"] == "z-good" else ([], 0),
+        )
+
+        # Run fails (a classroom was bad) but the good classroom is collected.
+        assert cs.main() == 1
+        err = capsys.readouterr().err
+        assert "a-bad" in err  # the bad classroom is named in the error
+        good_scores = json.loads((good / "scores.json").read_text())
+        assert "hello" in good_scores["assignments"], (
+            "z-good must still be collected even though a-bad failed first"
+        )
+
+
+class TestCollectClassroomModeFlip:
+    def _assignments(self, mode):
+        return {"assignments": [{"slug": "hello", "name": "H", "mode": mode, "tests": []}]}
+
+    def test_mode_flip_rejects_all_and_warns_loudly(self, monkeypatch, capsys):
+        # An assignment switched individual->group mid-term: every prior
+        # release's assignment_type now mismatches the new mode and is
+        # rejected by validate_result, so history is empty. The repo HAD
+        # releases, so collection must emit the loud consolidated mode-flip
+        # warning (rather than silently treating it as not-submitted) and
+        # signal the mode-flip to main() via the returned count.
+        monkeypatch.setattr(
+            cs, "all_submit_releases",
+            lambda *a, **k: [{"tag_name": "submit/2026-06-01T10-00-00Z",
+                              "assets": [{"name": "result.json", "url": "https://api.github.com/a/1"}]}],
+        )
+        # The published result is still individual-typed (graded before the flip).
+        monkeypatch.setattr(
+            cs, "download_result_asset",
+            lambda *a, **k: make_result(username="alice", assignment_type="individual"),
+        )
+        # Manifest now says group.
+        results, mode_flip = cs.collect_classroom(
+            api_url="https://api.github.com", org="cs50", classroom_short="cs-principles",
+            assignments=self._assignments("group"),
+            roster=[{"username": "alice", "github_id": "1"}], service_token="token",
+        )
+        assert results == []
+        assert mode_flip == 1
+        err = capsys.readouterr().err
+        assert "NONE were creditable" in err
+        assert "individual<->group" in err
+        # The affected repo is named explicitly in the consolidated warning.
+        assert "cs-principles-hello-alice" in err
+
+    def test_missing_asset_does_not_trip_mode_flip_signal(self, monkeypatch, capsys):
+        # A release whose result.json asset is simply absent (a benign / in-
+        # flight state) must NOT be misreported as a mode flip: it produces
+        # empty history but is not a validation rejection, so the mode-flip
+        # count stays 0 and the loud mode-flip warning is not emitted.
+        monkeypatch.setattr(
+            cs, "all_submit_releases",
+            lambda *a, **k: [{"tag_name": "submit/2026-06-01T10-00-00Z", "assets": []}],
+        )
+
+        def _no_asset(*a, **k):
+            raise cs.AssetMissingError("no result.json asset on release")
+
+        monkeypatch.setattr(cs, "download_result_asset", _no_asset)
+        results, mode_flip = cs.collect_classroom(
+            api_url="https://api.github.com", org="cs50", classroom_short="cs-principles",
+            assignments=self._assignments("individual"),
+            roster=[{"username": "alice", "github_id": "1"}], service_token="token",
+        )
+        assert results == []
+        assert mode_flip == 0
+        err = capsys.readouterr().err
+        assert "NONE were creditable" not in err

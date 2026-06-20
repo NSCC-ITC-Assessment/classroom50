@@ -2,20 +2,17 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://raw.githubusercontent.com/foundation50/classroom50/main/schemas/scores-v1.schema.json",
   "title": "classroom50/scores/v1",
-  "description": "Machine-readable schema for <classroom>/scores.json, the gradebook written by collect_scores.py (cli/gh-teacher/skeleton/dotgithub/scripts/) and read by `gh teacher download`. `submissions` is keyed by assignment slug; each value is that assignment's rows. A row is a result.json (classroom50/result/v1) payload with the `assignment` field DROPPED (it's the bucket key), plus collection-added fields: `owner` (string, the repo owner login — the stable per-bucket key), `late` (boolean, submission datetime vs the assignment `due`), and `override` (boolean teacher flag — `true` rows are preserved verbatim across re-collects). Rules JSON Schema cannot express, enforced in code: (1) within a bucket, rows are keyed by the repo `owner` login (lowercased), falling back to the sole username for a legacy single-username row written before `owner` existed — a key is unique per bucket; (2) the same identity/score cross-field rules as result/v1; (3) the lenient reader also tolerates a legacy flat-array `submissions` and a stray \"{}\" string, which it normalizes to the keyed map on write — this schema describes only the canonical written form.",
+  "description": "Machine-readable schema for <classroom>/scores.json, the gradebook written by collect_scores.py (cli/gh-teacher/skeleton/dotgithub/scripts/) and read by `gh teacher download`. The root `assignments` object is keyed by assignment slug; each value is an assignmentBucket `{ \"type\": \"individual\"|\"group\", \"entries\": [...] }`. An `entry` is one student repo's gradebook record: identity/keying at the top level (`owner` — the repo owner login, the stable per-bucket key; `member_usernames` — for a group entry, the credited roster collaborators) plus a `submissions` list holding EVERY collected submission (newest first), each a result.json (classroom50/result/v1) payload with the `assignment` field DROPPED (it's the bucket key) and an optional collection-added `late` flag. A teacher `override` flag may be set on the entry. Rules JSON Schema cannot express, enforced in code: (1) within a bucket, entries are keyed by the repo `owner` login (lowercased) — a key is unique per bucket; (2) the same identity/score cross-field rules as result/v1 apply to each submission record; (3) the bucket `type` mirrors assignments.json `mode`. Backward compatibility with pre-canonical shapes is intentionally NOT supported — this schema describes the only accepted form.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema", "submissions"],
+  "required": ["schema", "assignments"],
   "properties": {
     "schema": { "const": "classroom50/scores/v1" },
-    "submissions": {
+    "assignments": {
       "type": "object",
-      "description": "Assignment slug -> array of submission rows. `{}` (never null) at scaffold time.",
+      "description": "Assignment slug -> assignmentBucket. `{}` (never null) at scaffold time.",
       "propertyNames": { "$ref": "#/$defs/shortName" },
-      "additionalProperties": {
-        "type": "array",
-        "items": { "$ref": "#/$defs/row" }
-      }
+      "additionalProperties": { "$ref": "#/$defs/assignmentBucket" }
     }
   },
   "$defs": {
@@ -23,14 +20,61 @@
       "type": "string",
       "pattern": "^[a-z0-9][a-z0-9-]{1,38}$"
     },
-    "row": {
+    "assignmentBucket": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "One assignment's gradebook: its mode plus the per-repo entries.",
+      "required": ["type", "entries"],
+      "properties": {
+        "type": {
+          "enum": ["individual", "group"],
+          "description": "The assignment mode, mirroring assignments.json `mode`."
+        },
+        "entries": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/entry" },
+          "description": "One entry per student repo (keyed by owner). `[]` when nothing collected yet."
+        }
+      }
+    },
+    "entry": {
       "type": "object",
       "additionalProperties": true,
-      "description": "A result/v1 payload minus `assignment`, plus optional collection-added fields. additionalProperties is true so an autograder's extra top-level diagnostic fields survive ingest verbatim, mirroring entry_from_result.",
+      "description": "One student repo's gradebook entry: identity/keying fields plus the full submission history. additionalProperties is true so collection-added or hand-added fields survive ingest verbatim.",
+      "required": ["owner", "submissions"],
+      "properties": {
+        "owner": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The repo owner login (from the <classroom>-<assignment>-<username> repo-name formula). The STABLE per-bucket key collection uses to match entries across re-collects — for a group submission the credited member set can change between collects, but the owner is invariant, so the entry is replaced in place rather than duplicated. For an individual assignment the owner is the sole credited student."
+        },
+        "member_usernames": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 },
+          "description": "GROUP entries only: the credited members — the repo's roster-intersected collaborators (owner always included), resolved by collection. Absent on individual entries, where `owner` is the sole member."
+        },
+        "submissions": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/submissionRecord" },
+          "description": "Every collected submission for this repo, newest first. submissions[0] is the latest. Each item is a result/v1 payload minus the bucket-key `assignment`."
+        },
+        "override": {
+          "type": "boolean",
+          "description": "Teacher flag. `true` => the entry is preserved verbatim and never refreshed by collection. `false` => an explicit 'keep refreshing' marker that survives replacement."
+        }
+      }
+    },
+    "submissionRecord": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "One collected submission: a result/v1 payload minus the bucket-key `assignment`, plus an optional collection-added `late` flag. additionalProperties is true so an autograder's extra top-level diagnostic fields survive ingest verbatim.",
       "required": [
         "schema",
         "classroom",
-        "usernames",
+        "assignment_type",
+        "owner",
         "submission",
         "commit",
         "release",
@@ -43,14 +87,14 @@
       "properties": {
         "schema": {
           "const": "classroom50/result/v1",
-          "description": "Rows retain the per-result sentinel (not a scores sentinel) — they are stored result payloads."
+          "description": "Submission records retain the per-result sentinel (not a scores sentinel) — they are stored result payloads."
         },
         "classroom": { "type": "string", "minLength": 1 },
-        "usernames": {
-          "type": "array",
-          "minItems": 1,
-          "items": { "type": "string", "minLength": 1 },
-          "description": "One entry for an individual submission; the full rostered member list for a group submission (collection rewrites it from the runner's owner-only list)."
+        "assignment_type": { "enum": ["individual", "group"] },
+        "owner": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The repo owner login — the identity anchor stamped by the runner."
         },
         "submission": { "type": "string", "pattern": "^submit/" },
         "commit": { "type": "string", "minLength": 1 },
@@ -68,16 +112,17 @@
         },
         "late": {
           "type": "boolean",
-          "description": "Collection-added: true when the submission datetime is after the assignment `due`. Absent when the assignment has no `due`."
+          "description": "Collection-added: true when this submission's datetime is after the assignment `due`. Absent when the assignment has no `due`."
         },
-        "owner": {
-          "type": "string",
-          "minLength": 1,
-          "description": "Collection-added: the repo owner login (from the <classroom>-<assignment>-<username> repo-name formula). The STABLE per-bucket key collection uses to match rows across re-collects — for a group submission the credited `usernames` set can change between collects, but the owner is invariant, so the row is replaced in place rather than duplicated. For an individual submission it equals usernames[0]."
-        },
-        "override": {
-          "type": "boolean",
-          "description": "Teacher flag. `true` => the row is preserved verbatim and never refreshed by collection. `false` => an explicit 'keep refreshing' marker that survives replacement."
+        "submitted_by": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["username"],
+          "description": "The GitHub actor who pushed this submission (stamped by the runner from GITHUB_ACTOR/GITHUB_ACTOR_ID). For a group submission the score is credited to every member in the entry's `member_usernames`, but `submitted_by` records who actually pushed this particular submission. Absent on results produced before this field existed.",
+          "properties": {
+            "username": { "type": "string", "minLength": 1 },
+            "id": { "type": ["integer", "null"] }
+          }
         }
       }
     },

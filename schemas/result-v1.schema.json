@@ -2,14 +2,15 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://raw.githubusercontent.com/foundation50/classroom50/main/schemas/result-v1.schema.json",
   "title": "classroom50/result/v1",
-  "description": "Machine-readable schema for the result.json an autograder (or runner.py's synthesized error/vacuous/declarative paths) writes per submission. Mirrors the authoritative validators runner.py::validate_result and collect_scores.py::validate_result (cli/gh-teacher/skeleton/dotgithub/scripts/). Rules JSON Schema cannot express, enforced in code: (1) classroom/assignment/usernames must match the SOURCE REPO's identity (a hostile result can't land in another student's gradebook); (2) usernames cardinality is MODE-dependent — individual mode requires exactly [owner]; group mode requires a non-empty list CONTAINING the owner (collection later rewrites it to the full member list); the runner emits the single owner in both cases. (3) score <= max-score and per-test score <= per-test max-score are cross-field. This schema captures only the mode-independent structural contract.",
+  "description": "Machine-readable schema for the result.json an autograder (or runner.py's synthesized error/vacuous/declarative paths) writes per submission. Mirrors the authoritative validators runner.py::validate_result and collect_scores.py::validate_result (cli/gh-teacher/skeleton/dotgithub/scripts/). Rules JSON Schema cannot express, enforced in code: (1) classroom/assignment/owner must match the SOURCE REPO's identity (a hostile result can't land in another student's gradebook); `owner` is the identity anchor (the <username> from the repo name). (2) assignment_type must match the assignment's configured mode. (3) score <= max-score and per-test score <= per-test max-score are cross-field. There is no `usernames` field: who pushed is `submitted_by`, who owns the repo is `owner`, and the credited member list (group only) is resolved by collection. This schema captures only the structural contract.",
   "type": "object",
   "additionalProperties": false,
   "required": [
     "schema",
     "classroom",
     "assignment",
-    "usernames",
+    "assignment_type",
+    "owner",
     "submission",
     "commit",
     "release",
@@ -31,11 +32,14 @@
       "minLength": 1,
       "description": "Assignment slug. Must equal the source repo's assignment (enforced in code)."
     },
-    "usernames": {
-      "type": "array",
-      "minItems": 1,
-      "items": { "type": "string", "minLength": 1 },
-      "description": "Crediting GitHub usernames. The runner always emits exactly one (the repo owner). Cardinality rule is mode-dependent and enforced in code: individual => exactly [owner]; group => non-empty list containing the owner (collection rewrites it to the full member list after validation). The owner must match the username derived from the repo name."
+    "assignment_type": {
+      "enum": ["individual", "group"],
+      "description": "The assignment's mode, stamped by the runner from the MODE env. Collection cross-checks it against assignments.json `mode` and warns-and-skips on mismatch."
+    },
+    "owner": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The repo owner login (the <username> from <classroom>-<assignment>-<username>). The identity anchor the validators check; for an individual assignment it is the sole credited student, for a group it is the founder whose repo was graded."
     },
     "submission": {
       "type": "string",
@@ -76,9 +80,29 @@
       "type": "array",
       "items": { "$ref": "#/$defs/testResult" },
       "description": "Per-test outcomes. Empty for a vacuous pass (no autograder configured) or an error result."
+    },
+    "submitted_by": {
+      "$ref": "#/$defs/submittedBy"
     }
   },
   "$defs": {
+    "submittedBy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["username"],
+      "description": "Optional: the GitHub actor who pushed THIS submission, stamped by the runner from GITHUB_ACTOR/GITHUB_ACTOR_ID. For a group submission the score is credited to every member (collection resolves the member list), but `submitted_by` records who actually pushed this particular submission. Absent on results produced before this field existed.",
+      "properties": {
+        "username": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The pusher's GitHub login (GITHUB_ACTOR)."
+        },
+        "id": {
+          "type": ["integer", "null"],
+          "description": "The pusher's numeric GitHub user id (GITHUB_ACTOR_ID), or null when unavailable."
+        }
+      }
+    },
     "testResult": {
       "type": "object",
       "additionalProperties": true,

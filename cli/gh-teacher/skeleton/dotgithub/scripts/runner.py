@@ -217,6 +217,28 @@ def classroom_default_autograder_url(pages_base_url: str, classroom: str) -> str
     return f"{pages_base_url}/{safe_classroom}/{ENTRYPOINT_FILENAME}"
 
 
+def actor_identity() -> dict[str, Any] | None:
+    """The GitHub actor who triggered this run — the person who pushed the
+    submission. Returns {"username": <login>, "id": <numeric id|None>} or
+    None when the login is unavailable.
+
+    For a GROUP submission the graded repo is the founder's, but any
+    teammate-collaborator can push; `submitted_by` records who actually
+    pushed THIS submission so the gradebook shows the submitter even though
+    the shared score is credited to every member. GITHUB_ACTOR (login) and
+    GITHUB_ACTOR_ID (numeric id) are default GitHub Actions env vars set on
+    every run; id is parsed as an int when present, else null.
+    """
+    login = (os.environ.get("GITHUB_ACTOR") or "").strip()
+    if not login:
+        return None
+    raw_id = (os.environ.get("GITHUB_ACTOR_ID") or "").strip()
+    actor_id: int | None = None
+    if raw_id.isdigit():
+        actor_id = int(raw_id)
+    return {"username": login, "id": actor_id}
+
+
 def make_result(
     *,
     classroom: str,
@@ -229,17 +251,27 @@ def make_result(
     score: int,
     max_score: int,
     tests: list[dict[str, Any]],
+    assignment_type: str,
     review_link: str | None = None,
+    submitted_by: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build a v1-shaped result.json payload. Single source of the field
     layout shared by the error/vacuous paths (empty_result) and the
     declarative grader (which passes real score/tests). review falls
-    back to the commit view when review_link is None."""
-    return {
+    back to the commit view when review_link is None.
+
+    `username` is the repo OWNER (derived from the repo name) and is
+    emitted as the `owner` field — the identity anchor the collector
+    validates. `assignment_type` ("individual" | "group") records the
+    assignment mode. There is no `usernames` field: who pushed is
+    `submitted_by`, who owns the repo is `owner`, and the credited member
+    list (group only) is resolved by collection."""
+    result: dict[str, Any] = {
         "schema": RESULT_SCHEMA_V1,
         "classroom": classroom,
         "assignment": assignment,
-        "usernames": [username],
+        "assignment_type": assignment_type,
+        "owner": username,
         "submission": submission,
         "commit": commit_link,
         "release": release_link,
@@ -249,6 +281,9 @@ def make_result(
         "max-score": max_score,
         "tests": tests,
     }
+    if submitted_by is not None:
+        result["submitted_by"] = submitted_by
+    return result
 
 
 def empty_result(
@@ -260,7 +295,9 @@ def empty_result(
     commit_link: str,
     release_link: str,
     when: datetime.datetime,
+    assignment_type: str,
     review_link: str | None = None,
+    submitted_by: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """A v1-valid result.json payload with no tests (score 0/0).
 
@@ -279,7 +316,9 @@ def empty_result(
         score=0,
         max_score=0,
         tests=[],
+        assignment_type=assignment_type,
         review_link=review_link,
+        submitted_by=submitted_by,
     )
 
 
@@ -339,26 +378,26 @@ def render_release_body(result: dict[str, Any], summary: str) -> str:
 
 
 def validate_result(
-    data: Any, *, classroom: str, assignment: str, is_group: bool = False
+    data: Any, *, classroom: str, assignment: str, is_group: bool = False,
+    owner: str | None = None,
 ) -> str | None:
     """Return None if `data` is v1-shaped for the given identity, else
     a human-readable error string.
 
     Mirrors collect_scores.py::validate_result so a payload that
     passes here also passes the gradebook ingest. Without the parity,
-    a malformed result.json (wrong type on `usernames`, non-int score,
-    test entry that isn't a dict, etc.) would silently pass the
-    runner, get published as a release, and only get rejected on the
-    next collect-scores run — the student appears as not-yet-submitted
-    in the gradebook with no signal in the workflow log.
+    a malformed result.json (missing `owner`, non-int score, test entry
+    that isn't a dict, etc.) would silently pass the runner, get published
+    as a release, and only get rejected on the next collect-scores run —
+    the student appears as not-yet-submitted in the gradebook with no
+    signal in the workflow log.
 
-    `usernames` cardinality is mode-dependent (matching the collector):
-    an individual assignment must be a one-element list; a group
-    assignment must be a non-empty list (a custom group autograder may
-    legitimately emit the full teammate list — the runner no longer
-    rejects it). The owner-membership and identity checks the collector
-    adds are out of scope here: the runner can't read collaborators, so
-    it validates shape, and the collector re-validates identity on ingest.
+    `owner` (the repo owner login) is the identity anchor: when provided
+    it must equal `data["owner"]`. `assignment_type` must be
+    "individual"/"group" and, given `is_group`, must match the run's mode.
+    There is no `usernames` field anymore: who pushed is `submitted_by`,
+    who owns the repo is `owner`, and the credited member list (group only)
+    is resolved by collection.
     """
     if not isinstance(data, dict):
         return f"{RESULT_FILENAME} is not a JSON object"
@@ -375,15 +414,21 @@ def validate_result(
             f"want {assignment!r}"
         )
 
-    usernames = data.get("usernames")
-    if not isinstance(usernames, list) or not usernames or not all(
-        isinstance(u, str) and u for u in usernames
-    ):
-        return f"{RESULT_FILENAME} 'usernames' must be a non-empty list of non-empty strings"
-    if not is_group and len(usernames) != 1:
+    result_owner = data.get("owner")
+    if not isinstance(result_owner, str) or not result_owner:
+        return f"{RESULT_FILENAME} 'owner' must be a non-empty string"
+    if owner is not None and result_owner.lower() != owner.lower():
         return (
-            f"{RESULT_FILENAME} 'usernames' must be a one-element list for an "
-            f"individual assignment"
+            f"{RESULT_FILENAME} 'owner' is {result_owner!r}, want {owner!r} "
+            f"(derived from the repo name)"
+        )
+
+    expected_type = "group" if is_group else "individual"
+    assignment_type = data.get("assignment_type")
+    if assignment_type != expected_type:
+        return (
+            f"{RESULT_FILENAME} 'assignment_type' is {assignment_type!r}, "
+            f"want {expected_type!r}"
         )
 
     submission = data.get("submission")
@@ -424,6 +469,32 @@ def validate_result(
             return f"{RESULT_FILENAME} 'tests[{i}].max-score' must be a non-negative integer"
         if ts > tm:
             return f"{RESULT_FILENAME} 'tests[{i}].score' ({ts}) > 'tests[{i}].max-score' ({tm})"
+
+    # submitted_by is optional (older results omit it). When present it
+    # must be an object with a non-empty string username and an integer
+    # or null id — the runner stamps it from GITHUB_ACTOR/GITHUB_ACTOR_ID.
+    err = validate_submitted_by(data.get("submitted_by"), RESULT_FILENAME)
+    if err is not None:
+        return err
+    return None
+
+
+def validate_submitted_by(value: Any, filename: str) -> str | None:
+    """Validate the optional `submitted_by` block (the pusher identity).
+    None/absent is allowed (older results omit it). When present it must be
+    {"username": <non-empty str>, "id": <int|null>}. Shared shape so the
+    runner and the collector agree. Returns an error string or None.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        return f"{filename} 'submitted_by' must be an object"
+    uname = value.get("username")
+    if not isinstance(uname, str) or not uname:
+        return f"{filename} 'submitted_by.username' must be a non-empty string"
+    sid = value.get("id")
+    if sid is not None and (isinstance(sid, bool) or not isinstance(sid, int)):
+        return f"{filename} 'submitted_by.id' must be an integer or null"
     return None
 
 
@@ -607,9 +678,9 @@ def now_utc() -> datetime.datetime:
 def mode_is_group(mode: str | None) -> bool:
     """True only when the assignment mode is exactly 'group' (case- and
     whitespace-insensitive). Anything else — including None, '', or an
-    unrecognized value — is treated as individual, the stricter
-    one-username rule, so a missing/typo'd MODE env can never loosen
-    validation. Mirrors the setup job's mode normalization."""
+    unrecognized value — is treated as individual, so a missing/typo'd
+    MODE env can never loosen validation (it can only require the stricter
+    individual `assignment_type`). Mirrors the setup job's mode normalization."""
     return (mode or "").strip().lower() == "group"
 
 
@@ -636,6 +707,8 @@ class Finalizer:
         commit_link: str,
         release_link: str,
         review_link: str | None = None,
+        submitted_by: dict[str, Any] | None = None,
+        assignment_type: str = "individual",
     ):
         self.workspace = workspace
         self.github_output = github_output
@@ -646,6 +719,8 @@ class Finalizer:
         self.commit_link = commit_link
         self.release_link = release_link
         self.review_link = review_link
+        self.submitted_by = submitted_by
+        self.assignment_type = assignment_type
 
     def error(self, message: str) -> int:
         print(f"::error::{message}", file=sys.stderr)
@@ -658,6 +733,8 @@ class Finalizer:
             release_link=self.release_link,
             when=now_utc(),
             review_link=self.review_link,
+            submitted_by=self.submitted_by,
+            assignment_type=self.assignment_type,
         )
         summary = f"classroom50 autograde: {message}"
         (self.workspace / RESULT_FILENAME).write_text(json.dumps(result, indent=2) + "\n")
@@ -684,6 +761,8 @@ class Finalizer:
             release_link=self.release_link,
             when=now_utc(),
             review_link=self.review_link,
+            submitted_by=self.submitted_by,
+            assignment_type=self.assignment_type,
         )
         status, summary = derive_status_and_summary(result)
         print(f"runner: {summary}")
@@ -1041,7 +1120,9 @@ class DeclarativeGrader:
     def __init__(self, *, workspace: pathlib.Path, fixtures_dir: pathlib.Path,
                  classroom: str, assignment: str, username: str, submission: str,
                  commit_link: str, release_link: str,
-                 review_link: str | None = None):
+                 review_link: str | None = None,
+                 submitted_by: dict[str, Any] | None = None,
+                 assignment_type: str = "individual"):
         self.workspace = workspace
         self.fixtures_dir = fixtures_dir
         self.classroom = classroom
@@ -1051,6 +1132,8 @@ class DeclarativeGrader:
         self.commit_link = commit_link
         self.release_link = release_link
         self.review_link = review_link
+        self.submitted_by = submitted_by
+        self.assignment_type = assignment_type
 
     def grade(self, tests: list[dict[str, Any]]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
         """Run every test. Returns (result.json dict, outcomes) where the
@@ -1071,6 +1154,8 @@ class DeclarativeGrader:
             max_score=sum(o["max-score"] for o in outcomes),
             tests=rows,
             review_link=self.review_link,
+            submitted_by=self.submitted_by,
+            assignment_type=self.assignment_type,
         )
         return result, outcomes
 
@@ -1097,6 +1182,8 @@ def run_declarative(tests_path: pathlib.Path, finalize: Finalizer,
         commit_link=finalize.commit_link,
         release_link=finalize.release_link,
         review_link=finalize.review_link,
+        submitted_by=finalize.submitted_by,
+        assignment_type=finalize.assignment_type,
     )
     # Backstop: execute_test/load_tests handle the expected failures; the
     # broad catch guarantees the "grading outcomes always exit 0"
@@ -1109,7 +1196,10 @@ def run_declarative(tests_path: pathlib.Path, finalize: Finalizer,
 
     # Should always pass (the grader controls every field), but validating
     # keeps parity with collect_scores ingest and catches drift early.
-    err = validate_result(result, classroom=finalize.classroom, assignment=finalize.assignment)
+    err = validate_result(
+        result, classroom=finalize.classroom, assignment=finalize.assignment,
+        is_group=(finalize.assignment_type == "group"), owner=finalize.username,
+    )
     if err is not None:
         return finalize.error(f"declarative grader produced invalid result: {err}")
 
@@ -1217,6 +1307,8 @@ def run_entrypoint(
     re-threading them through the signature."""
     env = dict(os.environ)
     env["USERNAME"] = finalize.username
+    env["OWNER"] = finalize.username
+    env["ASSIGNMENT_TYPE"] = finalize.assignment_type
     env["COMMIT_URL"] = finalize.commit_link
     env["RELEASE_URL"] = finalize.release_link
     env["REVIEW_URL"] = finalize.review_link
@@ -1240,7 +1332,7 @@ def finalize_result(finalize: Finalizer, *, is_group: bool) -> int:
     Returns the runner's exit code (0 on success; an error rc when the
     result is missing/malformed/invalid). Identity/paths are read off
     `finalize`; `is_group` is the one stage-local input (it drives the
-    mode-aware usernames check)."""
+    `assignment_type` check in validate_result)."""
     workspace = finalize.workspace
     github_output = finalize.github_output
     result_path = workspace / RESULT_FILENAME
@@ -1250,8 +1342,29 @@ def finalize_result(finalize: Finalizer, *, is_group: bool) -> int:
         result = json.loads(result_path.read_text())
     except json.JSONDecodeError as exc:
         return finalize.error(f"{RESULT_FILENAME} is not valid JSON: {exc}")
+
+    # Stamp the runner-authoritative identity fields BEFORE validation. A
+    # custom autograder builds its own result.json and can't be trusted to
+    # set `owner` (the repo owner) or `assignment_type` (the mode) — the
+    # runner knows both. Overwrite rather than trust the autograder so a
+    # student-influenced result.json can't claim a different owner/type.
+    if isinstance(result, dict):
+        result["owner"] = finalize.username
+        result["assignment_type"] = finalize.assignment_type
+        # The actual pusher (GITHUB_ACTOR), also runner-authoritative. Stamp
+        # unconditionally: set it when known, and DROP any autograder-written
+        # `submitted_by` when the runner couldn't resolve the actor — never
+        # let a custom result.json's self-asserted pusher survive (it is
+        # student-influenced and would forge `submitted_by`).
+        if finalize.submitted_by is not None:
+            result["submitted_by"] = finalize.submitted_by
+        else:
+            result.pop("submitted_by", None)
+        result_path.write_text(json.dumps(result, indent=2) + "\n")
+
     err = validate_result(
-        result, classroom=finalize.classroom, assignment=finalize.assignment, is_group=is_group
+        result, classroom=finalize.classroom, assignment=finalize.assignment,
+        is_group=is_group, owner=finalize.username,
     )
     if err is not None:
         return finalize.error(err)
@@ -1296,8 +1409,8 @@ def main() -> int:
     actor = os.environ.get("GITHUB_ACTOR", "")
     # Assignment mode flows from assignments.json (config repo) via the
     # setup job's `mode` output. Unknown/missing defaults to individual —
-    # the stricter one-username rule — so a missing env can't loosen
-    # validation. Drives the mode-aware usernames check below; adds no
+    # the stricter `assignment_type` — so a missing env can't loosen
+    # validation. Drives the assignment_type check below; adds no
     # student-repo state.
     is_group = mode_is_group(os.environ.get("MODE"))
     github_output = os.environ.get("GITHUB_OUTPUT")
@@ -1343,6 +1456,8 @@ def main() -> int:
         commit_link=commit_link,
         release_link=release_link,
         review_link=review_link,
+        submitted_by=actor_identity(),
+        assignment_type="group" if is_group else "individual",
     )
 
     # Reset the runtime root and clear stale outputs from any prior run.

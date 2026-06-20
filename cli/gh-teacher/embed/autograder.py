@@ -17,12 +17,16 @@ To replace this stub with real grading logic, run:
   gh teacher autograder set-default <org> <classroom> --from <path>
 
 Contract (see Autograders wiki page for full details):
-  Reads env: CLASSROOM, ASSIGNMENT, USERNAME, SUBMISSION_TAG,
-             COMMIT_URL, RELEASE_URL, REVIEW_URL, PAGES_BASE_URL,
-             GITHUB_*
+  Reads env: CLASSROOM, ASSIGNMENT, ASSIGNMENT_TYPE, USERNAME, OWNER,
+             SUBMISSION_TAG, COMMIT_URL, RELEASE_URL, REVIEW_URL,
+             PAGES_BASE_URL, GITHUB_*
   Working dir: the student's repo checkout.
   Writes (in cwd):
-    result.json       classroom50/result/v1 payload (REQUIRED)
+    result.json       classroom50/result/v1 payload (REQUIRED). The runner
+                      stamps owner + assignment_type (+ submitted_by)
+                      authoritatively, so an autograder MAY omit them; this
+                      stub sets them for clarity. There is no `usernames`
+                      field.
     release-body.md   Markdown body for the GitHub Release (optional —
                       runner synthesizes from result.json if absent)
   Appends to $GITHUB_OUTPUT (optional — runner derives from
@@ -43,7 +47,9 @@ import pathlib
 
 classroom = os.environ.get("CLASSROOM", "")
 assignment = os.environ.get("ASSIGNMENT", "")
+assignment_type = os.environ.get("ASSIGNMENT_TYPE", "") or "individual"
 username = os.environ.get("USERNAME", "")
+owner = os.environ.get("OWNER", "") or username
 submission = os.environ.get("SUBMISSION_TAG", "")
 commit_url = os.environ.get("COMMIT_URL", "")
 release_url = os.environ.get("RELEASE_URL", "")
@@ -60,7 +66,9 @@ github_output = os.environ.get("GITHUB_OUTPUT")
 print("=== classroom50 diagnostic-stub autograder ===")
 print(f"  CLASSROOM         = {classroom}")
 print(f"  ASSIGNMENT        = {assignment}")
+print(f"  ASSIGNMENT_TYPE   = {assignment_type}")
 print(f"  USERNAME          = {username}")
+print(f"  OWNER             = {owner}")
 print(f"  SUBMISSION_TAG    = {submission}")
 print(f"  COMMIT_URL        = {commit_url}")
 print(f"  RELEASE_URL       = {release_url}")
@@ -78,7 +86,8 @@ result = {
     "schema": "classroom50/result/v1",
     "classroom": classroom,
     "assignment": assignment,
-    "usernames": [username],
+    "assignment_type": assignment_type,
+    "owner": owner,
     "submission": submission,
     "commit": commit_url,
     "release": release_url,

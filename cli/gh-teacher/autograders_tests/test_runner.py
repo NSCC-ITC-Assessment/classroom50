@@ -298,6 +298,24 @@ class TestFeedbackBaseSha:
 # ---------------------------------------------------------------------------
 
 
+class TestActorIdentity:
+    def test_returns_username_and_int_id(self, monkeypatch):
+        monkeypatch.setenv("GITHUB_ACTOR", "bob")
+        monkeypatch.setenv("GITHUB_ACTOR_ID", "222")
+        assert ag.actor_identity() == {"username": "bob", "id": 222}
+
+    def test_id_null_when_missing_or_nonnumeric(self, monkeypatch):
+        monkeypatch.setenv("GITHUB_ACTOR", "bob")
+        monkeypatch.delenv("GITHUB_ACTOR_ID", raising=False)
+        assert ag.actor_identity() == {"username": "bob", "id": None}
+        monkeypatch.setenv("GITHUB_ACTOR_ID", "not-a-number")
+        assert ag.actor_identity() == {"username": "bob", "id": None}
+
+    def test_returns_none_when_actor_absent(self, monkeypatch):
+        monkeypatch.delenv("GITHUB_ACTOR", raising=False)
+        assert ag.actor_identity() is None
+
+
 class TestEmptyResult:
     WHEN = datetime.datetime(2026, 6, 1, 14, 33, 11, tzinfo=datetime.timezone.utc)
 
@@ -308,6 +326,7 @@ class TestEmptyResult:
         submission="submit/2026-06-01T14-32-05Z-a1b2c3d",
         commit_link="https://github.com/cs50/cs-principles-hello-alice/commit/abc",
         release_link="https://github.com/cs50/cs-principles-hello-alice/releases/tag/submit%2F2026-06-01T14-32-05Z-a1b2c3d",
+        assignment_type="individual",
     )
 
     def test_schema_and_identity_populated(self):
@@ -315,7 +334,8 @@ class TestEmptyResult:
         assert result["schema"] == ag.RESULT_SCHEMA_V1
         assert result["classroom"] == "cs-principles"
         assert result["assignment"] == "hello"
-        assert result["usernames"] == ["alice"]
+        assert result["owner"] == "alice"
+        assert result["assignment_type"] == "individual"
         assert result["submission"] == "submit/2026-06-01T14-32-05Z-a1b2c3d"
 
     def test_zero_scores_and_empty_tests(self):
@@ -337,6 +357,16 @@ class TestEmptyResult:
     def test_datetime_formatted_as_utc_iso8601(self):
         result = ag.empty_result(when=self.WHEN, **self.BASE_KWARGS)
         assert result["datetime"] == "2026-06-01T14:33:11Z"
+
+    def test_submitted_by_omitted_when_none(self):
+        result = ag.empty_result(when=self.WHEN, **self.BASE_KWARGS)
+        assert "submitted_by" not in result
+
+    def test_submitted_by_included_when_provided(self):
+        result = ag.empty_result(
+            when=self.WHEN, submitted_by={"username": "bob", "id": 222}, **self.BASE_KWARGS
+        )
+        assert result["submitted_by"] == {"username": "bob", "id": 222}
 
 
 # ---------------------------------------------------------------------------
@@ -456,7 +486,8 @@ class TestValidateResult:
         "schema": "classroom50/result/v1",
         "classroom": "cs-principles",
         "assignment": "hello",
-        "usernames": ["alice"],
+        "owner": "alice",
+        "assignment_type": "individual",
         "submission": "submit/2026-06-01T14-32-05Z-a1b2c3d",
         "commit": "https://github.com/cs50/cs-principles-hello-alice/commit/abc",
         "release": "https://github.com/cs50/cs-principles-hello-alice/releases/tag/submit%2F...",
@@ -471,6 +502,24 @@ class TestValidateResult:
         assert ag.validate_result(
             self.BASE, classroom="cs-principles", assignment="hello"
         ) is None
+
+    def test_valid_submitted_by_returns_none(self):
+        ok = {**self.BASE, "submitted_by": {"username": "bob", "id": 222}}
+        assert ag.validate_result(ok, classroom="cs-principles", assignment="hello") is None
+
+    def test_submitted_by_null_id_ok(self):
+        ok = {**self.BASE, "submitted_by": {"username": "bob", "id": None}}
+        assert ag.validate_result(ok, classroom="cs-principles", assignment="hello") is None
+
+    def test_submitted_by_missing_username_rejected(self):
+        bad = {**self.BASE, "submitted_by": {"id": 222}}
+        err = ag.validate_result(bad, classroom="cs-principles", assignment="hello")
+        assert err is not None and "submitted_by" in err
+
+    def test_submitted_by_non_int_id_rejected(self):
+        bad = {**self.BASE, "submitted_by": {"username": "bob", "id": "222"}}
+        err = ag.validate_result(bad, classroom="cs-principles", assignment="hello")
+        assert err is not None and "submitted_by" in err
 
     def test_non_dict_rejected(self):
         err = ag.validate_result(
@@ -503,12 +552,50 @@ class TestValidateResult:
         assert err is not None
         assert "tests" in err
 
-    def test_usernames_wrong_shape_rejected(self):
-        for bad_usernames in (None, "alice", ["a", "b"], [], [""]):
-            bad = {**self.BASE, "usernames": bad_usernames}
+    def test_owner_wrong_shape_rejected(self):
+        # owner is the identity anchor: must be a non-empty string. A
+        # missing or blank owner fails the runner so a malformed payload
+        # never reaches the gradebook.
+        for bad_owner in (None, "", 42, ["alice"]):
+            bad = {**self.BASE, "owner": bad_owner}
             err = ag.validate_result(bad, classroom="cs-principles", assignment="hello")
-            assert err is not None, f"{bad_usernames!r} should be rejected"
-            assert "usernames" in err
+            assert err is not None, f"{bad_owner!r} should be rejected"
+            assert "owner" in err
+        missing = {k: v for k, v in self.BASE.items() if k != "owner"}
+        err = ag.validate_result(missing, classroom="cs-principles", assignment="hello")
+        assert err is not None and "owner" in err
+
+    def test_owner_kwarg_mismatch_rejected(self):
+        # When the runner passes the repo-derived owner, the payload's
+        # owner must match it (case-insensitively).
+        assert ag.validate_result(
+            self.BASE, classroom="cs-principles", assignment="hello", owner="ALICE"
+        ) is None
+        err = ag.validate_result(
+            self.BASE, classroom="cs-principles", assignment="hello", owner="bob"
+        )
+        assert err is not None and "owner" in err
+
+    def test_assignment_type_validated_against_mode(self):
+        # assignment_type must be "individual"/"group" and match the run's
+        # mode. A bogus value, or an individual payload graded as a group
+        # run (and vice versa), is rejected.
+        bad = {**self.BASE, "assignment_type": "bogus"}
+        err = ag.validate_result(bad, classroom="cs-principles", assignment="hello")
+        assert err is not None and "assignment_type" in err
+
+        # is_group default False, payload says individual -> ok already
+        # (covered by test_valid_payload_returns_none). Group run with an
+        # individual payload must fail.
+        err = ag.validate_result(
+            self.BASE, classroom="cs-principles", assignment="hello", is_group=True
+        )
+        assert err is not None and "assignment_type" in err
+
+        group = {**self.BASE, "assignment_type": "group"}
+        assert ag.validate_result(
+            group, classroom="cs-principles", assignment="hello", is_group=True
+        ) is None
 
     def test_submission_wrong_shape_rejected(self):
         for bad_sub in (None, 42, "not-a-submit-tag", "submit", ""):
@@ -984,6 +1071,75 @@ class TestFinalizer:
         text = gh_output.read_text()
         assert "status=success\n" in text
         assert "no autograder configured" in text
+
+
+class TestFinalizeResult:
+    # Pins the stamp-before-validate path: finalize_result reads the
+    # autograder's own result.json, stamps owner/assignment_type/submitted_by
+    # authoritatively (a custom autograder may omit/forge them), then validates.
+    def _finalizer(self, tmp_path, *, submitted_by=None, assignment_type="individual"):
+        return ag.Finalizer(
+            workspace=tmp_path,
+            github_output=None,
+            classroom="cs-principles",
+            assignment="hello",
+            username="alice",
+            submission="submit/2026-06-01T14-32-05Z-a1b2c3d",
+            commit_link="https://github.com/cs50/cs-principles-hello-alice/commit/abc",
+            release_link="https://github.com/cs50/cs-principles-hello-alice/releases/tag/x",
+            submitted_by=submitted_by,
+            assignment_type=assignment_type,
+        )
+
+    def _autograder_result(self, **overrides):
+        # A minimal result.json a custom autograder might write — deliberately
+        # WITHOUT owner/assignment_type to prove the runner supplies them.
+        r = {
+            "schema": ag.RESULT_SCHEMA_V1,
+            "classroom": "cs-principles",
+            "assignment": "hello",
+            "submission": "submit/2026-06-01T14-32-05Z-a1b2c3d",
+            "commit": "c", "release": "r", "review": "v",
+            "datetime": "2026-06-01T14:33:11Z",
+            "score": 5, "max-score": 10, "tests": [],
+        }
+        r.update(overrides)
+        return r
+
+    def test_stamps_owner_and_type_on_autograder_result_then_validates(self, tmp_path):
+        # Custom autograder omits owner/assignment_type; the runner stamps
+        # them and the result validates (rc 0).
+        (tmp_path / "result.json").write_text(json.dumps(self._autograder_result()))
+        f = self._finalizer(tmp_path, submitted_by={"username": "bob", "id": 222})
+        assert ag.finalize_result(f, is_group=False) == 0
+        result = json.loads((tmp_path / "result.json").read_text())
+        assert result["owner"] == "alice"
+        assert result["assignment_type"] == "individual"
+        assert result["submitted_by"] == {"username": "bob", "id": 222}
+
+    def test_overwrites_forged_owner_and_type(self, tmp_path):
+        # A student-influenced result.json claiming a different owner/type
+        # is overwritten with the runner-authoritative values.
+        (tmp_path / "result.json").write_text(json.dumps(
+            self._autograder_result(owner="victim", assignment_type="group")
+        ))
+        f = self._finalizer(tmp_path)
+        assert ag.finalize_result(f, is_group=False) == 0
+        result = json.loads((tmp_path / "result.json").read_text())
+        assert result["owner"] == "alice"
+        assert result["assignment_type"] == "individual"
+
+    def test_drops_forged_submitted_by_when_actor_unknown(self, tmp_path):
+        # submitted_by is stamped unconditionally: when the runner couldn't
+        # resolve the actor (None), a result.json's self-asserted submitted_by
+        # must be DROPPED, never trusted.
+        (tmp_path / "result.json").write_text(json.dumps(
+            self._autograder_result(submitted_by={"username": "forged", "id": 999})
+        ))
+        f = self._finalizer(tmp_path, submitted_by=None)
+        assert ag.finalize_result(f, is_group=False) == 0
+        result = json.loads((tmp_path / "result.json").read_text())
+        assert "submitted_by" not in result
 
 
 # ---------------------------------------------------------------------------

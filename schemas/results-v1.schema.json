@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/foundation50/classroom50/main/schemas/results-v1.schema.json",
+  "title": "classroom50/results/v1",
+  "description": "Machine-readable schema for the per-repo <repo>/results.json file written by `gh teacher download` (cli/gh-teacher/download.go::refreshResultJSON) alongside each cloned student repo. It is the full submission history for ONE repo: a JSON array of submission envelopes, NEWEST FIRST. Each envelope pairs a submit-tag with that submission's result.json payload. Distinct from <repo>/result.json (which is just the single latest payload) and from <classroom>/scores.json (the aggregated, owner-keyed gradebook). NOTE: unlike a scores.json submission record (a result/v1 payload MINUS `assignment`), the `result` here is the RAW result/v1 payload as published on the release — it still carries `assignment`. `result` is null when a submit-tag release carried no result.json asset. This artifact carries no top-level `schema` sentinel (it is a bare array); the file name is the contract.",
+  "type": "array",
+  "items": { "$ref": "#/$defs/envelope" },
+  "$defs": {
+    "envelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["submission_tag", "result"],
+      "properties": {
+        "submission_tag": {
+          "type": "string",
+          "pattern": "^submit/",
+          "description": "The submit/<UTC-timestamp>-<short-sha> release tag this envelope's result graded."
+        },
+        "result": {
+          "oneOf": [
+            { "type": "null" },
+            { "$ref": "#/$defs/resultPayload" }
+          ],
+          "description": "The raw result/v1 payload published on the release, or null when the release had no result.json asset. The download tool round-trips the bytes verbatim; the shape mirrors result-v1.schema.json (which still carries `assignment`)."
+        }
+      }
+    },
+    "resultPayload": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "A result/v1 payload as published on the release (mirrors result-v1.schema.json — kept loose here because results.json round-trips the bytes verbatim and does not re-validate them). The required set matches result/v1.",
+      "required": [
+        "schema",
+        "classroom",
+        "assignment",
+        "assignment_type",
+        "owner",
+        "submission",
+        "commit",
+        "release",
+        "review",
+        "datetime",
+        "score",
+        "max-score",
+        "tests"
+      ],
+      "properties": {
+        "schema": { "const": "classroom50/result/v1" }
+      }
+    }
+  }
+}

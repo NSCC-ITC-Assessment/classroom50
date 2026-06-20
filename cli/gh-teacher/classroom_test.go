@@ -162,16 +162,16 @@ func TestClassroomScaffold(t *testing.T) {
 	if scores.Schema != scoresSchemaV1 {
 		t.Errorf("scores.json schema = %q, want %q", scores.Schema, scoresSchemaV1)
 	}
-	if scores.Submissions == nil {
-		t.Errorf("scores.json Submissions must be a non-nil empty map so it marshals to {}, not null; collect-scores.yaml needs the field present from scaffold time")
+	if scores.Assignments == nil {
+		t.Errorf("scores.json Assignments must be a non-nil empty map so it marshals to {}, not null; collect-scores.yaml needs the field present from scaffold time")
 	}
-	if len(scores.Submissions) != 0 {
-		t.Errorf("scores.json should start empty, got %d assignment buckets", len(scores.Submissions))
+	if len(scores.Assignments) != 0 {
+		t.Errorf("scores.json should start empty, got %d assignment buckets", len(scores.Assignments))
 	}
-	// `{}` not `null` on the wire -- submissions is keyed by
+	// `{}` not `null` on the wire -- assignments is keyed by
 	// assignment slug, and collect_scores.py adds buckets without
 	// normalizing null first.
-	if !strings.Contains(files["cs-principles/scores.json"], "\"submissions\": {}") {
+	if !strings.Contains(files["cs-principles/scores.json"], "\"assignments\": {}") {
 		t.Errorf("scores.json should serialize the empty map as {}, got:\n%s", files["cs-principles/scores.json"])
 	}
 

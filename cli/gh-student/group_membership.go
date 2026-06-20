@@ -22,6 +22,16 @@ import (
 // student slots against max_group_size (push collaborators count; the
 // founder and added teammates count, a non-founder admin does not).
 //
+// NOTE: this admin exclusion is for COUNTING toward max_group_size only —
+// it is a best-effort, advisory limit (a founder can bypass it via the
+// GitHub UI). It is deliberately NOT how a teammate is CREDITED a score:
+// crediting happens at collection time in collect_scores.py, which gates
+// on the teacher's roster (not on collaborator permission), so a rostered
+// teammate who happens to be a repo/org admin is still credited the shared
+// group score even though they don't count as a separate slot here. The
+// roster — available only to the teacher CLI — is the real attribution
+// boundary; the student CLI has no roster, so it counts by permission.
+//
 // ctx bounds the enumeration. go-gh's default REST client has no HTTP
 // timeout, so without a deadline a stalled collaborators API would hang
 // the invite indefinitely — the caller passes a context.WithTimeout

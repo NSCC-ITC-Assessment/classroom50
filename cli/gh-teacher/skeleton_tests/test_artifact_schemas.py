@@ -11,9 +11,9 @@ hand-porting the Go/Python validators. Two kinds of check here:
      BOTH the result-v1 schema and the authoritative Python validators
      (runner.py / collect_scores.py validate_result) and assert they
      agree on the rules the schema CAN express. Rules JSON Schema cannot
-     express (identity match, mode-dependent usernames cardinality,
-     score<=max-score cross-field) are enumerated below and excluded from
-     the parity assertion — the code validators own them.
+     express (identity match, mode-dependent assignment_type, owner
+     identity match, score<=max-score cross-field) are enumerated below
+     and excluded from the parity assertion — the code validators own them.
 """
 
 from __future__ import annotations
@@ -57,7 +57,8 @@ _RESULT_BASE = {
     "schema": "classroom50/result/v1",
     "classroom": "cs-principles",
     "assignment": "hello",
-    "usernames": ["alice"],
+    "assignment_type": "individual",
+    "owner": "alice",
     "submission": "submit/2026-06-01T14-32-05Z-a1b2c3d",
     "commit": "https://github.com/x/commit/abc",
     "release": "https://github.com/x/releases/tag/y",
@@ -89,12 +90,13 @@ class TestResultSchema:
         doc["max-score"] = doc.pop("max_score")
         assert _errs(RESULT_V, doc) == []
 
-    def test_group_multi_username_accepted(self):
-        # The schema is mode-independent: a non-empty usernames list is
-        # valid. This is the shape a group result.json takes once
-        # collection has fanned it out (and the shape F1 makes the runner
-        # accept too).
-        assert _errs(RESULT_V, _result(usernames=["alice", "bob"])) == []
+    def test_group_result_accepted(self):
+        # The schema is mode-independent on its closed shape: a group
+        # result (assignment_type="group") is structurally valid. The
+        # difference between individual and group is the assignment_type
+        # enum value; the credited member list lives in scores.json, not
+        # here.
+        assert _errs(RESULT_V, _result(assignment_type="group")) == []
 
     def test_extra_per_test_diagnostic_field_preserved(self):
         doc = _result(tests=[{
@@ -103,9 +105,21 @@ class TestResultSchema:
         }])
         assert _errs(RESULT_V, doc) == []
 
+    def test_submitted_by_accepted(self):
+        # The pusher-identity block is optional and, when present, must
+        # carry a non-empty username and an int-or-null id.
+        assert _errs(RESULT_V, _result(submitted_by={"username": "bob", "id": 222})) == []
+        assert _errs(RESULT_V, _result(submitted_by={"username": "bob", "id": None})) == []
+
+    def test_submitted_by_malformed_rejected(self):
+        assert _errs(RESULT_V, _result(submitted_by={"id": 222})) != []            # no username
+        assert _errs(RESULT_V, _result(submitted_by={"username": "", "id": 1})) != []  # empty
+        assert _errs(RESULT_V, _result(submitted_by={"username": "b", "id": "x"})) != []  # str id
+
     @pytest.mark.parametrize("doc", [
         {"schema": "classroom50/result/v2"},          # wrong sentinel
-        {"usernames": []},                             # empty usernames
+        {"owner": ""},                                 # empty owner
+        {"assignment_type": "bogus"},                  # not in enum
         {"submission": "main"},                        # not submit/*
         {"score": -1},                                 # negative
         {"datetime": "2026-06-01 14:33:11"},           # not RFC3339 UTC
@@ -124,8 +138,8 @@ class TestResultSchema:
 # of rule are deliberately EXCLUDED from the equality assertion:
 #
 #   1. Rules the schema cannot express (the code validators own them):
-#      - identity match (classroom/assignment/usernames vs the source repo)
-#      - mode-dependent usernames cardinality (individual == 1; group contains owner)
+#      - identity match (classroom/assignment/owner vs the source repo)
+#      - mode-dependent assignment_type (individual vs group must match the run)
 #      - score <= max-score and per-test score <= max-score (cross-field)
 #   2. Rules the schema expresses MORE STRICTLY than the code validators
 #      (the schema is the canonical closed form; the code validators are
@@ -149,7 +163,8 @@ def _schema_ok(doc) -> bool:
 
 def _runner_ok(doc) -> bool:
     return runner.validate_result(
-        doc, classroom=_PARITY_CLASSROOM, assignment=_PARITY_ASSIGNMENT
+        doc, classroom=_PARITY_CLASSROOM, assignment=_PARITY_ASSIGNMENT,
+        owner=_PARITY_USERNAME,
     ) is None
 
 
@@ -185,17 +200,17 @@ def test_result_schema_matches_code_validators(doc):
     )
 
 
-def test_f1_group_multi_username_accepted_by_runner_and_collect():
-    # F1: a group autograder emits the full teammate list. The schema is
-    # mode-independent (accepts it); the runner in group mode and the
-    # collector in group mode must BOTH accept it — previously the runner
-    # hard-rejected len != 1.
-    group_doc = {**_RESULT_BASE, "usernames": ["alice", "bob"]}
+def test_f1_group_result_accepted_by_runner_and_collect():
+    # A group autograder stamps assignment_type="group". The schema
+    # accepts it (mode-independent closed shape); the runner in group
+    # mode and the collector in group mode must BOTH accept it.
+    group_doc = {**_RESULT_BASE, "assignment_type": "group"}
     assert _schema_ok(group_doc)
     assert runner.validate_result(
-        group_doc, classroom=_PARITY_CLASSROOM, assignment=_PARITY_ASSIGNMENT, is_group=True
+        group_doc, classroom=_PARITY_CLASSROOM, assignment=_PARITY_ASSIGNMENT,
+        is_group=True, owner=_PARITY_USERNAME,
     ) is None
-    # collect (group mode) also accepts it — owner present.
+    # collect (group mode) also accepts it — owner present and matches.
     cs.validate_result(
         group_doc, _PARITY_CLASSROOM, _PARITY_ASSIGNMENT, _PARITY_USERNAME, is_group=True
     )
@@ -220,16 +235,17 @@ def test_mode_is_group_env_derivation(mode, want):
     assert runner.mode_is_group(mode) is want
 
 
-def test_f1_individual_mode_still_rejects_multi_username():
-    # The stricter individual rule is preserved: multi-username is rejected
-    # by the runner (default/individual) and the collector (individual).
-    group_doc = {**_RESULT_BASE, "usernames": ["alice", "bob"]}
+def test_f1_assignment_type_mismatch_rejected_by_runner_and_collect():
+    # The mode contract is enforced: an individual-typed result validated
+    # in group mode is rejected by both code validators (and vice versa).
+    individual_doc = {**_RESULT_BASE, "assignment_type": "individual"}
     assert runner.validate_result(
-        group_doc, classroom=_PARITY_CLASSROOM, assignment=_PARITY_ASSIGNMENT
+        individual_doc, classroom=_PARITY_CLASSROOM, assignment=_PARITY_ASSIGNMENT,
+        is_group=True, owner=_PARITY_USERNAME,
     ) is not None
     with pytest.raises(ValueError):
         cs.validate_result(
-            group_doc, _PARITY_CLASSROOM, _PARITY_ASSIGNMENT, _PARITY_USERNAME, is_group=False
+            individual_doc, _PARITY_CLASSROOM, _PARITY_ASSIGNMENT, _PARITY_USERNAME, is_group=True
         )
 
 
@@ -252,14 +268,65 @@ def test_schema_stricter_than_code(doc, why):
     assert _collect_ok(doc), f"expected collect to accept ({why})"
 
 
+# --- results/v1 (per-repo results.json envelope) ----------------------------
+
+RESULTS_V = _validator("results-v1.schema.json")
+
+
+class TestResultsSchema:
+    # results.json (written by `gh teacher download`) is a bare array of
+    # {submission_tag, result} envelopes, newest first; `result` is a raw
+    # result/v1 payload (still carrying `assignment`) or null. The validator
+    # call above runs check_schema, so the schema itself is also pinned valid.
+
+    def test_envelope_array_with_payload_and_null_accepted(self):
+        doc = [
+            {"submission_tag": "submit/2026-06-02T10-00-00Z-aaaa", "result": _result(**{"max-score": 0})},
+            {"submission_tag": "submit/2026-06-01T10-00-00Z-bbbb", "result": None},
+        ]
+        # _result() omits the bucket-key drop — a results.json `result` is the
+        # RAW payload and still carries `assignment`, which _RESULT_BASE has.
+        assert _errs(RESULTS_V, doc) == []
+
+    def test_empty_array_accepted(self):
+        assert _errs(RESULTS_V, []) == []
+
+    @pytest.mark.parametrize("doc, why", [
+        ({"submission_tag": "submit/x", "result": None}, "top-level must be an array, not an object"),
+        ([{"result": None}], "envelope missing submission_tag"),
+        ([{"submission_tag": "submit/x"}], "envelope missing result"),
+        ([{"submission_tag": "v1.0.0", "result": None}], "submission_tag not submit/*"),
+        ([{"submission_tag": "submit/x", "result": None, "extra": 1}], "extra envelope key rejected"),
+        ([{"submission_tag": "submit/x", "result": {"schema": "classroom50/result/v2"}}], "result wrong sentinel"),
+        ([{"submission_tag": "submit/x", "result": {}}], "result missing required fields"),
+    ])
+    def test_malformed_rejected(self, doc, why):
+        assert _errs(RESULTS_V, doc) != [], f"expected rejection: {why}"
+
+
+def test_results_v1_payload_required_matches_result_v1():
+    # The results.json `result` payload is the RAW result/v1 (it still carries
+    # `assignment`, unlike a scores.json submission record). Pin its required
+    # set equal to result-v1's so a result/v1 field change can't silently
+    # drift the results-v1 envelope contract.
+    result = json.loads((_SCHEMAS / "result-v1.schema.json").read_text())
+    results = json.loads((_SCHEMAS / "results-v1.schema.json").read_text())
+    payload = results["$defs"]["resultPayload"]
+    assert set(payload["required"]) == set(result["required"]), (
+        f"results-v1 resultPayload.required {sorted(payload['required'])} != "
+        f"result-v1 required {sorted(result['required'])}"
+    )
+
+
 # --- scores/v1 ---------------------------------------------------------------
 
 SCORES_V = _validator("scores-v1.schema.json")
 
-_SCORES_ROW = {
+_SUBMISSION_RECORD = {
     "schema": "classroom50/result/v1",
     "classroom": "cs-principles",
-    "usernames": ["alice"],
+    "assignment_type": "individual",
+    "owner": "alice",
     "submission": "submit/2026-06-01T14-32-05Z-a1b2c3d",
     "commit": "c", "release": "r", "review": "v",
     "datetime": "2026-06-01T14:33:11Z",
@@ -268,56 +335,95 @@ _SCORES_ROW = {
 }
 
 
+def _entry(**overrides):
+    """A canonical gradebook entry: owner identity + a one-element
+    submissions history. Overrides patch the entry (not the record)."""
+    entry = {
+        "owner": "alice",
+        "submissions": [dict(_SUBMISSION_RECORD)],
+    }
+    entry.update(overrides)
+    return entry
+
+
+def _scores(buckets):
+    """Wrap a {slug: assignmentBucket} map in the scores/v1 root."""
+    return {"schema": "classroom50/scores/v1", "assignments": buckets}
+
+
+def _individual_bucket(entries):
+    return {"type": "individual", "entries": entries}
+
+
 class TestScoresSchema:
     def test_scaffold_empty_accepted(self):
-        assert _errs(SCORES_V, {"schema": "classroom50/scores/v1", "submissions": {}}) == []
+        assert _errs(SCORES_V, {"schema": "classroom50/scores/v1", "assignments": {}}) == []
 
     def test_rows_with_late_override_group_accepted(self):
-        doc = {
-            "schema": "classroom50/scores/v1",
-            "submissions": {
-                "hello": [
-                    {**_SCORES_ROW, "late": False},
-                    {**_SCORES_ROW, "usernames": ["alice", "bob"], "override": True},
+        late_record = {**_SUBMISSION_RECORD, "late": False}
+        group_record = {**_SUBMISSION_RECORD, "assignment_type": "group"}
+        doc = _scores({
+            "hello": _individual_bucket([
+                {"owner": "alice", "submissions": [late_record]},
+            ]),
+            "project": {
+                "type": "group",
+                "entries": [
+                    {
+                        "owner": "alice",
+                        "member_usernames": ["alice", "bob"],
+                        "override": True,
+                        "submissions": [group_record],
+                    },
                 ],
             },
-        }
+        })
         assert _errs(SCORES_V, doc) == []
 
-    def test_rows_with_and_without_owner_both_validate(self):
-        # `owner` is an optional collection-added field. A legacy row
-        # written before it existed (no `owner`) and a new row carrying it
-        # must BOTH validate — back-compat for existing scores.json files.
-        with_owner = {**_SCORES_ROW, "owner": "alice", "usernames": ["alice", "bob"]}
-        without_owner = {k: v for k, v in _SCORES_ROW.items() if k != "owner"}
-        assert "owner" not in without_owner
-        doc = {"schema": "classroom50/scores/v1",
-               "submissions": {"hello": [with_owner, without_owner]}}
+    def test_multi_submission_history_accepted(self):
+        # An entry with several submissions (newest first) validates.
+        older = {**_SUBMISSION_RECORD, "submission": "submit/2026-05-30T10-00-00Z-0000000"}
+        doc = _scores({
+            "hello": _individual_bucket([
+                _entry(submissions=[dict(_SUBMISSION_RECORD), older]),
+            ]),
+        })
         assert _errs(SCORES_V, doc) == []
 
-    def test_row_is_result_minus_assignment(self):
-        # A row must NOT carry `assignment` (it's the bucket key) — but
-        # additionalProperties:true means we can't reject it; assert the
-        # canonical row (no `assignment`) validates, matching entry_from_result.
-        assert "assignment" not in _SCORES_ROW
-        assert _errs(SCORES_V, {"schema": "classroom50/scores/v1",
-                                "submissions": {"hello": [_SCORES_ROW]}}) == []
+    def test_submission_record_with_submitted_by_accepted(self):
+        rec = {**_SUBMISSION_RECORD, "submitted_by": {"username": "bob", "id": 222}}
+        doc = _scores({"hello": _individual_bucket([_entry(submissions=[rec])])})
+        assert _errs(SCORES_V, doc) == []
+
+    def test_entry_missing_submissions_rejected(self):
+        # submissions is required and must be non-empty.
+        no_subs = {"owner": "alice"}
+        empty_subs = {"owner": "alice", "submissions": []}
+        for bad in (no_subs, empty_subs):
+            assert _errs(SCORES_V, _scores({"hello": _individual_bucket([bad])})) != []
+
+    def test_entry_missing_owner_rejected(self):
+        # owner is the stable per-bucket key and is required on an entry.
+        bad = {"submissions": [dict(_SUBMISSION_RECORD)]}
+        assert _errs(SCORES_V, _scores({"hello": _individual_bucket([bad])})) != []
+
+    def test_submission_record_must_not_carry_assignment_required_fields(self):
+        # A submission record is a result/v1 payload minus `assignment`;
+        # the record's own required fields (score, datetime, ...) are
+        # enforced. A record missing `score` is rejected.
+        bad_record = {k: v for k, v in _SUBMISSION_RECORD.items() if k != "score"}
+        doc = _scores({"hello": _individual_bucket([_entry(submissions=[bad_record])])})
+        assert _errs(SCORES_V, doc) != []
 
     @pytest.mark.parametrize("doc", [
-        {"schema": "classroom50/scores/v2", "submissions": {}},        # bad sentinel
-        {"schema": "classroom50/scores/v1", "submissions": []},        # legacy flat array (not canonical)
-        {"schema": "classroom50/scores/v1", "submissions": {"Bad-Slug": []}},  # bad slug key
+        {"schema": "classroom50/scores/v2", "assignments": {}},        # bad sentinel
+        {"schema": "classroom50/scores/v1", "assignments": []},        # array, not an object map
+        {"schema": "classroom50/scores/v1", "assignments": {"Bad-Slug": {"type": "individual", "entries": []}}},  # bad slug key
+        {"schema": "classroom50/scores/v1", "assignments": {"hello": {"entries": []}}},  # bucket missing type
+        {"schema": "classroom50/scores/v1", "assignments": {"hello": {"type": "individual", "entries": {}}}},  # entries not an array
     ])
     def test_malformed_rejected(self, doc):
         assert _errs(SCORES_V, doc) != []
-
-    def test_round_trip_through_entry_from_result(self):
-        # entry_from_result is what actually writes a row; its output must
-        # validate against scores-v1 (minus the bucket-key `assignment`).
-        payload = {**_SCORES_ROW, "assignment": "hello"}
-        row = cs.entry_from_result(payload)
-        doc = {"schema": "classroom50/scores/v1", "submissions": {"hello": [row]}}
-        assert _errs(SCORES_V, doc) == []
 
 
 # --- tests/v1 ----------------------------------------------------------------
@@ -358,34 +464,59 @@ def test_tests_v1_test_def_matches_assignments_v1():
     )
 
 
-def test_scores_v1_row_matches_result_v1_minus_assignment():
-    # A scores.json row is a result/v1 payload minus `assignment` (the
-    # bucket key), per entry_from_result. Pin the relationship structurally
-    # — mirroring the tests-v1<->assignments-v1 guard — so a result-v1 field
-    # change can't silently drift the scores row contract.
+def test_scores_v1_submission_record_matches_result_v1_minus_assignment():
+    # Each scores.json submission record is a result/v1 payload minus
+    # `assignment` (the bucket key). Pin the relationship structurally —
+    # mirroring the tests-v1<->assignments-v1 guard — so a result-v1 field
+    # change can't silently drift the scores submission-record contract.
     result = json.loads((_SCHEMAS / "result-v1.schema.json").read_text())
     scores = json.loads((_SCHEMAS / "scores-v1.schema.json").read_text())
-    row = scores["$defs"]["row"]
+    record = scores["$defs"]["submissionRecord"]
 
-    # The row requires exactly result-v1's required fields, minus `assignment`.
+    # The record requires exactly result-v1's required fields, minus `assignment`.
     want_required = set(result["required"]) - {"assignment"}
-    assert set(row["required"]) == want_required, (
-        f"scores-v1 row required {sorted(row['required'])} != result-v1 required "
-        f"minus 'assignment' {sorted(want_required)}"
+    assert set(record["required"]) == want_required, (
+        f"scores-v1 submissionRecord required {sorted(record['required'])} != result-v1 "
+        f"required minus 'assignment' {sorted(want_required)}"
     )
-    # The shared result fields the row restates must keep result-v1's
-    # validation rules (ignore `description` prose — the row annotates some
-    # fields differently on purpose, e.g. why it keeps the result sentinel).
+    # The shared result fields the record restates must keep result-v1's
+    # validation rules (ignore `description` prose — the record annotates some
+    # fields differently on purpose).
     def _rules(d):
         return {k: v for k, v in d.items() if k != "description"}
-    for field in ("schema", "submission", "datetime", "score", "max-score"):
-        assert _rules(row["properties"][field]) == _rules(result["properties"][field]), (
-            f"scores-v1 row.{field} drifted from result-v1.{field}"
+    for field in ("schema", "classroom", "assignment_type", "owner",
+                  "submission", "commit", "release", "review",
+                  "datetime", "score", "max-score"):
+        assert _rules(record["properties"][field]) == _rules(result["properties"][field]), (
+            f"scores-v1 submissionRecord.{field} drifted from result-v1.{field}"
         )
-    # The row's per-test shape must match result-v1's testResult def.
+    # The record's per-test shape must match result-v1's testResult def.
     assert scores["$defs"]["testResult"] == result["$defs"]["testResult"], (
         "scores-v1 #/$defs/testResult drifted from result-v1 #/$defs/testResult"
     )
+    # The optional `submitted_by` block is inlined in scores-v1 (not a
+    # cross-file $ref); pin it equal to result-v1's $defs/submittedBy so a
+    # future result-v1 change can't silently desync the GUI's scores.json
+    # validation. Compare structure only (descriptions differ by design).
+    def _strip_desc(d):
+        if isinstance(d, dict):
+            return {k: _strip_desc(v) for k, v in d.items() if k != "description"}
+        if isinstance(d, list):
+            return [_strip_desc(v) for v in d]
+        return d
+    assert _strip_desc(scores["$defs"]["submissionRecord"]["properties"]["submitted_by"]) == _strip_desc(
+        result["$defs"]["submittedBy"]
+    ), "scores-v1 submissionRecord.submitted_by drifted from result-v1 #/$defs/submittedBy"
+
+
+def test_scores_v1_entry_keys_on_owner_and_carries_submissions():
+    # An entry's structural contract: required owner + a non-empty
+    # submissions history; each item is the submissionRecord shape.
+    scores = json.loads((_SCHEMAS / "scores-v1.schema.json").read_text())
+    entry = scores["$defs"]["entry"]
+    assert set(entry["required"]) == {"owner", "submissions"}
+    assert entry["properties"]["submissions"]["items"]["$ref"] == "#/$defs/submissionRecord"
+    assert entry["properties"]["submissions"]["minItems"] == 1
 
 
 # --- classroom/v1 ------------------------------------------------------------
