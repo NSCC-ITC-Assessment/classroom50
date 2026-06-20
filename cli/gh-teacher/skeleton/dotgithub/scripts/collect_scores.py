@@ -969,6 +969,40 @@ def list_recent_releases(
     return releases
 
 
+def _next_page_link(link_header: str | None) -> str | None:
+    """The `rel="next"` URL from a GitHub `Link` response header, or
+    None when there is no next page (or no header). GitHub's pagination
+    guidance is to follow this URL rather than to synthesize page numbers,
+    since page size and the presence of a next page are the server's to
+    decide. Mirrors NextPageLink in cli/shared/ghutil/ghutil.go.
+    """
+    if not link_header:
+        return None
+    m = re.search(r'<([^>]+)>\s*;\s*[^,]*rel="next"', link_header)
+    return m.group(1) if m else None
+
+
+def _assert_same_host(next_url: str, api_url: str) -> str:
+    """Return next_url only if its scheme+host match api_url's; otherwise
+    raise ValueError. The pagination loop attaches `Authorization: Bearer
+    <service token>` to whatever URL it follows, so a malicious or MITM'd
+    API response whose `Link: rel="next"` points at another host would
+    otherwise pivot the token off-host. The redirect path already defends
+    this via _AuthStrippingRedirect; this is the equivalent fail-closed
+    guard on the Link-follow path. A legitimate api.github.com / GHES next
+    page stays on the same host and passes unchanged.
+    """
+    api = urllib.parse.urlsplit(api_url)
+    nxt = urllib.parse.urlsplit(next_url)
+    if (nxt.scheme, nxt.netloc) != (api.scheme, api.netloc):
+        raise ValueError(
+            f"pagination Link points off-host "
+            f"({nxt.scheme}://{nxt.netloc} != {api.scheme}://{api.netloc}); "
+            f"refusing to send the service token to a different host"
+        )
+    return next_url
+
+
 def list_repo_collaborator_logins(
     api_url: str, owner: str, repo: str, token: str
 ) -> list[str]:
@@ -979,18 +1013,27 @@ def list_repo_collaborator_logins(
     on their own repo but is credited separately via the row's stable
     `owner` field, so excluding admins here never drops them.
 
+    Pagination follows GitHub's authoritative `Link: rel="next"` header
+    rather than guessing the next page from page length; the short-page
+    heuristic is only the fallback when no Link header is present. The
+    followed next URL is host-pinned to api_url so the bearer token can't
+    be pivoted to a foreign host by a crafted Link header.
+
     Raises urllib.error.HTTPError on any non-2xx (including 404) so the
     caller can decide between an owner-only fallback and a hard failure.
     """
     per_page = 100
     max_pages = 100
     logins: list[str] = []
+    url = (
+        f"{_repo_url(api_url, owner, repo)}/collaborators"
+        f"?per_page={per_page}&page=1"
+    )
+    seen_next: set[str] = set()
     for page in range(1, max_pages + 1):
-        url = (
-            f"{_repo_url(api_url, owner, repo)}/collaborators"
-            f"?per_page={per_page}&page={page}"
+        body, headers = _http_get_with_headers(
+            url, token, accept="application/vnd.github+json"
         )
-        body = _http_get(url, token, accept="application/vnd.github+json")
         batch = json.loads(body.decode("utf-8"))
         if not isinstance(batch, list):
             raise ValueError(f"GET {url}: expected JSON array, got {type(batch).__name__}")
@@ -1002,8 +1045,25 @@ def list_repo_collaborator_logins(
             login = c.get("login")
             if isinstance(login, str) and login:
                 logins.append(login)
-        if len(batch) < per_page:
+        link_header = headers.get("Link") if headers else None
+        next_url = _next_page_link(link_header)
+        if next_url:
+            next_url = _assert_same_host(next_url, api_url)
+            # Stop if the server points us back at a page we've already
+            # fetched (self/looping rel="next"): bounds a crafted or buggy
+            # Link chain to the pages actually seen instead of running out
+            # the max_pages cap.
+            if next_url in seen_next:
+                return logins
+            seen_next.add(next_url)
+            url = next_url
+            continue
+        if link_header or len(batch) < per_page:
             return logins
+        url = (
+            f"{_repo_url(api_url, owner, repo)}/collaborators"
+            f"?per_page={per_page}&page={page + 1}"
+        )
     raise ValueError(
         f"repos/{owner}/{repo}/collaborators: too many collaborators to "
         f"enumerate (hit the {max_pages}-page cap)"
@@ -1143,10 +1203,26 @@ def rewrite_asset_url(asset_url: str, api_url: str) -> str:
 def _http_get(
     url: str, token: str, *, accept: str, max_bytes: int | None = None, _retries: int = 3
 ) -> bytes:
-    """GET `url` with bearer auth; return the body. Retries 5xx/429
-    with exponential backoff. The custom redirect handler strips
-    Authorization before following GitHub's asset-download redirect
-    to S3 (otherwise the signed URL rejects the forwarded token).
+    """GET `url` with bearer auth; return the body. Thin wrapper over
+    `_http_get_with_headers` for the callers that don't need the
+    response headers (release/asset reads)."""
+    body, _headers = _http_get_with_headers(
+        url, token, accept=accept, max_bytes=max_bytes, _retries=_retries
+    )
+    return body
+
+
+def _http_get_with_headers(
+    url: str, token: str, *, accept: str, max_bytes: int | None = None, _retries: int = 3
+) -> tuple[bytes, Any]:
+    """GET `url` with bearer auth; return (body, response headers).
+    Retries 5xx/429 with exponential backoff. The custom redirect
+    handler strips Authorization before following GitHub's asset-download
+    redirect to S3 (otherwise the signed URL rejects the forwarded token).
+
+    The headers are returned so paginated callers can follow GitHub's
+    authoritative `Link: rel="next"` rather than guessing the next page
+    from page length.
     """
     for attempt in range(_retries):
         req = urllib.request.Request(
@@ -1161,7 +1237,8 @@ def _http_get(
         )
         try:
             with _OPENER.open(req, timeout=30) as resp:
-                return resp.read(max_bytes) if max_bytes is not None else resp.read()
+                body = resp.read(max_bytes) if max_bytes is not None else resp.read()
+                return body, resp.headers
         except urllib.error.HTTPError as exc:
             if exc.code in (429, 500, 502, 503, 504) and attempt < _retries - 1:
                 # Honor Retry-After (capped at 30s); else exp backoff.
@@ -1189,7 +1266,7 @@ def _http_get(
                 hdrs=None,  # type: ignore[arg-type]
                 fp=None,
             ) from exc
-    raise RuntimeError(f"_http_get called with _retries={_retries}")
+    raise RuntimeError(f"_http_get_with_headers called with _retries={_retries}")
 
 
 def is_hard_http_error(exc: urllib.error.HTTPError) -> bool:

@@ -553,11 +553,24 @@ class TestListRepoCollaboratorLogins:
             {"login": "student", "role_name": "maintain"},
         ]
 
-        def fake_http_get(url, token, *, accept, max_bytes=None):
-            page = "page=1&" in url or url.endswith("page=1")
-            return json.dumps(page1 if page else page2).encode("utf-8")
+        # Drive pagination off the authoritative Link header: page 1
+        # advertises rel="next", page 2 omits it -> stop. The fake keys
+        # off an explicit cursor so the walk must have followed the
+        # server-supplied link, not a synthesized page number.
+        class FakeHeaders:
+            def __init__(self, link):
+                self._link = link
 
-        monkeypatch.setattr(cs, "_http_get", fake_http_get)
+            def get(self, name):
+                return self._link if name == "Link" else None
+
+        def fake_http_get_with_headers(url, token, *, accept, max_bytes=None):
+            if "cursor=two" in url:
+                return json.dumps(page2).encode("utf-8"), FakeHeaders(None)
+            link = '<https://api.github.com/x/collaborators?cursor=two>; rel="next"'
+            return json.dumps(page1).encode("utf-8"), FakeHeaders(link)
+
+        monkeypatch.setattr(cs, "_http_get_with_headers", fake_http_get_with_headers)
         logins = cs.list_repo_collaborator_logins(
             "https://api.github.com", "cs50", "cs-principles-hello-alice", "token"
         )
@@ -565,6 +578,96 @@ class TestListRepoCollaboratorLogins:
         assert "ta-admin" not in logins
         assert "student" in logins
         assert len([x for x in logins if x.startswith("u")]) == 100
+
+    def test_paginates_via_short_page_when_no_link_header(self, monkeypatch):
+        # Fallback path: a server that emits no Link header stops on a
+        # short page (len < per_page), preserving the prior behavior for
+        # endpoints/test servers that don't paginate via Link.
+        page1 = [{"login": f"u{i}", "role_name": "write"} for i in range(100)]
+        page2 = [{"login": "student", "role_name": "maintain"}]
+
+        class NoHeaders:
+            def get(self, name):
+                return None
+
+        def fake_http_get_with_headers(url, token, *, accept, max_bytes=None):
+            first = "page=1&" in url or url.endswith("page=1")
+            return json.dumps(page1 if first else page2).encode("utf-8"), NoHeaders()
+
+        monkeypatch.setattr(cs, "_http_get_with_headers", fake_http_get_with_headers)
+        logins = cs.list_repo_collaborator_logins(
+            "https://api.github.com", "cs50", "cs-principles-hello-alice", "token"
+        )
+        assert "student" in logins
+        assert len([x for x in logins if x.startswith("u")]) == 100
+
+    def test_full_final_page_with_non_next_link_terminates(self, monkeypatch):
+        # A full page (len == per_page) carrying a Link header WITHOUT
+        # rel="next" is the last page: the walk must stop in one request
+        # rather than the length heuristic forcing another fetch. Mirrors
+        # the Go "no over-fetch" test.
+        page1 = [{"login": f"u{i}", "role_name": "write"} for i in range(100)]
+        calls = {"n": 0}
+
+        class PrevOnlyHeaders:
+            def get(self, name):
+                if name == "Link":
+                    return '<https://api.github.com/x?page=1>; rel="prev"'
+                return None
+
+        def fake_http_get_with_headers(url, token, *, accept, max_bytes=None):
+            calls["n"] += 1
+            return json.dumps(page1).encode("utf-8"), PrevOnlyHeaders()
+
+        monkeypatch.setattr(cs, "_http_get_with_headers", fake_http_get_with_headers)
+        logins = cs.list_repo_collaborator_logins(
+            "https://api.github.com", "cs50", "cs-principles-hello-alice", "token"
+        )
+        assert len(logins) == 100
+        assert calls["n"] == 1, "a Link without rel=next must stop after one request"
+
+    def test_off_host_next_link_is_refused(self, monkeypatch):
+        # A crafted rel="next" pointing at a different host must be refused
+        # (fail closed) so the bearer token is never sent off-host.
+        class EvilHeaders:
+            def get(self, name):
+                if name == "Link":
+                    return '<https://evil.example/steal?cursor=two>; rel="next"'
+                return None
+
+        def fake_http_get_with_headers(url, token, *, accept, max_bytes=None):
+            return json.dumps([{"login": "alice", "role_name": "push"}]).encode("utf-8"), EvilHeaders()
+
+        monkeypatch.setattr(cs, "_http_get_with_headers", fake_http_get_with_headers)
+        with pytest.raises(ValueError, match="off-host"):
+            cs.list_repo_collaborator_logins(
+                "https://api.github.com", "cs50", "cs-principles-hello-alice", "token"
+            )
+
+    def test_self_looping_next_link_stops_without_exhausting_cap(self, monkeypatch):
+        # A server that points rel="next" back at an already-seen URL must
+        # terminate on the repeat rather than running out the 100-page cap.
+        calls = {"n": 0}
+
+        class LoopHeaders:
+            def get(self, name):
+                if name == "Link":
+                    return '<https://api.github.com/loop?cursor=same>; rel="next"'
+                return None
+
+        def fake_http_get_with_headers(url, token, *, accept, max_bytes=None):
+            calls["n"] += 1
+            return json.dumps([{"login": "alice", "role_name": "push"}]).encode("utf-8"), LoopHeaders()
+
+        monkeypatch.setattr(cs, "_http_get_with_headers", fake_http_get_with_headers)
+        logins = cs.list_repo_collaborator_logins(
+            "https://api.github.com", "cs50", "cs-principles-hello-alice", "token"
+        )
+        # Page 1 fetch (alice) -> follow next once (page 2 fetch, alice
+        # again) -> the same next URL is seen again -> stop. So two
+        # requests and the two collected entries, NOT an exhausted cap.
+        assert logins == ["alice", "alice"]
+        assert calls["n"] == 2, f"self-loop should stop at 2 requests, made {calls['n']}"
 
 
 class TestGroupCollectClassroom:

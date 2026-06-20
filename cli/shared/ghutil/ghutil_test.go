@@ -11,6 +11,73 @@ import (
 	"github.com/cli/go-gh/v2/pkg/api"
 )
 
+// TestNextPageLink pins the Link-header `rel="next"` parser both Go CLIs
+// rely on. The regex is the single authoritative next-page extractor, so
+// these edge cases guard against silent drift breaking pagination in both
+// binaries with the rest of the suite still green.
+func TestNextPageLink(t *testing.T) {
+	cases := []struct {
+		name   string
+		header string
+		want   string
+	}{
+		{"empty header", "", ""},
+		{"no next rel (prev/last only)",
+			`<https://api.github.com/x?page=1>; rel="prev", <https://api.github.com/x?page=9>; rel="last"`,
+			""},
+		{"next first",
+			`<https://api.github.com/x?page=2>; rel="next", <https://api.github.com/x?page=9>; rel="last"`,
+			"https://api.github.com/x?page=2"},
+		{"next not first",
+			`<https://api.github.com/x?page=1>; rel="prev", <https://api.github.com/x?page=3>; rel="next"`,
+			"https://api.github.com/x?page=3"},
+		{"rel=prevnext substring must not match",
+			`<https://api.github.com/x?page=2>; rel="prevnext"`,
+			""},
+		{"single next",
+			`<https://api.example.test/api/v3/x?page=2>; rel="next"`,
+			"https://api.example.test/api/v3/x?page=2"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := NextPageLink(tc.header); got != tc.want {
+				t.Errorf("NextPageLink(%q) = %q, want %q", tc.header, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestNextPage pins the shared termination decision both Go walks use, so
+// the error-prone "follow next / stop / synthesize" predicate can't drift
+// between paginateAll and the student collaborator walk.
+func TestNextPage(t *testing.T) {
+	const perPage = 100
+	t.Run("follows rel=next regardless of page length", func(t *testing.T) {
+		next, stop := NextPage(`<https://api.github.com/x?page=2>; rel="next"`, perPage, perPage)
+		if stop || next != "https://api.github.com/x?page=2" {
+			t.Errorf("got (%q, %v), want the next URL and stop=false", next, stop)
+		}
+	})
+	t.Run("Link present without next stops even on a full page", func(t *testing.T) {
+		next, stop := NextPage(`<https://api.github.com/x?page=1>; rel="prev"`, perPage, perPage)
+		if !stop || next != "" {
+			t.Errorf("got (%q, %v), want stop=true (last page) and no next URL", next, stop)
+		}
+	})
+	t.Run("no Link + short page stops", func(t *testing.T) {
+		next, stop := NextPage("", perPage-1, perPage)
+		if !stop || next != "" {
+			t.Errorf("got (%q, %v), want stop=true on a short no-Link page", next, stop)
+		}
+	})
+	t.Run("no Link + full page synthesizes (continue)", func(t *testing.T) {
+		next, stop := NextPage("", perPage, perPage)
+		if stop || next != "" {
+			t.Errorf("got (%q, %v), want (\"\", false) so the caller synthesizes page+1", next, stop)
+		}
+	})
+}
+
 func TestDecodeContentsBase64(t *testing.T) {
 	// The contents API wraps base64 at column 60 with embedded newlines;
 	// the std decoder rejects those, so the helper must strip them first.

@@ -2,12 +2,15 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
 
 	"github.com/cli/go-gh/v2/pkg/api"
+	"github.com/foundation50/classroom50-cli-shared/ghutil"
 )
 
 // listGroupMemberLogins returns the logins of the student-level
@@ -27,15 +30,25 @@ func listGroupMemberLogins(ctx context.Context, client *api.RESTClient, org, rep
 	const perPage = 100
 	const maxPages = 100
 	var logins []string
+	path := fmt.Sprintf("repos/%s/%s/collaborators?per_page=%d&page=1",
+		url.PathEscape(org), url.PathEscape(repo), perPage)
 	for page := 1; page <= maxPages; page++ {
-		path := fmt.Sprintf("repos/%s/%s/collaborators?per_page=%d&page=%d",
-			url.PathEscape(org), url.PathEscape(repo), perPage, page)
+		resp, err := client.RequestWithContext(ctx, http.MethodGet, path, nil)
+		if err != nil {
+			return nil, fmt.Errorf("GET %s: %w", path, err)
+		}
 		var batch []struct {
 			Login    string `json:"login"`
 			RoleName string `json:"role_name"`
 		}
-		if err := client.DoWithContext(ctx, http.MethodGet, path, nil, &batch); err != nil {
-			return nil, fmt.Errorf("GET %s: %w", path, err)
+		decodeErr := json.NewDecoder(resp.Body).Decode(&batch)
+		linkHeader := resp.Header.Get("Link")
+		// Drain before close so the connection can be pooled for the next
+		// page — matches getPage in the teacher CLI's paginateAll.
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+		if decodeErr != nil {
+			return nil, fmt.Errorf("GET %s: decode body: %w", path, decodeErr)
 		}
 		for _, c := range batch {
 			// Exclude admins (org owners, instructors/TAs granted admin)
@@ -46,9 +59,20 @@ func listGroupMemberLogins(ctx context.Context, client *api.RESTClient, org, rep
 			}
 			logins = append(logins, c.Login)
 		}
-		if len(batch) < perPage {
+		// Shared termination decision (ghutil.NextPage) — identical to
+		// the teacher CLI's paginateAll: follow GitHub's authoritative
+		// `Link: rel="next"`, stop on a no-next Link / short no-Link page,
+		// else synthesize the next page.
+		next, stop := ghutil.NextPage(linkHeader, len(batch), perPage)
+		if stop {
 			return logins, nil
 		}
+		if next != "" {
+			path = next
+			continue
+		}
+		path = fmt.Sprintf("repos/%s/%s/collaborators?per_page=%d&page=%d",
+			url.PathEscape(org), url.PathEscape(repo), perPage, page+1)
 	}
 	return nil, fmt.Errorf("repos/%s/%s/collaborators: too many collaborators to enumerate (hit the %d-page cap)", org, repo, maxPages)
 }

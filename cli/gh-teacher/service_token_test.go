@@ -1,10 +1,16 @@
 package main
 
 import (
+	"crypto/rand"
+	"encoding/base64"
+	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"golang.org/x/crypto/nacl/box"
 )
 
 func TestServiceSecretExists(t *testing.T) {
@@ -86,6 +92,61 @@ func TestValidateServiceToken(t *testing.T) {
 				if !strings.Contains(err.Error(), "Resource owner") || !strings.Contains(err.Error(), "Contents") {
 					t.Errorf("no-access error should explain the resource-owner + Contents fix: %q", err.Error())
 				}
+			}
+		})
+	}
+}
+
+// TestProvisionServiceSecret_PutStatus pins the PUT status handling: the
+// Actions-secret upload must succeed on 201 (created) and 204 (updated),
+// and the new assertion must reject any other 2xx (e.g. a 200 that means
+// the write didn't land as a create/update) rather than reporting a
+// stored token. The handler serves a valid NaCl public key on the GET so
+// sealbox encryption succeeds and the flow reaches the PUT.
+func TestProvisionServiceSecret_PutStatus(t *testing.T) {
+	pub, _, err := box.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	keyB64 := base64.StdEncoding.EncodeToString(pub[:])
+
+	cases := []struct {
+		name      string
+		putStatus int
+		wantErr   bool
+	}{
+		{"created", http.StatusCreated, false},
+		{"updated", http.StatusNoContent, false},
+		{"unexpected 2xx rejected", http.StatusOK, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			mux := http.NewServeMux()
+			mux.HandleFunc("/repos/o/classroom50/actions/secrets/public-key", func(w http.ResponseWriter, r *http.Request) {
+				_ = json.NewEncoder(w).Encode(map[string]string{"key_id": "kid-1", "key": keyB64})
+			})
+			mux.HandleFunc("/repos/o/classroom50/actions/secrets/CLASSROOM50_SERVICE_TOKEN", func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPut {
+					t.Errorf("secret upload method = %s, want PUT", r.Method)
+				}
+				w.WriteHeader(tc.putStatus)
+			})
+			server := httptest.NewServer(mux)
+			t.Cleanup(server.Close)
+			client := newTestRESTClient(t, server)
+
+			err := provisionServiceSecret(client, io.Discard, "o", "classroom50", []byte("ghp_test"), "stored")
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("status %d should be rejected by the 201/204 assertion", tc.putStatus)
+				}
+				if !strings.Contains(err.Error(), "unexpected status") {
+					t.Errorf("error %q should mention 'unexpected status'", err.Error())
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("status %d should succeed, got %v", tc.putStatus, err)
 			}
 		})
 	}

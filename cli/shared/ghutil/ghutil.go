@@ -14,11 +14,62 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 
 	"github.com/cli/go-gh/v2/pkg/api"
 )
+
+// linkNextRe extracts the `rel="next"` target from a GitHub `Link`
+// response header, e.g.
+//
+//	<https://api.github.com/...&page=2>; rel="next", <...>; rel="last"
+//
+// GitHub's pagination guidance is to follow this URL rather than to
+// synthesize page numbers, because page size and the presence of a next
+// page are the server's to decide.
+var linkNextRe = regexp.MustCompile(`<([^>]+)>\s*;\s*[^,]*rel="next"`)
+
+// NextPageLink returns the `rel="next"` URL from a Link response header,
+// or "" when there is no next page (or no Link header at all). Shared by
+// both CLIs' paginated walks so they follow GitHub's authoritative
+// pagination contract identically.
+func NextPageLink(header string) string {
+	if header == "" {
+		return ""
+	}
+	m := linkNextRe.FindStringSubmatch(header)
+	if len(m) < 2 {
+		return ""
+	}
+	return m[1]
+}
+
+// NextPage centralizes the page-walk termination decision both Go CLIs
+// rely on, so the error-prone predicate isn't re-implemented (and prone
+// to drift) at each call site. Given a response's Link header plus the
+// just-decoded batch length and the requested per-page size, it returns:
+//
+//   - (nextURL, false) — follow GitHub's authoritative `rel="next"` URL.
+//   - ("", true)       — stop: either the Link header is present without a
+//     `rel="next"` (this was the last page), or — with NO Link header (a
+//     test server / Link-less endpoint) — the page was short
+//     (len < perPage, including empty).
+//   - ("", false)      — no Link header AND a full page: the caller should
+//     synthesize the next page (e.g. pageURL(page+1)) and continue.
+//
+// Callers own how they build a synthesized next page, so that URL is not
+// returned here; only the decision is shared.
+func NextPage(linkHeader string, batchLen, perPage int) (nextURL string, stop bool) {
+	if next := NextPageLink(linkHeader); next != "" {
+		return next, false
+	}
+	if linkHeader != "" || batchLen < perPage {
+		return "", true
+	}
+	return "", false
+}
 
 // IsHTTPStatus reports whether err is a *api.HTTPError with the given status
 // code. Collapses the err -> *api.HTTPError -> StatusCode pattern used to

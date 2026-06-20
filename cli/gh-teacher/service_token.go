@@ -245,6 +245,13 @@ func provisionServiceSecret(client *api.RESTClient, out io.Writer, owner, repo s
 	}
 	defer func() { _ = resp.Body.Close() }()
 	_, _ = io.Copy(io.Discard, resp.Body)
+	// 201 = secret created, 204 = secret updated; any other 2xx means
+	// the upload didn't land as expected. Assert it (matching the
+	// status-check convention of the sibling write helpers) so a silent
+	// non-write doesn't get reported as a stored token.
+	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusNoContent {
+		return fmt.Errorf("PUT %s: unexpected status %d", putPath, resp.StatusCode)
+	}
 
 	_, _ = fmt.Fprintf(out, "%s/%s: %s %s\n", owner, repo, verb, serviceSecretName)
 	return nil

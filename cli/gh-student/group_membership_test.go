@@ -86,6 +86,80 @@ func TestListGroupMemberLogins_KeepsFounderExcludesOtherAdmins(t *testing.T) {
 	}
 }
 
+// TestListGroupMemberLogins_FollowsLinkHeader exercises the authoritative
+// Link-following branch: page 1 advertises `rel="next"` via the Link
+// header (pointing at a cursor URL), page 2 omits it. The handler ignores
+// the `page` query and dispatches on the cursor, so the walk must have
+// followed the server-supplied Link rather than a synthesized page number.
+func TestListGroupMemberLogins_FollowsLinkHeader(t *testing.T) {
+	var server *httptest.Server
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/o/cs-hw-alice/collaborators", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("cursor") == "two" {
+			// Final page, no Link rel=next → loop must stop.
+			_ = json.NewEncoder(w).Encode([]map[string]any{{"login": "bob", "role_name": "push"}})
+			return
+		}
+		// Page 1: advertise the next page via Link (cursor-based). The
+		// proof here is that the walk reached page 2 via the cursor URL
+		// (the handler errors on an unexpected path); the companion test
+		// FullPageNoNextLinkStops proves Link beats the length heuristic.
+		w.Header().Set("Link", `<`+server.URL+`/repos/o/cs-hw-alice/collaborators?cursor=two>; rel="next"`)
+		_ = json.NewEncoder(w).Encode([]map[string]any{{"login": "alice", "role_name": "admin"}})
+	})
+	server = httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+
+	got, err := listGroupMemberLogins(context.Background(), newTestRESTClient(t, server), "o", "cs-hw-alice", "alice")
+	if err != nil {
+		t.Fatalf("listGroupMemberLogins: %v", err)
+	}
+	// alice (founder admin, kept) + bob (push) across the two Link-chained pages.
+	if len(got) != 2 {
+		t.Fatalf("got %d members %v, want 2 (Link-driven page 1 + page 2)", len(got), got)
+	}
+	var sawAlice, sawBob bool
+	for _, l := range got {
+		sawAlice = sawAlice || l == "alice"
+		sawBob = sawBob || l == "bob"
+	}
+	if !sawAlice || !sawBob {
+		t.Errorf("expected both pages merged (alice + bob), got %v", got)
+	}
+}
+
+// TestListGroupMemberLogins_FullPageNoNextLinkStops asserts a full page
+// carrying a Link header WITHOUT rel=next (the last page) terminates the
+// walk in one request, rather than the len==perPage short-page heuristic
+// forcing an extra fetch. Proves Link is authoritative over page length.
+func TestListGroupMemberLogins_FullPageNoNextLinkStops(t *testing.T) {
+	const perPage = 100
+	var requests int
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/o/cs-hw-alice/collaborators", func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		w.Header().Set("Link", `<https://api.github.com/repos/o/cs-hw-alice/collaborators?page=1>; rel="prev"`)
+		batch := make([]map[string]any, 0, perPage)
+		for i := 0; i < perPage; i++ {
+			batch = append(batch, map[string]any{"login": "m" + strconv.Itoa(i), "role_name": "push"})
+		}
+		_ = json.NewEncoder(w).Encode(batch)
+	})
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+
+	got, err := listGroupMemberLogins(context.Background(), newTestRESTClient(t, server), "o", "cs-hw-alice", "alice")
+	if err != nil {
+		t.Fatalf("listGroupMemberLogins: %v", err)
+	}
+	if len(got) != perPage {
+		t.Fatalf("got %d members, want %d from the single (last) page", len(got), perPage)
+	}
+	if requests != 1 {
+		t.Errorf("made %d requests, want 1 — a Link without rel=next must stop the walk", requests)
+	}
+}
+
 func TestCheckGroupSizeBeforeInvite(t *testing.T) {
 	// Repo with 2 student members (alice founder + bob); teacher admin excluded.
 	server := func() *httptest.Server {
