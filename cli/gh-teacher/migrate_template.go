@@ -32,6 +32,13 @@ type resolvedTemplate struct {
 	Template   templateRef
 	Action     templateAction
 	SkipReason string
+	// TargetPrivate is the visibility of the TARGET template repo (the
+	// copy in the org), not the source. For a Generated copy it inherits
+	// the source's privacy; for a Reused pre-existing target it's read
+	// from the probe. The team read-grant gates on this so the Reused
+	// branch can't mis-decide when the target's visibility differs from
+	// the source's.
+	TargetPrivate bool
 }
 
 // targetRepoProbe classifies the target template repo before
@@ -40,6 +47,7 @@ type targetRepoProbe struct {
 	Exists     bool
 	IsTemplate bool
 	Branch     string
+	Private    bool
 }
 
 // probeTargetRepo calls GET /repos/{owner}/{repo} and returns its
@@ -50,6 +58,7 @@ func probeTargetRepo(client *api.RESTClient, owner, repo string) (targetRepoProb
 	var resp struct {
 		IsTemplate    bool   `json:"is_template"`
 		DefaultBranch string `json:"default_branch"`
+		Private       bool   `json:"private"`
 	}
 	if err := client.Get(path, &resp); err != nil {
 		if isHTTPStatus(err, http.StatusNotFound) {
@@ -57,7 +66,7 @@ func probeTargetRepo(client *api.RESTClient, owner, repo string) (targetRepoProb
 		}
 		return targetRepoProbe{}, fmt.Errorf("GET %s: %w", path, err)
 	}
-	return targetRepoProbe{Exists: true, IsTemplate: resp.IsTemplate, Branch: resp.DefaultBranch}, nil
+	return targetRepoProbe{Exists: true, IsTemplate: resp.IsTemplate, Branch: resp.DefaultBranch, Private: resp.Private}, nil
 }
 
 // verifySourceIsTemplate confirms the source starter repo carries
@@ -234,9 +243,10 @@ func copyOneTemplate(client *api.RESTClient, errOut io.Writer, targetOrg, templa
 		}
 		_, _ = fmt.Fprintf(errOut, "Reusing existing template %s/%s for %q.\n", targetOrg, targetName, a.Slug)
 		return resolvedTemplate{
-			Assignment: a,
-			Action:     templateActionReused,
-			Template:   templateRef{Owner: targetOrg, Repo: targetName, Branch: probe.Branch},
+			Assignment:    a,
+			Action:        templateActionReused,
+			Template:      templateRef{Owner: targetOrg, Repo: targetName, Branch: probe.Branch},
+			TargetPrivate: probe.Private,
 		}, nil
 	}
 
@@ -263,9 +273,10 @@ func copyOneTemplate(client *api.RESTClient, errOut io.Writer, targetOrg, templa
 	}
 
 	return resolvedTemplate{
-		Assignment: a,
-		Action:     templateActionGenerated,
-		Template:   templateRef{Owner: targetOrg, Repo: targetName, Branch: branch},
+		Assignment:    a,
+		Action:        templateActionGenerated,
+		Template:      templateRef{Owner: targetOrg, Repo: targetName, Branch: branch},
+		TargetPrivate: a.StarterCodeRepo.Private,
 	}, nil
 }
 

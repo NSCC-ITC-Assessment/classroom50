@@ -39,6 +39,16 @@
         "url": { "type": "string" },
         "migrated_at": { "type": "string" }
       }
+    },
+    "team": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "slug"],
+      "description": "The per-classroom GitHub team (created by `gh teacher classroom add`/`migrate`) that grants rostered students read on private, org-owned assignment templates. Omitted on classrooms created before this feature.",
+      "properties": {
+        "id": { "type": "integer", "description": "Immutable GitHub team id; the handle `classroom remove` deletes by." },
+        "slug": { "type": "string", "minLength": 1, "description": "GitHub team slug; the authoritative addressing key for membership and repo-grant operations." }
+      }
     }
   },
   "$defs": {

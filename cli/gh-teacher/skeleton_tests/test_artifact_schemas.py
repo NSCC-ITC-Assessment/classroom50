@@ -412,6 +412,17 @@ class TestClassroomSchema:
         }
         assert _errs(CLASSROOM_V, doc) == []
 
+    def test_team_block_accepted(self):
+        # `gh teacher classroom add`/`migrate` write the per-classroom
+        # team ref; the schema must accept it (matches classroomJSON.Team
+        # / teamRef in cli/gh-teacher).
+        doc = {
+            "schema": "classroom50/classroom/v1", "name": "CS Principles",
+            "short_name": "cs-principles", "term": "Fall 2026", "org": "cs50",
+            "team": {"id": 4242, "slug": "classroom50-cs-principles"},
+        }
+        assert _errs(CLASSROOM_V, doc) == []
+
     @pytest.mark.parametrize("doc", [
         {"schema": "classroom50/classroom/v2", "name": "X", "short_name": "x", "term": "", "org": "o"},
         {"schema": "classroom50/classroom/v1", "name": "X", "short_name": "Bad_Name", "term": "", "org": "o"},

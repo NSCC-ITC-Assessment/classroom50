@@ -130,7 +130,16 @@ func addClassroom(client *api.RESTClient, out, errOut io.Writer, org, shortName,
 		return err
 	}
 
-	files, err := classroomScaffold(org, shortName, name, term, nil, nil)
+	// Create (or adopt) the per-classroom GitHub team before scaffolding
+	// so its id/slug can be recorded in classroom.json. The team is what
+	// later lets rostered students read private, org-owned assignment
+	// templates (see PRIVATE_ASSIGNMENTS_PLAN.md).
+	team, err := ensureClassroomTeam(client, org, shortName)
+	if err != nil {
+		return fmt.Errorf("create classroom team: %w", err)
+	}
+
+	files, err := classroomScaffold(org, shortName, name, term, nil, nil, &team)
 	if err != nil {
 		return err
 	}
@@ -159,6 +168,7 @@ func addClassroom(client *api.RESTClient, out, errOut io.Writer, org, shortName,
 	// stdout: one parseable confirmation line. stderr: advisory
 	// "View at" + "Next:" hints.
 	_, _ = fmt.Fprintf(out, "%s/%s: added classroom %s (%d files)\n", org, configRepoName, shortName, len(files))
+	_, _ = fmt.Fprintf(out, "%s: classroom team %s ready\n", org, team.Slug)
 	_, _ = fmt.Fprintf(errOut, "View at https://github.com/%s/%s/tree/%s/%s\n", org, configRepoName, branch, shortName)
 	_, _ = fmt.Fprintf(errOut, "Next: gh teacher roster add %s %s <username>\n", org, shortName)
 	return nil
@@ -192,9 +202,10 @@ func loadClassroom(client *api.RESTClient, org, shortName, ref string) (*classro
 // `classroom list --json`: the human-relevant subset of
 // classroom.json.
 type classroomSummary struct {
-	ShortName string `json:"short_name"`
-	Name      string `json:"name"`
-	Term      string `json:"term"`
+	ShortName string   `json:"short_name"`
+	Name      string   `json:"name"`
+	Term      string   `json:"term"`
+	Team      *teamRef `json:"team,omitempty"`
 }
 
 func classroomListCmd() *cobra.Command {
@@ -263,6 +274,7 @@ func runClassroomList(client *api.RESTClient, out, errOut io.Writer, org string,
 			ShortName: e.Name,
 			Name:      c.Name,
 			Term:      c.Term,
+			Team:      c.Team,
 		})
 	}
 
@@ -472,6 +484,19 @@ func removeClassroom(client *api.RESTClient, in io.Reader, out, errOut io.Writer
 		}
 	}
 
+	// Resolve the team ref BEFORE the commit deletes classroom.json.
+	// deleteClassroomTeam deletes by the persisted (authoritative) slug
+	// and verifies the id matches, so a re-slugged team is still removed
+	// and an unrelated team that merely occupies the slug is never
+	// touched. A classroom with no team block yields an empty ref
+	// (no-op delete).
+	var team teamRef
+	if t, ok, terr := resolveClassroomTeam(client, org, shortName, branch); terr != nil {
+		return terr
+	} else if ok {
+		team = t
+	}
+
 	var deleted int
 	build := func(parentSHA string) (commitChange, error) {
 		deleted = 0
@@ -493,6 +518,18 @@ func removeClassroom(client *api.RESTClient, in io.Reader, out, errOut io.Writer
 		return nil
 	}
 	_, _ = fmt.Fprintf(out, "%s/%s: removed classroom %s (%d files)\n", org, configRepoName, shortName, deleted)
+
+	// Delete the per-classroom team (idempotent; 404 = already gone).
+	// The team's repo grants + memberships go with it. A delete failure
+	// is surfaced but doesn't undo the config removal.
+	if team.Slug != "" {
+		if err := deleteClassroomTeam(client, org, team); err != nil {
+			_, _ = fmt.Fprintf(errOut, "Warning: %s: removed the classroom config but could not delete its team %q (%v); delete it by hand at https://github.com/orgs/%s/teams if it lingers.\n",
+				org, team.Slug, err, org)
+			return nil
+		}
+		_, _ = fmt.Fprintf(out, "%s: deleted classroom team %s\n", org, team.Slug)
+	}
 	return nil
 }
 
@@ -516,11 +553,16 @@ func confirmClassroomRemove(in io.Reader, out io.Writer, shortName string) error
 // assignments.json's typed shape lives in assignments_json.go.
 // MigratedFrom omits cleanly when absent.
 type classroomJSON struct {
-	Schema       string                    `json:"schema"`
-	Name         string                    `json:"name"`
-	ShortName    string                    `json:"short_name"`
-	Term         string                    `json:"term"`
-	Org          string                    `json:"org"`
+	Schema    string `json:"schema"`
+	Name      string `json:"name"`
+	ShortName string `json:"short_name"`
+	Term      string `json:"term"`
+	Org       string `json:"org"`
+	// Team is the per-classroom GitHub team that grants rostered
+	// students read on private, org-owned assignment templates (see
+	// PRIVATE_ASSIGNMENTS_PLAN.md). Populated by `classroom add`;
+	// omitted on classrooms created before this feature.
+	Team         *teamRef                  `json:"team,omitempty"`
 	MigratedFrom *classroomMigratedFromRef `json:"migrated_from,omitempty"`
 }
 
@@ -553,13 +595,14 @@ type scoresJSON struct {
 // through encodeAssignments (same normalization as
 // `gh teacher assignment add`); `migration` populates the optional
 // `migrated_from` block on classroom.json.
-func classroomScaffold(org, shortName, name, term string, entries []assignmentEntry, migration *classroomMigratedFromRef) (map[string]string, error) {
+func classroomScaffold(org, shortName, name, term string, entries []assignmentEntry, migration *classroomMigratedFromRef, team *teamRef) (map[string]string, error) {
 	classroom := classroomJSON{
 		Schema:       classroomSchemaV1,
 		Name:         name,
 		ShortName:    shortName,
 		Term:         term,
 		Org:          org,
+		Team:         team,
 		MigratedFrom: migration,
 	}
 	classroomBytes, err := encodeJSONPretty(classroom)

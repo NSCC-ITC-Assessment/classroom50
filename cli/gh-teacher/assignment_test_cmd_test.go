@@ -537,3 +537,218 @@ func TestValidateModeAndSizeFlags(t *testing.T) {
 		})
 	}
 }
+
+// privateTemplateFixture records the team repo-access calls made during
+// an assignment add against a private template.
+type privateTemplateFixture struct {
+	mu          sync.Mutex
+	grantPUT    bool   // PUT .../teams/{slug}/repos/{owner}/{repo} fired
+	grantPath   string // the path of that PUT
+	committed   bool   // a blob (the assignments.json write) was uploaded
+	teamHasRepo bool   // controls the GET access-probe result (204 vs 404)
+}
+
+// newPrivateTemplateServer builds a fixture exercising the assignment
+// add → private-template matrix. templateOwner/templatePrivate shape the
+// template probe; the team grant endpoints are wired so the test can
+// assert whether a read grant fired.
+func newPrivateTemplateServer(t *testing.T, templateOwner string, templatePrivate bool) (*httptest.Server, *privateTemplateFixture) {
+	t.Helper()
+	fix := &privateTemplateFixture{}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/o/classroom50", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]string{"default_branch": "main"})
+	})
+	mux.HandleFunc("/repos/o/classroom50/contents/cs-principles/assignments.json", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"type":     "file",
+			"content":  base64.StdEncoding.EncodeToString([]byte(`{"schema":"classroom50/assignments/v1","assignments":[]}`)),
+			"encoding": "base64",
+		})
+	})
+	// classroom.json carries the team ref that resolveClassroomTeam reads
+	// for the grant (authoritative slug; never re-derived).
+	mux.HandleFunc("/repos/o/classroom50/contents/cs-principles/classroom.json", func(w http.ResponseWriter, r *http.Request) {
+		body := `{"schema":"classroom50/classroom/v1","name":"CS Principles","short_name":"cs-principles","term":"","org":"o","team":{"id":4242,"slug":"classroom50-cs-principles"}}`
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"type":     "file",
+			"content":  base64.StdEncoding.EncodeToString([]byte(body)),
+			"encoding": "base64",
+		})
+	})
+	// Template probe — the test controls owner + visibility.
+	mux.HandleFunc("/repos/"+templateOwner+"/hello-template", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"is_template": true, "default_branch": "main", "private": templatePrivate,
+		})
+	})
+	// commitTree write endpoints.
+	mux.HandleFunc("/repos/o/classroom50/git/refs/heads/main", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPatch {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"object": map[string]string{"sha": "parent-sha"}})
+	})
+	mux.HandleFunc("/repos/o/classroom50/git/commits/parent-sha", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"tree": map[string]string{"sha": "parent-tree"}})
+	})
+	mux.HandleFunc("/repos/o/classroom50/git/blobs", func(w http.ResponseWriter, r *http.Request) {
+		fix.mu.Lock()
+		fix.committed = true
+		fix.mu.Unlock()
+		_ = json.NewEncoder(w).Encode(map[string]string{"sha": "blob-sha"})
+	})
+	mux.HandleFunc("/repos/o/classroom50/git/trees", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]string{"sha": "new-tree-sha"})
+	})
+	mux.HandleFunc("/repos/o/classroom50/git/commits", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]string{"sha": "new-commit-sha"})
+	})
+	// Team repo-access probe + grant. GET → 204/404 per teamHasRepo;
+	// PUT → records the grant.
+	mux.HandleFunc("/orgs/o/teams/classroom50-cs-principles/repos/o/hello-template", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			fix.mu.Lock()
+			has := fix.teamHasRepo
+			fix.mu.Unlock()
+			if has {
+				w.WriteHeader(http.StatusNoContent)
+			} else {
+				w.WriteHeader(http.StatusNotFound)
+			}
+		case http.MethodPut:
+			fix.mu.Lock()
+			fix.grantPUT = true
+			fix.grantPath = r.URL.Path
+			fix.mu.Unlock()
+			w.WriteHeader(http.StatusNoContent)
+		}
+	})
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+	return server, fix
+}
+
+func TestRunAssignmentAdd_RejectsOutOfOrgPrivateTemplate(t *testing.T) {
+	// Rule 5: a private template outside the org is rejected before any
+	// commit, because students could never be granted access to it.
+	server, fix := newPrivateTemplateServer(t, "some-teacher", true)
+	client := newTestRESTClient(t, server)
+
+	var stdout, stderr bytes.Buffer
+	err := runAssignmentAdd(client, &stdout, &stderr, "o", "cs-principles", "hello", "Hello", "",
+		templateArg{Owner: "some-teacher", Repo: "hello-template"}, "", nil, "individual", 0, "default", nil, nil, false)
+	if err == nil || !strings.Contains(err.Error(), "private and outside the org") {
+		t.Fatalf("expected out-of-org private rejection, got %v", err)
+	}
+	fix.mu.Lock()
+	defer fix.mu.Unlock()
+	if fix.committed {
+		t.Error("rejected assignment must not land a commit")
+	}
+	if fix.grantPUT {
+		t.Error("rejected assignment must not grant team access")
+	}
+}
+
+func TestRunAssignmentAdd_GrantsTeamReadForInOrgPrivateTemplate(t *testing.T) {
+	// In-org private template: the classroom team is granted pull so
+	// rostered students can generate from it.
+	server, fix := newPrivateTemplateServer(t, "o", true)
+	client := newTestRESTClient(t, server)
+
+	var stdout, stderr bytes.Buffer
+	err := runAssignmentAdd(client, &stdout, &stderr, "o", "cs-principles", "hello", "Hello", "",
+		templateArg{Owner: "o", Repo: "hello-template"}, "", nil, "individual", 0, "default", nil, nil, false)
+	if err != nil {
+		t.Fatalf("runAssignmentAdd: %v", err)
+	}
+	fix.mu.Lock()
+	defer fix.mu.Unlock()
+	if !fix.committed {
+		t.Error("assignment should have committed")
+	}
+	if !fix.grantPUT {
+		t.Fatal("expected a team read grant PUT for an in-org private template")
+	}
+	if !strings.Contains(stdout.String(), "granted classroom team") {
+		t.Errorf("stdout = %q, want grant confirmation", stdout.String())
+	}
+}
+
+func TestRunAssignmentAdd_SkipsGrantWhenTeamAlreadyHasAccess(t *testing.T) {
+	// Idempotency: if the team already has access, no PUT fires.
+	server, fix := newPrivateTemplateServer(t, "o", true)
+	fix.teamHasRepo = true
+	client := newTestRESTClient(t, server)
+
+	var stdout, stderr bytes.Buffer
+	err := runAssignmentAdd(client, &stdout, &stderr, "o", "cs-principles", "hello", "Hello", "",
+		templateArg{Owner: "o", Repo: "hello-template"}, "", nil, "individual", 0, "default", nil, nil, false)
+	if err != nil {
+		t.Fatalf("runAssignmentAdd: %v", err)
+	}
+	fix.mu.Lock()
+	defer fix.mu.Unlock()
+	if fix.grantPUT {
+		t.Error("team already had access; no grant PUT should fire")
+	}
+}
+
+func TestRunAssignmentAdd_InOrgPrivateNoTeamErrors(t *testing.T) {
+	// A classroom with no team block (pre-feature) + an in-org private
+	// template: the assignment commits, then the grant step returns an
+	// actionable error pointing at `classroom add` rather than a raw 404.
+	fresh := http.NewServeMux()
+	fresh.HandleFunc("/repos/o/classroom50", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]string{"default_branch": "main"})
+	})
+	fresh.HandleFunc("/repos/o/classroom50/contents/cs-principles/assignments.json", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"type": "file", "encoding": "base64",
+			"content": base64.StdEncoding.EncodeToString([]byte(`{"schema":"classroom50/assignments/v1","assignments":[]}`)),
+		})
+	})
+	fresh.HandleFunc("/repos/o/classroom50/contents/cs-principles/classroom.json", func(w http.ResponseWriter, r *http.Request) {
+		// No team block — a pre-feature classroom.
+		body := `{"schema":"classroom50/classroom/v1","name":"CS","short_name":"cs-principles","term":"","org":"o"}`
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"type": "file", "encoding": "base64",
+			"content": base64.StdEncoding.EncodeToString([]byte(body)),
+		})
+	})
+	fresh.HandleFunc("/repos/o/hello-template", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"is_template": true, "default_branch": "main", "private": true})
+	})
+	fresh.HandleFunc("/repos/o/classroom50/git/refs/heads/main", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPatch {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"object": map[string]string{"sha": "parent-sha"}})
+	})
+	fresh.HandleFunc("/repos/o/classroom50/git/commits/parent-sha", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"tree": map[string]string{"sha": "parent-tree"}})
+	})
+	fresh.HandleFunc("/repos/o/classroom50/git/blobs", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]string{"sha": "blob-sha"})
+	})
+	fresh.HandleFunc("/repos/o/classroom50/git/trees", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]string{"sha": "new-tree-sha"})
+	})
+	fresh.HandleFunc("/repos/o/classroom50/git/commits", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]string{"sha": "new-commit-sha"})
+	})
+	srv := httptest.NewServer(fresh)
+	t.Cleanup(srv.Close)
+	client := newTestRESTClient(t, srv)
+
+	var stdout, stderr bytes.Buffer
+	err := runAssignmentAdd(client, &stdout, &stderr, "o", "cs-principles", "hello", "Hello", "",
+		templateArg{Owner: "o", Repo: "hello-template"}, "", nil, "individual", 0, "default", nil, nil, false)
+	if err == nil || !strings.Contains(err.Error(), "has no team to grant read") {
+		t.Fatalf("expected actionable no-team error, got %v", err)
+	}
+}

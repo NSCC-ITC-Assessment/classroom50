@@ -550,6 +550,23 @@ func (s *migrateE2EState) dispatch(t *testing.T, w http.ResponseWriter, r *http.
 		}
 		writeJSON(t, w, map[string]any{"is_template": isTpl})
 
+	// Target-side: classroom team create (POST /orgs/{org}/teams).
+	case path == "/orgs/"+s.targetOrg()+"/teams" && r.Method == http.MethodPost:
+		writeJSON(t, w, map[string]any{"id": 4242, "slug": "classroom50-classroom50test"})
+
+	// Target-side: team repo-access probe (GET → 404 = no access yet)
+	// and grant (PUT → 204) for a private migrated template.
+	case strings.HasPrefix(path, "/orgs/"+s.targetOrg()+"/teams/classroom50-classroom50test/repos/"):
+		switch r.Method {
+		case http.MethodGet:
+			w.WriteHeader(http.StatusNotFound)
+		case http.MethodPut:
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			t.Errorf("unexpected method %s on %s", r.Method, path)
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}
+
 	default:
 		t.Errorf("unexpected path %q method %s", path, r.Method)
 		http.NotFound(w, r)

@@ -17,8 +17,9 @@ import (
 // records the decoded content of every blob POSTed, so a test can
 // assert what an edit re-encoded.
 type configRepoMock struct {
-	files map[string]string
-	blobs []string
+	files       map[string]string
+	blobs       []string
+	teamDeleted bool // set when DELETE /orgs/o/teams/{slug} is received
 }
 
 func (m *configRepoMock) handler(t *testing.T) http.Handler {
@@ -115,6 +116,24 @@ func (m *configRepoMock) handler(t *testing.T) http.Handler {
 		_ = json.NewEncoder(w).Encode(map[string]any{"tree": entries, "truncated": false})
 	})
 
+	// Classroom team delete (DELETE /orgs/o/teams/{slug}) — records the
+	// Classroom team verify+delete (GET then DELETE
+	// /orgs/o/teams/{slug}) — records the delete so a test can assert
+	// classroom remove tears the team down by its persisted slug, after
+	// confirming the live team id matches the recorded one (4242, set by
+	// classroomJSONContent).
+	mux.HandleFunc("/orgs/o/teams/classroom50-cs-principles", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": 4242, "slug": "classroom50-cs-principles"})
+		case http.MethodDelete:
+			m.teamDeleted = true
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			http.NotFound(w, r)
+		}
+	})
+
 	return mux
 }
 
@@ -126,6 +145,7 @@ func classroomJSONContent(t *testing.T, org, shortName, name, term string) strin
 		ShortName: shortName,
 		Term:      term,
 		Org:       org,
+		Team:      &teamRef{ID: 4242, Slug: "classroom50-" + shortName},
 	})
 	if err != nil {
 		t.Fatalf("encode classroom.json: %v", err)
@@ -317,6 +337,12 @@ func TestRemoveClassroom(t *testing.T) {
 		// 5 files live under cs-principles/.
 		if !strings.Contains(out.String(), "removed classroom cs-principles (5 files)") {
 			t.Errorf("stdout = %q, want 'removed classroom cs-principles (5 files)'", out.String())
+		}
+		if !mock.teamDeleted {
+			t.Error("classroom remove should delete the classroom team")
+		}
+		if !strings.Contains(out.String(), "deleted classroom team classroom50-cs-principles") {
+			t.Errorf("stdout = %q, want team-delete confirmation", out.String())
 		}
 	})
 

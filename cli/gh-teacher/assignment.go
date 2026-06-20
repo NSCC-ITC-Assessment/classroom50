@@ -392,9 +392,19 @@ func runAssignmentAdd(client *api.RESTClient, out, errOut io.Writer, org, classr
 		return err
 	}
 
-	resolved, err := validateTemplateRepo(client, tmpl)
+	resolved, templatePrivate, err := validateTemplateRepo(client, tmpl)
 	if err != nil {
 		return err
+	}
+
+	// Private-template access matrix (see PRIVATE_ASSIGNMENTS_PLAN.md):
+	// a private template outside the org can't be shared with the
+	// classroom team, so students could never generate from it — reject
+	// up front rather than letting every `gh student accept` 404 later.
+	inOrg := templateInOrg(resolved.Owner, org)
+	if templatePrivate && !inOrg {
+		return fmt.Errorf("template `%s/%s` is private and outside the org %s — students can't be granted access to it, so `gh student accept` would fail. Copy it into %s and reference the copy, or make the template public",
+			resolved.Owner, resolved.Repo, org, org)
 	}
 
 	entry := assignmentEntry{
@@ -491,6 +501,32 @@ func runAssignmentAdd(client *api.RESTClient, out, errOut io.Writer, org, classr
 	_, _ = fmt.Fprintf(out, "%s/%s/%s: %s %s (template %s/%s@%s, autograder %s)\n",
 		org, configRepoName, assignmentsFilePath(classroom), action, slug,
 		resolved.Owner, resolved.Repo, resolved.Branch, entry.Autograder)
+
+	// In-org private template: grant the classroom team read so rostered
+	// students can generate from it (public templates need no grant; the
+	// out-of-org private case was already rejected above). Idempotent —
+	// skips the PUT when the team already has access. The team slug is
+	// read from classroom.json (authoritative); a classroom with no team
+	// (pre-feature) gets an actionable message rather than a 404 against
+	// a guessed slug.
+	if templatePrivate && inOrg {
+		team, ok, err := resolveClassroomTeam(client, org, classroom, branch)
+		if err != nil {
+			return fmt.Errorf("assignment committed, but reading the classroom team failed: %w", err)
+		}
+		if !ok {
+			return fmt.Errorf("assignment %q committed, but classroom %q has no team to grant read on the private template %s/%s — run `gh teacher classroom add %s %s` to create the team, then re-run `gh teacher assignment add` (students can't accept until the team can read the template)",
+				slug, classroom, resolved.Owner, resolved.Repo, org, classroom)
+		}
+		granted, err := grantTeamRepoRead(client, org, team.Slug, resolved.Owner, resolved.Repo)
+		if err != nil {
+			return fmt.Errorf("assignment committed, but granting the classroom team read on the private template %s/%s failed: %w", resolved.Owner, resolved.Repo, err)
+		}
+		if granted {
+			_, _ = fmt.Fprintf(out, "%s: granted classroom team %s read on private template %s/%s\n",
+				org, team.Slug, resolved.Owner, resolved.Repo)
+		}
+	}
 	if droppedTests > 0 {
 		_, _ = fmt.Fprintf(errOut,
 			"Warning: replacing %q dropped its %d declarative test(s) — `assignment add` rewrites the whole entry. Pass --tests to keep them, or re-add with `gh teacher assignment test add`.\n",
@@ -673,23 +709,39 @@ func dueZoneName(loc *time.Location, t time.Time) string {
 
 // validateTemplateRepo checks <owner>/<repo> exists and is a
 // template repo, then resolves missing @branch to default_branch so
-// on-disk Branch is always populated. Post-HTTP decisions live in
-// resolveTemplateBranch so the decision table is unit-testable
-// without an httptest scaffold.
-func validateTemplateRepo(client *api.RESTClient, t templateArg) (templateRef, error) {
+// on-disk Branch is always populated. Also returns whether the
+// template is private, so assignment add can decide whether the
+// classroom team needs a read grant (in-org private) or the
+// assignment must be rejected (out-of-org private). Post-HTTP
+// decisions live in resolveTemplateBranch so the decision table is
+// unit-testable without an httptest scaffold.
+func validateTemplateRepo(client *api.RESTClient, t templateArg) (ref templateRef, private bool, err error) {
 	path := fmt.Sprintf("repos/%s/%s", url.PathEscape(t.Owner), url.PathEscape(t.Repo))
 	var resp struct {
 		IsTemplate    bool   `json:"is_template"`
 		DefaultBranch string `json:"default_branch"`
+		Private       bool   `json:"private"`
 	}
 	if err := client.Get(path, &resp); err != nil {
 		if isHTTPStatus(err, http.StatusNotFound) {
-			return templateRef{}, fmt.Errorf("template `%s/%s` is not visible to your account — either make it public, or copy it into your org and reference the copy",
+			return templateRef{}, false, fmt.Errorf("template `%s/%s` is not visible to your account — either make it public, or copy it into your org and reference the copy",
 				t.Owner, t.Repo)
 		}
-		return templateRef{}, fmt.Errorf("GET %s: %w", path, err)
+		return templateRef{}, false, fmt.Errorf("GET %s: %w", path, err)
 	}
-	return resolveTemplateBranch(t, resp.IsTemplate, resp.DefaultBranch)
+	ref, err = resolveTemplateBranch(t, resp.IsTemplate, resp.DefaultBranch)
+	if err != nil {
+		return templateRef{}, false, err
+	}
+	return ref, resp.Private, nil
+}
+
+// templateInOrg reports whether the template repo is owned by <org>
+// (case-insensitive, matching GitHub's login semantics). An in-org
+// private template can be shared with the classroom team; an
+// out-of-org private one cannot, so assignment add rejects it.
+func templateInOrg(templateOwner, org string) bool {
+	return strings.EqualFold(templateOwner, org)
 }
 
 // resolveTemplateBranch picks the final templateRef from

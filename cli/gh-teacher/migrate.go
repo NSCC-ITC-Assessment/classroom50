@@ -161,6 +161,15 @@ func discoverMigration(client *api.RESTClient, errOut io.Writer, opts migrateOpt
 	if err := validateShortName(shortNameVal, "short-name"); err != nil {
 		return migrationPlan{}, err
 	}
+	// A migrated classroom gets a GitHub team (classroom50-<short>);
+	// reject a short-name GitHub would slugify differently (consecutive
+	// or trailing hyphens) up front, before runTemplateCopy generates
+	// any repos — otherwise ensureClassroomTeam would hard-fail later
+	// and orphan the freshly-created templates. Auto-derived short-names
+	// are already canonical; this guards an explicit --short-name.
+	if !canonicalTeamSlugShortName(shortNameVal) {
+		return migrationPlan{}, fmt.Errorf("short-name %q can't back a GitHub team — remove consecutive or trailing hyphens (GitHub would rewrite the team slug, breaking membership and template grants)", shortNameVal)
+	}
 
 	assignments, err := fetchAssignmentsForClassroom(client, detail.ID)
 	if err != nil {
@@ -208,6 +217,13 @@ func performMigration(client *api.RESTClient, out, errOut io.Writer, plan migrat
 	entries := buildMigratedEntries(errOut, plan, resolved)
 	migration := classroomMigratedFromFromDetail(plan.Classroom, plan.MigratedAt)
 
+	// Create (or adopt) the per-classroom team so its ref lands in
+	// classroom.json, same as `gh teacher classroom add`.
+	team, err := ensureClassroomTeam(client, plan.TargetOrg, plan.ShortName)
+	if err != nil {
+		return fmt.Errorf("create classroom team: %w", err)
+	}
+
 	build := func(parentSHA string) (map[string]string, error) {
 		exists, err := contentsExists(client, plan.TargetOrg, configRepoName, plan.ShortName, parentSHA)
 		if err != nil {
@@ -217,7 +233,7 @@ func performMigration(client *api.RESTClient, out, errOut io.Writer, plan migrat
 			return nil, fmt.Errorf("classroom %q appeared in %s/%s mid-commit (concurrent writer?)",
 				plan.ShortName, plan.TargetOrg, configRepoName)
 		}
-		return classroomScaffold(plan.TargetOrg, plan.ShortName, plan.Classroom.Name, plan.Term, entries, migration)
+		return classroomScaffold(plan.TargetOrg, plan.ShortName, plan.Classroom.Name, plan.Term, entries, migration, &team)
 	}
 
 	message := fmt.Sprintf("Migrate %s from GitHub Classroom %d (gh teacher classroom migrate)",
@@ -229,9 +245,39 @@ func performMigration(client *api.RESTClient, out, errOut io.Writer, plan migrat
 
 	printMigrationSummary(out, errOut, plan, resolved, entries, commitSHA, branch)
 
+	// Grant the classroom team read on any migrated template that is
+	// private. Migrated templates are copied into the target org, so a
+	// private one is the in-org-private case `assignment add` handles —
+	// without this grant, `gh student accept` would 404 generating from
+	// it (same fix, applied to the migrate path). Gate on the TARGET
+	// repo's actual visibility (correct for both Generated and Reused),
+	// use the team's authoritative slug, and track failures so the exit
+	// code reflects a template students can't yet accept.
+	var grantFailures int
+	for i := range resolved {
+		rt := resolved[i]
+		if rt.Action == templateActionSkipped || !rt.TargetPrivate {
+			continue
+		}
+		granted, gerr := grantTeamRepoRead(client, plan.TargetOrg, team.Slug, rt.Template.Owner, rt.Template.Repo)
+		if gerr != nil {
+			grantFailures++
+			_, _ = fmt.Fprintf(errOut, "Warning: %s: could not grant the classroom team read on private template %s/%s (%v); students will 404 on `gh student accept` until you grant it. Retry with `gh teacher assignment add` or grant the team manually.\n",
+				plan.TargetOrg, rt.Template.Owner, rt.Template.Repo, gerr)
+			continue
+		}
+		if granted {
+			_, _ = fmt.Fprintf(out, "%s: granted classroom team %s read on private template %s/%s\n",
+				plan.TargetOrg, team.Slug, rt.Template.Owner, rt.Template.Repo)
+		}
+	}
+
 	_, _, skipped := countTemplateActions(resolved)
 	if skipped > 0 {
 		return fmt.Errorf("%d assignment(s) skipped during template copy — see stderr for per-assignment reasons", skipped)
+	}
+	if grantFailures > 0 {
+		return fmt.Errorf("%d private template(s) could not be granted to the classroom team — students can't `gh student accept` them until fixed (see stderr)", grantFailures)
 	}
 	return nil
 }

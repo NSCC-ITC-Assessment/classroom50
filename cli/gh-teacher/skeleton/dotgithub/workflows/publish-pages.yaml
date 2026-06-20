@@ -108,10 +108,16 @@ jobs:
         run: |
           python3 - <<'PY'
           import glob, json, os
+          # Public fields only — keep internal/teacher-side keys (e.g. the
+          # `team` block, which carries the GitHub team id/slug) out of the
+          # unauthenticated Pages index. New public fields must be added
+          # here explicitly rather than dumping classroom.json wholesale.
+          PUBLIC_KEYS = ("schema", "name", "short_name", "term", "org", "migrated_from")
           rooms = []
           for path in sorted(glob.glob("*/classroom.json")):
               with open(path) as fh:
-                  rooms.append(json.load(fh))
+                  doc = json.load(fh)
+              rooms.append({k: doc[k] for k in PUBLIC_KEYS if k in doc})
           os.makedirs("_site", exist_ok=True)
           with open("_site/classrooms-index.json", "w") as fh:
               json.dump({"classrooms": rooms}, fh)

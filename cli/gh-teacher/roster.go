@@ -305,6 +305,26 @@ func runRosterAdd(client *api.RESTClient, out, errOut io.Writer, org, classroom,
 		_, _ = fmt.Fprintf(out, "%s: invited %s as direct_member\n", org, login)
 		_, _ = fmt.Fprintf(errOut, "Advise %s to sign in to https://github.com as %s, then visit https://github.com/%s to accept the invitation.\n", login, login, org)
 	}
+
+	// Add the student to the classroom team so they inherit read on the
+	// classroom's private, org-owned assignment templates. The PUT works
+	// for both an already-active member (active immediately) and a
+	// not-yet-member (pending until they accept the org invite), so one
+	// call covers both states. Idempotent. The team slug is read from
+	// classroom.json (authoritative — never re-derived).
+	team, ok, err := resolveClassroomTeam(client, org, classroom, branch)
+	if err != nil {
+		return fmt.Errorf("roster row committed and org invite sent, but reading the classroom team failed: %w", err)
+	}
+	if !ok {
+		_, _ = fmt.Fprintf(errOut, "Warning: %s: classroom %s has no team recorded in classroom.json; skipped adding %s to it. Re-run `gh teacher classroom add %s %s` to create the team, then `gh teacher roster add` again.\n",
+			org, classroom, login, org, classroom)
+		return nil
+	}
+	if err := addTeamMembership(client, org, team.Slug, login); err != nil {
+		return fmt.Errorf("roster row committed and org invite sent, but adding %s to the classroom team failed: %w", login, err)
+	}
+	_, _ = fmt.Fprintf(out, "%s: added %s to classroom team %s\n", org, login, team.Slug)
 	return nil
 }
 
@@ -342,6 +362,20 @@ func runRosterRemove(client *api.RESTClient, out io.Writer, org, classroom, user
 	if removed {
 		_, _ = fmt.Fprintf(out, "%s/%s/%s: removed %s (org membership unchanged)\n",
 			org, configRepoName, rosterFilePath(classroom), username)
+		// Symmetric with roster add: drop the student from the
+		// classroom team so they lose template read. Idempotent (404 =
+		// not a member / team gone). Org membership is untouched. The
+		// slug is read from classroom.json (authoritative).
+		team, ok, err := resolveClassroomTeam(client, org, classroom, branch)
+		if err != nil {
+			return fmt.Errorf("roster row removed, but reading the classroom team failed: %w", err)
+		}
+		if ok {
+			if err := removeTeamMembership(client, org, team.Slug, username); err != nil {
+				return fmt.Errorf("roster row removed, but removing %s from the classroom team failed: %w", username, err)
+			}
+			_, _ = fmt.Fprintf(out, "%s: removed %s from classroom team %s\n", org, username, team.Slug)
+		}
 	} else {
 		_, _ = fmt.Fprintf(out, "%s/%s/%s: %s not in roster, nothing to do\n",
 			org, configRepoName, rosterFilePath(classroom), username)
@@ -430,11 +464,29 @@ func runRosterImport(client *api.RESTClient, out, errOut io.Writer, org, classro
 	_, _ = fmt.Fprintf(out, "%s/%s/%s: imported %d row(s) (%d new, %d updated)\n",
 		org, configRepoName, rosterFilePath(classroom), len(resolved), added, updated)
 
+	// Resolve the classroom team once (authoritative slug from
+	// classroom.json). A classroom with no team is a warn-and-skip for
+	// the membership step.
+	team, teamOK, err := resolveClassroomTeam(client, org, classroom, branch)
+	if err != nil {
+		return fmt.Errorf("roster rows committed, but reading the classroom team failed: %w", err)
+	}
+	if !teamOK {
+		_, _ = fmt.Fprintf(errOut, "Warning: %s: classroom %s has no team recorded in classroom.json; skipped team membership for the imported students. Re-run `gh teacher classroom add %s %s`, then `gh teacher roster import` again.\n",
+			org, classroom, org, classroom)
+	}
+
 	invited, alreadyActive, alreadyPending := 0, 0, 0
+	var failures []string
 	for _, row := range resolved {
 		state, err := inviteIfNotMember(client, org, row.Username, row.GitHubID)
 		if err != nil {
-			return fmt.Errorf("roster rows committed, but org invite for %s failed: %w", row.Username, err)
+			// Warn-and-continue (not hard-fail): the commit already
+			// landed and the per-student calls are idempotent, so a
+			// transient failure on one student must not strand the
+			// rest. Collect for a summary so nothing is silently lost.
+			failures = append(failures, fmt.Sprintf("%s (invite: %v)", row.Username, err))
+			continue
 		}
 		switch state {
 		case "active":
@@ -444,9 +496,25 @@ func runRosterImport(client *api.RESTClient, out, errOut io.Writer, org, classro
 		case "invited":
 			invited++
 		}
+		// Add each student to the classroom team (idempotent; covers
+		// both active and pending members).
+		if teamOK {
+			if err := addTeamMembership(client, org, team.Slug, row.Username); err != nil {
+				failures = append(failures, fmt.Sprintf("%s (team add: %v)", row.Username, err))
+				continue
+			}
+		}
 	}
-	_, _ = fmt.Fprintf(out, "%s: %d invited, %d already members, %d already pending\n",
-		org, invited, alreadyActive, alreadyPending)
+	teamNote := ""
+	if teamOK {
+		teamNote = fmt.Sprintf("; all added to classroom team %s", team.Slug)
+	}
+	_, _ = fmt.Fprintf(out, "%s: %d invited, %d already members, %d already pending%s\n",
+		org, invited, alreadyActive, alreadyPending, teamNote)
+	if len(failures) > 0 {
+		_, _ = fmt.Fprintf(errOut, "Warning: %s: %d student(s) could not be fully onboarded (roster rows are committed; re-run `gh teacher roster import` to retry, it's idempotent): %s\n",
+			org, len(failures), strings.Join(failures, "; "))
+	}
 	if invited > 0 {
 		_, _ = fmt.Fprintf(errOut, "Newly-invited students should visit https://github.com/%s to accept their invitation.\n", org)
 	}
