@@ -14,11 +14,13 @@ import (
 	"os"
 	"strings"
 
-	"github.com/cli/go-gh/v2/pkg/api"
-	"github.com/foundation50/classroom50-cli-shared/ghauth"
 	"github.com/spf13/cobra"
 	"golang.org/x/crypto/nacl/box"
 	"golang.org/x/term"
+
+	"github.com/foundation50/classroom50-cli-shared/ghauth"
+	"github.com/foundation50/gh-teacher/internal/cliutil"
+	"github.com/foundation50/gh-teacher/internal/githubapi"
 )
 
 // readHiddenLine reads one line with echo off so the PAT never
@@ -90,11 +92,11 @@ func readServiceToken(cmd *cobra.Command) ([]byte, error) {
 // interactive prompt on a re-run. A non-404 error is reported as
 // "unknown" (false, err) so callers can decide; init treats unknown as
 // "not configured" and proceeds to prompt rather than silently skipping.
-func serviceSecretExists(client *api.RESTClient, owner, repo string) (bool, error) {
+func serviceSecretExists(client githubapi.Client, owner, repo string) (bool, error) {
 	path := fmt.Sprintf("repos/%s/%s/actions/secrets/%s",
 		url.PathEscape(owner), url.PathEscape(repo), url.PathEscape(serviceSecretName))
 	if err := client.Get(path, nil); err != nil {
-		if isHTTPStatus(err, http.StatusNotFound) {
+		if cliutil.IsHTTPStatus(err, http.StatusNotFound) {
 			return false, nil
 		}
 		return false, err
@@ -112,9 +114,10 @@ func serviceSecretExists(client *api.RESTClient, owner, repo string) (bool, erro
 // letting them surface months later as an opaque collect-scores workflow
 // failure. Returns a descriptive, actionable error on failure.
 func validateServiceToken(token []byte, org string) error {
-	tokenClient, err := api.NewRESTClient(api.ClientOptions{
+	tokenClient, err := githubapi.NewClient(githubapi.ClientOptions{
 		AuthToken: string(token),
 	})
+
 	if err != nil {
 		return fmt.Errorf("build token client: %w", err)
 	}
@@ -125,15 +128,15 @@ func validateServiceToken(token []byte, org string) error {
 // it issues the contents read with an already-built client (authenticated
 // as the token under test) and maps the failure modes to actionable
 // errors.
-func validateServiceTokenWithClient(tokenClient *api.RESTClient, org string) error {
+func validateServiceTokenWithClient(tokenClient githubapi.Client, org string) error {
 	// Reading the config repo's contents exercises Contents: read on an
 	// org repo — exactly what collect-scores does against student repos.
 	path := fmt.Sprintf("repos/%s/%s/contents/", url.PathEscape(org), url.PathEscape(configRepoName))
 	if err := tokenClient.Get(path, nil); err != nil {
 		switch {
-		case isHTTPStatus(err, http.StatusUnauthorized):
+		case cliutil.IsHTTPStatus(err, http.StatusUnauthorized):
 			return fmt.Errorf("the supplied token is invalid, expired, or revoked (401). Create a fresh fine-grained PAT and try again")
-		case isHTTPStatus(err, http.StatusNotFound), isHTTPStatus(err, http.StatusForbidden):
+		case cliutil.IsHTTPStatus(err, http.StatusNotFound), cliutil.IsHTTPStatus(err, http.StatusForbidden):
 			return fmt.Errorf("the supplied token can't read %s/%s contents. Create a fine-grained PAT with Resource owner = %q, Repository access = All repositories, and Repository permissions -> Contents: Read-only. If your org requires PAT approval and you are not an org owner, an owner must approve it first (owners' tokens are auto-approved). Underlying error: %v", org, configRepoName, org, err)
 		default:
 			return fmt.Errorf("couldn't verify the token against %s/%s: %w", org, configRepoName, err)
@@ -155,7 +158,7 @@ func validateServiceTokenWithClient(tokenClient *api.RESTClient, org string) err
 // teacher re-running init understands why they weren't asked for a token.
 // secretExists is the result preflight already fetched, so the re-run
 // path doesn't repeat the secret GET.
-func provisionServiceToken(cmd *cobra.Command, client *api.RESTClient, summary *initSummary, org string, secretExists bool) error {
+func provisionServiceToken(cmd *cobra.Command, client githubapi.Client, summary *initSummary, org string, secretExists bool) error {
 	errOut := cmd.ErrOrStderr()
 
 	// 1. Env var wins (CI / scripted / explicit refresh).
@@ -200,7 +203,7 @@ func provisionServiceToken(cmd *cobra.Command, client *api.RESTClient, summary *
 // CLASSROOM50_SERVICE_TOKEN secret. Repo-level (not org-level) keeps
 // the secret invisible to other repos in the org. Idempotent (PUT
 // replaces in place). Shared by `init` and `rotate-service-token`.
-func provisionServiceSecret(client *api.RESTClient, out io.Writer, owner, repo string, token []byte, verb string) error {
+func provisionServiceSecret(client githubapi.Client, out io.Writer, owner, repo string, token []byte, verb string) error {
 	keyPath := fmt.Sprintf("repos/%s/%s/actions/secrets/public-key",
 		url.PathEscape(owner), url.PathEscape(repo))
 	var keyResp struct {
@@ -283,7 +286,7 @@ func rotateServiceTokenCmd() *cobra.Command {
 				return errors.New("org must not be empty")
 			}
 
-			client, err := requireAuthClient(cmd)
+			client, err := githubapi.RequireAuthClient(cmd)
 			if err != nil {
 				return err
 			}
@@ -293,7 +296,7 @@ func rotateServiceTokenCmd() *cobra.Command {
 			// user probably mistyped.
 			repoPath := fmt.Sprintf("repos/%s/%s", url.PathEscape(org), configRepoName)
 			if err := client.Get(repoPath, nil); err != nil {
-				if isHTTPStatus(err, http.StatusNotFound) {
+				if cliutil.IsHTTPStatus(err, http.StatusNotFound) {
 					return fmt.Errorf("%s/%s does not exist; run `gh teacher init %s` first", org, configRepoName, org)
 				}
 				return fmt.Errorf("GET %s: %w", repoPath, err)

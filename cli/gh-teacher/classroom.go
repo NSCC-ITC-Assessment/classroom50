@@ -10,9 +10,10 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/cli/go-gh/v2/pkg/api"
-	"github.com/foundation50/classroom50-cli-shared/contract"
 	"github.com/spf13/cobra"
+
+	"github.com/foundation50/classroom50-cli-shared/contract"
+	"github.com/foundation50/gh-teacher/internal/githubapi"
 )
 
 // shortNamePattern: classroom short-names and assignment slugs both
@@ -106,7 +107,7 @@ func classroomAddCmd() *cobra.Command {
 				return err
 			}
 
-			client, err := requireAuthClient(cmd)
+			client, err := githubapi.RequireAuthClient(cmd)
 			if err != nil {
 				return err
 			}
@@ -124,7 +125,7 @@ func classroomAddCmd() *cobra.Command {
 // work. The existence probe runs inside the build callback so a
 // same-classroom race surfaces as "already exists" rather than
 // silently clobbering the winner.
-func addClassroom(client *api.RESTClient, out, errOut io.Writer, org, shortName, name, term string) error {
+func addClassroom(client githubapi.Client, out, errOut io.Writer, org, shortName, name, term string) error {
 	branch, err := resolveConfigRepoBranch(client, org)
 	if err != nil {
 		return err
@@ -182,7 +183,7 @@ func classroomFilePath(shortName string) string {
 // loadClassroom reads + parses <short-name>/classroom.json at `ref`.
 // Missing file → (nil, false, nil) so callers shape their own
 // "not found" message.
-func loadClassroom(client *api.RESTClient, org, shortName, ref string) (*classroomJSON, bool, error) {
+func loadClassroom(client githubapi.Client, org, shortName, ref string) (*classroomJSON, bool, error) {
 	path := classroomFilePath(shortName)
 	data, ok, err := readFileContents(client, org, configRepoName, path, ref)
 	if err != nil {
@@ -234,7 +235,7 @@ func classroomListCmd() *cobra.Command {
 			if org == "" {
 				return errors.New("org must not be empty")
 			}
-			client, err := requireAuthClient(cmd)
+			client, err := githubapi.RequireAuthClient(cmd)
 			if err != nil {
 				return err
 			}
@@ -248,7 +249,7 @@ func classroomListCmd() *cobra.Command {
 
 // runClassroomList: one branch resolve, one root listing, then one
 // classroom.json read per directory to recover name/term. No commit.
-func runClassroomList(client *api.RESTClient, out, errOut io.Writer, org string, asJSON, quiet bool) error {
+func runClassroomList(client githubapi.Client, out, errOut io.Writer, org string, asJSON, quiet bool) error {
 	branch, err := resolveConfigRepoBranch(client, org)
 	if err != nil {
 		return err
@@ -350,7 +351,7 @@ func classroomEditCmd() *cobra.Command {
 			if !setName && !setTerm {
 				return errors.New("nothing to update — pass --name and/or --term")
 			}
-			client, err := requireAuthClient(cmd)
+			client, err := githubapi.RequireAuthClient(cmd)
 			if err != nil {
 				return err
 			}
@@ -366,7 +367,7 @@ func classroomEditCmd() *cobra.Command {
 // stays consistent across rebase attempts), applies only the changed
 // fields, and re-commits. A proposed body identical to the on-disk
 // one short-circuits to a no-op.
-func editClassroom(client *api.RESTClient, out, errOut io.Writer, org, shortName string, setName bool, name string, setTerm bool, term string) error {
+func editClassroom(client githubapi.Client, out, errOut io.Writer, org, shortName string, setName bool, name string, setTerm bool, term string) error {
 	branch, err := resolveConfigRepoBranch(client, org)
 	if err != nil {
 		return err
@@ -447,7 +448,7 @@ func classroomRemoveCmd() *cobra.Command {
 			if err := validateShortName(shortName, "short-name"); err != nil {
 				return err
 			}
-			client, err := requireAuthClient(cmd)
+			client, err := githubapi.RequireAuthClient(cmd)
 			if err != nil {
 				return err
 			}
@@ -462,7 +463,7 @@ func classroomRemoveCmd() *cobra.Command {
 // commit via commitTreeChange. The subtree's blob paths are
 // enumerated inside the build callback so the deletion set stays
 // consistent with the parent it commits against.
-func removeClassroom(client *api.RESTClient, in io.Reader, out, errOut io.Writer, org, shortName string, skipConfirm bool) error {
+func removeClassroom(client githubapi.Client, in io.Reader, out, errOut io.Writer, org, shortName string, skipConfirm bool) error {
 	branch, err := resolveConfigRepoBranch(client, org)
 	if err != nil {
 		return err

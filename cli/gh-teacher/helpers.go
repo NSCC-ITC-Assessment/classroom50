@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
-
-	"github.com/foundation50/classroom50-cli-shared/ghutil"
 )
 
 // parseOrgClassroom trims and validates the common `<org> <classroom>`
@@ -30,13 +28,6 @@ func parseOrgClassroom(args []string) (org, classroom string, err error) {
 		return "", "", err
 	}
 	return org, classroom, nil
-}
-
-// isHTTPStatus reports whether err is a *api.HTTPError with the
-// given status code. Thin wrapper over the shared ghutil helper
-// (kept as a local name so the ~30 call sites are unchanged).
-func isHTTPStatus(err error, code int) bool {
-	return ghutil.IsHTTPStatus(err, code)
 }
 
 // scopeListContains reports whether the comma-separated OAuth scope

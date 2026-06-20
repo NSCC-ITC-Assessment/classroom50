@@ -8,8 +8,10 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/cli/go-gh/v2/pkg/api"
 	"github.com/spf13/cobra"
+
+	"github.com/foundation50/gh-teacher/internal/cliutil"
+	"github.com/foundation50/gh-teacher/internal/githubapi"
 )
 
 func removeCmd() *cobra.Command {
@@ -39,7 +41,7 @@ func removeCmd() *cobra.Command {
 				return errors.New("username must not be empty")
 			}
 
-			client, err := requireAuthClient(cmd)
+			client, err := githubapi.RequireAuthClient(cmd)
 			if err != nil {
 				return err
 			}
@@ -62,12 +64,12 @@ func removeCmd() *cobra.Command {
 	return cmd
 }
 
-func removeFromOrg(client *api.RESTClient, out io.Writer, org, username string, quiet bool) error {
+func removeFromOrg(client githubapi.Client, out io.Writer, org, username string, quiet bool) error {
 	path := fmt.Sprintf("orgs/%s/memberships/%s", url.PathEscape(org), url.PathEscape(username))
 	resp, err := client.Request(http.MethodDelete, path, nil)
 	if err != nil {
 		// 404 → already gone (idempotent no-op).
-		if isHTTPStatus(err, http.StatusNotFound) {
+		if cliutil.IsHTTPStatus(err, http.StatusNotFound) {
 			if !quiet {
 				_, _ = fmt.Fprintf(out, "%s: %s is not a member\n", org, username)
 			}
@@ -87,13 +89,13 @@ func removeFromOrg(client *api.RESTClient, out io.Writer, org, username string, 
 	return nil
 }
 
-func removeFromRepo(client *api.RESTClient, out io.Writer, owner, repo, username string, quiet bool) error {
+func removeFromRepo(client githubapi.Client, out io.Writer, owner, repo, username string, quiet bool) error {
 	path := fmt.Sprintf("repos/%s/%s/collaborators/%s",
 		url.PathEscape(owner), url.PathEscape(repo), url.PathEscape(username))
 	resp, err := client.Request(http.MethodDelete, path, nil)
 	if err != nil {
 		// 404 → already gone (idempotent no-op).
-		if isHTTPStatus(err, http.StatusNotFound) {
+		if cliutil.IsHTTPStatus(err, http.StatusNotFound) {
 			if !quiet {
 				_, _ = fmt.Fprintf(out, "%s/%s: %s is not a collaborator\n", owner, repo, username)
 			}

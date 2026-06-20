@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/foundation50/gh-teacher/internal/githubtest"
 )
 
 // TestDiagnosticStubEmbedded pins the embedded stub at build time so
@@ -100,7 +102,7 @@ func TestSetClassroomDefault_ClassroomMustExist(t *testing.T) {
 	})
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
-	client := newTestRESTClient(t, server)
+	client := githubtest.NewTestClient(t, server)
 
 	var stdout, stderr bytes.Buffer
 	err := setClassroomDefaultAutograder(client, &stdout, &stderr,
@@ -197,7 +199,7 @@ func TestSetClassroomDefault_HappyPath(t *testing.T) {
 
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
-	client := newTestRESTClient(t, server)
+	client := githubtest.NewTestClient(t, server)
 
 	var stdout, stderr bytes.Buffer
 	err := setClassroomDefaultAutograder(client, &stdout, &stderr, "o", classroom, "./autograder.py", wantBody)
@@ -268,7 +270,7 @@ func TestSetClassroomDefault_NoOpOnIdentical(t *testing.T) {
 
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
-	client := newTestRESTClient(t, server)
+	client := githubtest.NewTestClient(t, server)
 
 	var stdout, stderr bytes.Buffer
 	err := setClassroomDefaultAutograder(client, &stdout, &stderr, "o", "cs-principles", "./autograder.py", identicalBody)

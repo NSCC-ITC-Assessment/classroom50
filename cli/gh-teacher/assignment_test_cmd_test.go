@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/foundation50/gh-teacher/internal/githubtest"
 )
 
 // testCmdFixture wires the GitHub API surface the `assignment test`
@@ -160,7 +162,7 @@ func decodeCommitted(t *testing.T, fix *testCmdFixture) assignmentsJSON {
 
 func TestRunAssignmentTestAdd_AppendsToEntry(t *testing.T) {
 	server, fix := newTestCmdServer(t, helloAssignments(""), false)
-	client := newTestRESTClient(t, server)
+	client := githubtest.NewTestClient(t, server)
 
 	var stdout bytes.Buffer
 	spec := testSpec{Name: "compiles", Type: "run", Run: "gcc -o hello hello.c", Points: 1}
@@ -189,7 +191,7 @@ func TestRunAssignmentTestAdd_AppendsToEntry(t *testing.T) {
 func TestRunAssignmentTestAdd_ReplacesByName(t *testing.T) {
 	existing := `[{"name":"compiles","type":"run","run":"old","points":1}]`
 	server, fix := newTestCmdServer(t, helloAssignments(existing), false)
-	client := newTestRESTClient(t, server)
+	client := githubtest.NewTestClient(t, server)
 
 	var stdout bytes.Buffer
 	spec := testSpec{Name: "compiles", Type: "run", Run: "new", Points: 3}
@@ -208,7 +210,7 @@ func TestRunAssignmentTestAdd_ReplacesByName(t *testing.T) {
 
 func TestRunAssignmentTestAdd_RejectsExistingAutograder(t *testing.T) {
 	server, fix := newTestCmdServer(t, helloAssignments(""), true)
-	client := newTestRESTClient(t, server)
+	client := githubtest.NewTestClient(t, server)
 
 	var stdout bytes.Buffer
 	spec := testSpec{Name: "compiles", Type: "run", Run: "true", Points: 1}
@@ -234,7 +236,7 @@ func TestRunAssignmentTestAdd_UnregisteredSlugFails(t *testing.T) {
 	// trips.
 	empty := `{"schema":"classroom50/assignments/v1","assignments":[]}`
 	server, fix := newTestCmdServer(t, empty, false)
-	client := newTestRESTClient(t, server)
+	client := githubtest.NewTestClient(t, server)
 
 	var stdout bytes.Buffer
 	spec := testSpec{Name: "compiles", Type: "run", Run: "true", Points: 1}
@@ -275,7 +277,7 @@ func TestRunAssignmentTestAdd_RequiresMaterializeScript(t *testing.T) {
 	})
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
-	client := newTestRESTClient(t, server)
+	client := githubtest.NewTestClient(t, server)
 
 	var stdout bytes.Buffer
 	spec := testSpec{Name: "compiles", Type: "run", Run: "true", Points: 1}
@@ -292,7 +294,7 @@ func TestRunAssignmentTestAdd_RequiresMaterializeScript(t *testing.T) {
 
 func TestRunAssignmentAdd_WithTestsPersists(t *testing.T) {
 	server, fix := newTestCmdServer(t, helloAssignments(""), false)
-	client := newTestRESTClient(t, server)
+	client := githubtest.NewTestClient(t, server)
 
 	tests := []testSpec{{Name: "compiles", Type: "run", Run: "true", Points: 1}}
 	var stdout, stderr bytes.Buffer
@@ -309,7 +311,7 @@ func TestRunAssignmentAdd_WithTestsPersists(t *testing.T) {
 
 func TestRunAssignmentAdd_GroupModePersists(t *testing.T) {
 	server, fix := newTestCmdServer(t, helloAssignments(""), false)
-	client := newTestRESTClient(t, server)
+	client := githubtest.NewTestClient(t, server)
 
 	var stdout, stderr bytes.Buffer
 	err := runAssignmentAdd(client, &stdout, &stderr, "o", "cs-principles", "hello", "Hello", "",
@@ -325,7 +327,7 @@ func TestRunAssignmentAdd_GroupModePersists(t *testing.T) {
 
 func TestRunAssignmentAdd_TestsRejectedWithAutograder(t *testing.T) {
 	server, fix := newTestCmdServer(t, helloAssignments(""), true)
-	client := newTestRESTClient(t, server)
+	client := githubtest.NewTestClient(t, server)
 
 	tests := []testSpec{{Name: "compiles", Type: "run", Run: "true", Points: 1}}
 	var stdout, stderr bytes.Buffer
@@ -349,7 +351,7 @@ func TestRunAssignmentAdd_ReplaceWithoutTestsWarns(t *testing.T) {
     {"name":"prints","type":"io","run":"./hello","expected":"hi","comparison":"included","points":2}
   ]`
 	server, fix := newTestCmdServer(t, helloAssignments(existing), false)
-	client := newTestRESTClient(t, server)
+	client := githubtest.NewTestClient(t, server)
 
 	var stdout, stderr bytes.Buffer
 	err := runAssignmentAdd(client, &stdout, &stderr, "o", "cs-principles", "hello", "Hello", "",
@@ -370,7 +372,7 @@ func TestRunAssignmentAdd_ExplicitEmptyTestsClearsSilently(t *testing.T) {
 	// slice), not an accidental omission — no warning.
 	existing := `[{"name":"compiles","type":"run","run":"true","points":1}]`
 	server, fix := newTestCmdServer(t, helloAssignments(existing), false)
-	client := newTestRESTClient(t, server)
+	client := githubtest.NewTestClient(t, server)
 
 	var stdout, stderr bytes.Buffer
 	err := runAssignmentAdd(client, &stdout, &stderr, "o", "cs-principles", "hello", "Hello", "",
@@ -392,7 +394,7 @@ func TestRunAssignmentTestRemove_HappyPath(t *testing.T) {
     {"name":"prints","type":"io","run":"./hello","expected":"hi","comparison":"included","points":2}
   ]`
 	server, fix := newTestCmdServer(t, helloAssignments(existing), false)
-	client := newTestRESTClient(t, server)
+	client := githubtest.NewTestClient(t, server)
 
 	var stdout bytes.Buffer
 	if err := runAssignmentTestRemove(client, &stdout, "o", "cs-principles", "hello", "compiles"); err != nil {
@@ -411,7 +413,7 @@ func TestRunAssignmentTestRemove_HappyPath(t *testing.T) {
 func TestRunAssignmentTestRemove_MissingNameIsNoOp(t *testing.T) {
 	existing := `[{"name":"compiles","type":"run","run":"true","points":1}]`
 	server, fix := newTestCmdServer(t, helloAssignments(existing), false)
-	client := newTestRESTClient(t, server)
+	client := githubtest.NewTestClient(t, server)
 
 	var stdout bytes.Buffer
 	if err := runAssignmentTestRemove(client, &stdout, "o", "cs-principles", "hello", "nope"); err != nil {
@@ -430,7 +432,7 @@ func TestRunAssignmentTestRemove_MissingNameIsNoOp(t *testing.T) {
 func TestRunAssignmentTestRemove_UnregisteredSlugFails(t *testing.T) {
 	empty := `{"schema":"classroom50/assignments/v1","assignments":[]}`
 	server, _ := newTestCmdServer(t, empty, false)
-	client := newTestRESTClient(t, server)
+	client := githubtest.NewTestClient(t, server)
 
 	var stdout bytes.Buffer
 	err := runAssignmentTestRemove(client, &stdout, "o", "cs-principles", "hello", "compiles")
@@ -445,7 +447,7 @@ func TestRunAssignmentTestList_Names(t *testing.T) {
     {"name":"prints","type":"io","run":"./hello","expected":"hi","comparison":"included","points":2}
   ]`
 	server, fix := newTestCmdServer(t, helloAssignments(existing), false)
-	client := newTestRESTClient(t, server)
+	client := githubtest.NewTestClient(t, server)
 
 	var stdout, stderr bytes.Buffer
 	if err := runAssignmentTestList(client, &stdout, &stderr, "o", "cs-principles", "hello", false, false); err != nil {
@@ -467,7 +469,7 @@ func TestRunAssignmentTestList_Names(t *testing.T) {
 func TestRunAssignmentTestList_JSONAndQuiet(t *testing.T) {
 	existing := `[{"name":"compiles","type":"run","run":"true","points":1}]`
 	server, _ := newTestCmdServer(t, helloAssignments(existing), false)
-	client := newTestRESTClient(t, server)
+	client := githubtest.NewTestClient(t, server)
 
 	var stdout, stderr bytes.Buffer
 	if err := runAssignmentTestList(client, &stdout, &stderr, "o", "cs-principles", "hello", true, true); err != nil {
@@ -487,7 +489,7 @@ func TestRunAssignmentTestList_JSONAndQuiet(t *testing.T) {
 
 func TestRunAssignmentTestList_EmptyEmitsJSONArray(t *testing.T) {
 	server, _ := newTestCmdServer(t, helloAssignments(""), false)
-	client := newTestRESTClient(t, server)
+	client := githubtest.NewTestClient(t, server)
 
 	var stdout, stderr bytes.Buffer
 	if err := runAssignmentTestList(client, &stdout, &stderr, "o", "cs-principles", "hello", true, false); err != nil {
@@ -635,7 +637,7 @@ func TestRunAssignmentAdd_RejectsOutOfOrgPrivateTemplate(t *testing.T) {
 	// Rule 5: a private template outside the org is rejected before any
 	// commit, because students could never be granted access to it.
 	server, fix := newPrivateTemplateServer(t, "some-teacher", true)
-	client := newTestRESTClient(t, server)
+	client := githubtest.NewTestClient(t, server)
 
 	var stdout, stderr bytes.Buffer
 	err := runAssignmentAdd(client, &stdout, &stderr, "o", "cs-principles", "hello", "Hello", "",
@@ -657,7 +659,7 @@ func TestRunAssignmentAdd_GrantsTeamReadForInOrgPrivateTemplate(t *testing.T) {
 	// In-org private template: the classroom team is granted pull so
 	// rostered students can generate from it.
 	server, fix := newPrivateTemplateServer(t, "o", true)
-	client := newTestRESTClient(t, server)
+	client := githubtest.NewTestClient(t, server)
 
 	var stdout, stderr bytes.Buffer
 	err := runAssignmentAdd(client, &stdout, &stderr, "o", "cs-principles", "hello", "Hello", "",
@@ -682,7 +684,7 @@ func TestRunAssignmentAdd_SkipsGrantWhenTeamAlreadyHasAccess(t *testing.T) {
 	// Idempotency: if the team already has access, no PUT fires.
 	server, fix := newPrivateTemplateServer(t, "o", true)
 	fix.teamHasRepo = true
-	client := newTestRESTClient(t, server)
+	client := githubtest.NewTestClient(t, server)
 
 	var stdout, stderr bytes.Buffer
 	err := runAssignmentAdd(client, &stdout, &stderr, "o", "cs-principles", "hello", "Hello", "",
@@ -743,7 +745,7 @@ func TestRunAssignmentAdd_InOrgPrivateNoTeamErrors(t *testing.T) {
 	})
 	srv := httptest.NewServer(fresh)
 	t.Cleanup(srv.Close)
-	client := newTestRESTClient(t, srv)
+	client := githubtest.NewTestClient(t, srv)
 
 	var stdout, stderr bytes.Buffer
 	err := runAssignmentAdd(client, &stdout, &stderr, "o", "cs-principles", "hello", "Hello", "",

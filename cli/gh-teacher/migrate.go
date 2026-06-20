@@ -7,8 +7,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/cli/go-gh/v2/pkg/api"
 	"github.com/spf13/cobra"
+
+	"github.com/foundation50/gh-teacher/internal/githubapi"
 )
 
 // classroomMigrateCmd implements `gh teacher classroom migrate`:
@@ -77,7 +78,7 @@ func classroomMigrateCmd() *cobra.Command {
 				return errors.New("--target is required (destination org owning the classroom50 config repo)")
 			}
 
-			client, err := requireAuthClient(cmd)
+			client, err := githubapi.RequireAuthClient(cmd)
 			if err != nil {
 				return err
 			}
@@ -124,7 +125,7 @@ type migrateOptions struct {
 //  4. Config commit — single Tree commit on <target>/classroom50.
 //
 // DryRun short-circuits after step 1.
-func runMigrate(client *api.RESTClient, out, errOut io.Writer, opts migrateOptions) error {
+func runMigrate(client githubapi.Client, out, errOut io.Writer, opts migrateOptions) error {
 	plan, err := discoverMigration(client, errOut, opts)
 	if err != nil {
 		return err
@@ -145,7 +146,7 @@ func runMigrate(client *api.RESTClient, out, errOut io.Writer, opts migrateOptio
 
 // discoverMigration runs discovery: resolves --source, derives the
 // short-name, and fetches every assignment detail.
-func discoverMigration(client *api.RESTClient, errOut io.Writer, opts migrateOptions) (migrationPlan, error) {
+func discoverMigration(client githubapi.Client, errOut io.Writer, opts migrateOptions) (migrationPlan, error) {
 	detail, err := resolveSource(client, errOut, opts.Source, opts.IncludeArchived)
 	if err != nil {
 		return migrationPlan{}, err
@@ -191,7 +192,7 @@ func discoverMigration(client *api.RESTClient, errOut io.Writer, opts migrateOpt
 // assignment was skipped during template copy — best-effort: the
 // commit still lands with the successful entries, the non-zero
 // exit code signals partial completion.
-func performMigration(client *api.RESTClient, out, errOut io.Writer, plan migrationPlan, templateSuffix string) error {
+func performMigration(client githubapi.Client, out, errOut io.Writer, plan migrationPlan, templateSuffix string) error {
 	branch, err := resolveConfigRepoBranch(client, plan.TargetOrg)
 	if err != nil {
 		return err

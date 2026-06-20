@@ -9,6 +9,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/foundation50/gh-teacher/internal/githubtest"
 )
 
 // configRepoMock is a minimal in-memory <org>/classroom50 server
@@ -164,7 +166,7 @@ func TestRunClassroomList(t *testing.T) {
 	}}
 	server := httptest.NewServer(mock.handler(t))
 	t.Cleanup(server.Close)
-	client := newTestRESTClient(t, server)
+	client := githubtest.NewTestClient(t, server)
 
 	t.Run("default lists short-names only", func(t *testing.T) {
 		var out, errOut bytes.Buffer
@@ -218,7 +220,7 @@ func TestEditClassroom(t *testing.T) {
 		mock := &configRepoMock{files: map[string]string{"cs-principles/classroom.json": current}}
 		server := httptest.NewServer(mock.handler(t))
 		t.Cleanup(server.Close)
-		client := newTestRESTClient(t, server)
+		client := githubtest.NewTestClient(t, server)
 
 		var out, errOut bytes.Buffer
 		err := editClassroom(client, &out, &errOut, "o", "cs-principles", true, "Computer Science Principles", false, "")
@@ -234,7 +236,7 @@ func TestEditClassroom(t *testing.T) {
 		mock := &configRepoMock{files: map[string]string{"cs-principles/classroom.json": current}}
 		server := httptest.NewServer(mock.handler(t))
 		t.Cleanup(server.Close)
-		client := newTestRESTClient(t, server)
+		client := githubtest.NewTestClient(t, server)
 
 		var out, errOut bytes.Buffer
 		err := editClassroom(client, &out, &errOut, "o", "cs-principles", true, "CS Principles", false, "")
@@ -250,7 +252,7 @@ func TestEditClassroom(t *testing.T) {
 		mock := &configRepoMock{files: map[string]string{}}
 		server := httptest.NewServer(mock.handler(t))
 		t.Cleanup(server.Close)
-		client := newTestRESTClient(t, server)
+		client := githubtest.NewTestClient(t, server)
 
 		var out, errOut bytes.Buffer
 		err := editClassroom(client, &out, &errOut, "o", "ghost", true, "X", false, "")
@@ -285,7 +287,7 @@ func TestEditClassroom(t *testing.T) {
 		mock := &configRepoMock{files: map[string]string{"cs-principles/classroom.json": string(migrated)}}
 		server := httptest.NewServer(mock.handler(t))
 		t.Cleanup(server.Close)
-		client := newTestRESTClient(t, server)
+		client := githubtest.NewTestClient(t, server)
 
 		var out, errOut bytes.Buffer
 		if err := editClassroom(client, &out, &errOut, "o", "cs-principles", true, "Computer Science Principles", false, ""); err != nil {
@@ -327,7 +329,7 @@ func TestRemoveClassroom(t *testing.T) {
 		}}
 		server := httptest.NewServer(mock.handler(t))
 		t.Cleanup(server.Close)
-		client := newTestRESTClient(t, server)
+		client := githubtest.NewTestClient(t, server)
 
 		var out, errOut bytes.Buffer
 		err := removeClassroom(client, strings.NewReader(""), &out, &errOut, "o", "cs-principles", true)
@@ -350,7 +352,7 @@ func TestRemoveClassroom(t *testing.T) {
 		mock := &configRepoMock{files: map[string]string{}}
 		server := httptest.NewServer(mock.handler(t))
 		t.Cleanup(server.Close)
-		client := newTestRESTClient(t, server)
+		client := githubtest.NewTestClient(t, server)
 
 		var out, errOut bytes.Buffer
 		err := removeClassroom(client, strings.NewReader(""), &out, &errOut, "o", "ghost", true)
@@ -365,7 +367,7 @@ func TestRemoveClassroom(t *testing.T) {
 		}}
 		server := httptest.NewServer(mock.handler(t))
 		t.Cleanup(server.Close)
-		client := newTestRESTClient(t, server)
+		client := githubtest.NewTestClient(t, server)
 
 		var out, errOut bytes.Buffer
 		err := removeClassroom(client, strings.NewReader("wrong-name\n"), &out, &errOut, "o", "cs-principles", false)

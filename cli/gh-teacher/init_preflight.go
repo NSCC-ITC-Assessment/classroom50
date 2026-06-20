@@ -9,8 +9,9 @@ import (
 	"os"
 	"strings"
 
-	"github.com/cli/go-gh/v2/pkg/api"
 	"github.com/foundation50/classroom50-cli-shared/ghauth"
+	"github.com/foundation50/gh-teacher/internal/cliutil"
+	"github.com/foundation50/gh-teacher/internal/githubapi"
 )
 
 // preflightStatus is the outcome of a single read-only preflight check.
@@ -57,7 +58,7 @@ type tokenSource struct {
 // runPreflight runs every read-only check and returns the aggregate.
 // Order is deliberate: cheap local checks (token/TTY) and the single
 // org GET first, so a misconfigured run fails fast without extra calls.
-func runPreflight(client *api.RESTClient, org string, tok tokenSource) preflightResult {
+func runPreflight(client githubapi.Client, org string, tok tokenSource) preflightResult {
 	var res preflightResult
 
 	// 1. Auth scopes — read X-OAuth-Scopes off a cheap authenticated GET.
@@ -100,7 +101,7 @@ func runPreflight(client *api.RESTClient, org string, tok tokenSource) preflight
 // actionable messages). Returns the check plus the raw scope string and
 // the authenticated login (decoded from the same response so the
 // ownership check doesn't have to re-fetch /user).
-func checkScopes(client *api.RESTClient) (check preflightCheck, scopes, login string) {
+func checkScopes(client githubapi.Client) (check preflightCheck, scopes, login string) {
 	c := preflightCheck{Name: "auth scopes"}
 	resp, err := client.Request(http.MethodGet, "user", nil)
 	if err != nil {
@@ -120,7 +121,7 @@ func checkScopes(client *api.RESTClient) (check preflightCheck, scopes, login st
 		return c, "", user.Login
 	}
 	var missing []string
-	for _, want := range requiredScopes {
+	for _, want := range githubapi.RequiredScopes() {
 		if !scopeListContains(scopes, want) {
 			missing = append(missing, want)
 		}
@@ -139,7 +140,7 @@ func checkScopes(client *api.RESTClient) (check preflightCheck, scopes, login st
 // name (empty when the caller lacks billing visibility). A 404 is a
 // hard fail (org missing or invisible to this token); any other error
 // is also a fail since every later step needs org access.
-func checkOrgAccess(client *api.RESTClient, org string) (preflightCheck, string) {
+func checkOrgAccess(client githubapi.Client, org string) (preflightCheck, string) {
 	c := preflightCheck{Name: "org access"}
 	path := fmt.Sprintf("orgs/%s", url.PathEscape(org))
 	var resp struct {
@@ -150,7 +151,7 @@ func checkOrgAccess(client *api.RESTClient, org string) (preflightCheck, string)
 	}
 	if err := client.Get(path, &resp); err != nil {
 		c.Status = preflightFail
-		if isHTTPStatus(err, http.StatusNotFound) {
+		if cliutil.IsHTTPStatus(err, http.StatusNotFound) {
 			c.Detail = fmt.Sprintf("organization %q not found, or your token can't see it — check the name and that you're a member", org)
 		} else {
 			c.Detail = fmt.Sprintf("couldn't read organization %q (%v)", org, err)
@@ -189,7 +190,7 @@ func planCheck(org, plan string) preflightCheck {
 // (the operations themselves will surface the real permission error). The
 // login comes from the earlier checkScopes /user read, so this doesn't
 // re-fetch it.
-func checkOwnership(client *api.RESTClient, org, login string) preflightCheck {
+func checkOwnership(client githubapi.Client, org, login string) preflightCheck {
 	c := preflightCheck{Name: "org ownership"}
 	if login == "" {
 		c.Status = preflightWarn

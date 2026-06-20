@@ -10,8 +10,9 @@ import (
 	"strings"
 	"text/tabwriter"
 
-	"github.com/cli/go-gh/v2/pkg/api"
 	"github.com/spf13/cobra"
+
+	"github.com/foundation50/gh-teacher/internal/githubapi"
 )
 
 // memberAPIPerPage / memberPagesMax bound the paginated membership
@@ -95,7 +96,7 @@ func memberListCmd() *cobra.Command {
 			if target == "" {
 				return errors.New("target must not be empty")
 			}
-			client, err := requireAuthClient(cmd)
+			client, err := githubapi.RequireAuthClient(cmd)
 			if err != nil {
 				return err
 			}
@@ -118,7 +119,7 @@ func memberListCmd() *cobra.Command {
 // invitations. Active members come from two role-filtered walks
 // (admin vs member) since GET /orgs/{org}/members does not report a
 // per-member role inline. Read-only.
-func runMemberListOrg(client *api.RESTClient, out, errOut io.Writer, org string, asJSON, quiet bool) error {
+func runMemberListOrg(client githubapi.Client, out, errOut io.Writer, org string, asJSON, quiet bool) error {
 	entries, err := collectOrgMembers(client, org)
 	if err != nil {
 		return err
@@ -140,7 +141,7 @@ func runMemberListOrg(client *api.RESTClient, out, errOut io.Writer, org string,
 // collectOrgMembers walks GET /orgs/{org}/members for admins then all
 // members, labeling roles. The admin set drives the role; everyone
 // else is a plain member.
-func collectOrgMembers(client *api.RESTClient, org string) ([]memberListEntry, error) {
+func collectOrgMembers(client githubapi.Client, org string) ([]memberListEntry, error) {
 	adminIDs := map[int64]bool{}
 	admins, err := paginateMembers(client, fmt.Sprintf("orgs/%s/members?role=admin", url.PathEscape(org)), org+" members")
 	if err != nil {
@@ -173,10 +174,10 @@ func collectOrgMembers(client *api.RESTClient, org string) ([]memberListEntry, e
 // A 403 (no admin:org scope) is surfaced as a clear error rather than
 // silently dropping the pending set, since "no pending invites" and
 // "can't read invites" are very different operator signals.
-func collectOrgInvitations(client *api.RESTClient, org string) ([]memberListEntry, error) {
+func collectOrgInvitations(client githubapi.Client, org string) ([]memberListEntry, error) {
 	base := fmt.Sprintf("orgs/%s/invitations", url.PathEscape(org))
 	subject := fmt.Sprintf("%s pending invitations", org)
-	invites, err := paginateAll[orgInvitation](client, memberAPIPerPage, memberPagesMax,
+	invites, err := githubapi.PaginateAll[orgInvitation](client, memberAPIPerPage, memberPagesMax,
 		func(page int) string {
 			return fmt.Sprintf("%s?per_page=%d&page=%d", base, memberAPIPerPage, page)
 		},
@@ -212,10 +213,10 @@ func normalizeInviteRole(role string) string {
 
 // runMemberListRepo lists collaborators on a repo with their
 // permission level (role_name). Read-only.
-func runMemberListRepo(client *api.RESTClient, out, errOut io.Writer, owner, repo string, asJSON, quiet bool) error {
+func runMemberListRepo(client githubapi.Client, out, errOut io.Writer, owner, repo string, asJSON, quiet bool) error {
 	base := fmt.Sprintf("repos/%s/%s/collaborators", url.PathEscape(owner), url.PathEscape(repo))
 	subject := owner + "/" + repo
-	collabs, err := paginateAll[repoCollaborator](client, memberAPIPerPage, memberPagesMax,
+	collabs, err := githubapi.PaginateAll[repoCollaborator](client, memberAPIPerPage, memberPagesMax,
 		func(page int) string {
 			return fmt.Sprintf("%s?per_page=%d&page=%d", base, memberAPIPerPage, page)
 		},
@@ -262,12 +263,12 @@ type repoCollaborator struct {
 // with the shared cap. `base` already carries any role filter; this
 // appends pagination params. `subject` is a human label for error
 // messages (e.g. "<org> members").
-func paginateMembers(client *api.RESTClient, base, subject string) ([]memberAccount, error) {
+func paginateMembers(client githubapi.Client, base, subject string) ([]memberAccount, error) {
 	sep := "?"
 	if strings.Contains(base, "?") {
 		sep = "&"
 	}
-	return paginateAll[memberAccount](client, memberAPIPerPage, memberPagesMax,
+	return githubapi.PaginateAll[memberAccount](client, memberAPIPerPage, memberPagesMax,
 		func(page int) string {
 			return fmt.Sprintf("%s%sper_page=%d&page=%d", base, sep, memberAPIPerPage, page)
 		},
@@ -281,7 +282,7 @@ func paginateMembers(client *api.RESTClient, base, subject string) ([]memberAcco
 // being read (e.g. "cs50/members", "cs50 pending invitations").
 // Returns the original wrapped error for statuses it doesn't special-case.
 func classifyMembershipReadError(path, subject string, err error) error {
-	httpErr, ok := errors.AsType[*api.HTTPError](err)
+	httpErr, ok := errors.AsType[*githubapi.HTTPError](err)
 	if !ok {
 		return fmt.Errorf("GET %s: %w", path, err)
 	}

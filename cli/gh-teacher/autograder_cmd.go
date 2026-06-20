@@ -11,8 +11,10 @@ import (
 	"os"
 	"strings"
 
-	"github.com/cli/go-gh/v2/pkg/api"
 	"github.com/spf13/cobra"
+
+	"github.com/foundation50/gh-teacher/internal/cliutil"
+	"github.com/foundation50/gh-teacher/internal/githubapi"
 )
 
 // classroomAutograderFilename: file name written under <classroom>/.
@@ -106,7 +108,7 @@ func autograderSetDefaultCmd() *cobra.Command {
 				return err
 			}
 
-			client, err := api.DefaultRESTClient()
+			client, err := githubapi.DefaultClient()
 			if err != nil {
 				return fmt.Errorf("REST client: %w", err)
 			}
@@ -150,7 +152,7 @@ func readAutograderSource(path string, stdin io.Reader) (content []byte, label s
 // branch. Validates the classroom exists in the config repo before
 // writing — prevents typos creating phantom-classroom files. Skips
 // the commit when the existing file is already byte-for-byte equal.
-func setClassroomDefaultAutograder(client *api.RESTClient, out, errOut io.Writer, org, classroom, label string, content []byte) error {
+func setClassroomDefaultAutograder(client githubapi.Client, out, errOut io.Writer, org, classroom, label string, content []byte) error {
 	branch, err := resolveConfigRepoBranch(client, org)
 	if err != nil {
 		return err
@@ -199,7 +201,7 @@ func setClassroomDefaultAutograder(client *api.RESTClient, out, errOut io.Writer
 // The contents API returns the body base64-encoded for files up to
 // ~1 MB; autograder.py is well under that ceiling. Files >100 MB
 // would need the git-blobs API, but that's out of scope.
-func fetchFileContent(client *api.RESTClient, owner, repo, path, ref string) ([]byte, error) {
+func fetchFileContent(client githubapi.Client, owner, repo, path, ref string) ([]byte, error) {
 	segs := strings.Split(path, "/")
 	for i := range segs {
 		segs[i] = url.PathEscape(segs[i])
@@ -213,7 +215,7 @@ func fetchFileContent(client *api.RESTClient, owner, repo, path, ref string) ([]
 		Encoding string `json:"encoding"`
 	}
 	if err := client.Get(apiPath, &body); err != nil {
-		if isHTTPStatus(err, http.StatusNotFound) {
+		if cliutil.IsHTTPStatus(err, http.StatusNotFound) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("GET %s: %w", apiPath, err)

@@ -8,8 +8,9 @@ import (
 	"strings"
 	"text/tabwriter"
 
-	"github.com/cli/go-gh/v2/pkg/api"
 	"github.com/spf13/cobra"
+
+	"github.com/foundation50/gh-teacher/internal/githubapi"
 )
 
 // rosterListEntry is the `--json` view of one students.csv row. Field
@@ -65,7 +66,7 @@ func rosterListCmd() *cobra.Command {
 			if err := validateShortName(classroom, "classroom"); err != nil {
 				return err
 			}
-			client, err := requireAuthClient(cmd)
+			client, err := githubapi.RequireAuthClient(cmd)
 			if err != nil {
 				return err
 			}
@@ -80,7 +81,7 @@ func rosterListCmd() *cobra.Command {
 // runRosterList reads students.csv at the config repo's default branch
 // and renders it as a table (default), a JSON array (--json), or
 // username-only lines (--quiet). Read-only; no commit.
-func runRosterList(client *api.RESTClient, out, errOut io.Writer, org, classroom string, asJSON, quiet bool) error {
+func runRosterList(client githubapi.Client, out, errOut io.Writer, org, classroom string, asJSON, quiet bool) error {
 	branch, err := resolveConfigRepoBranch(client, org)
 	if err != nil {
 		return err

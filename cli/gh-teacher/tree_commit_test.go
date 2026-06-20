@@ -5,48 +5,12 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"strings"
 	"sync"
 	"testing"
 
-	"github.com/cli/go-gh/v2/pkg/api"
+	"github.com/foundation50/gh-teacher/internal/githubtest"
 )
-
-// hostRewriteTransport redirects every request to a single test
-// server while preserving the path so the handler can dispatch on
-// it. This is the seam go-gh's docs recommend for tests
-// (ClientOptions.Transport "should be reserved for testing").
-type hostRewriteTransport struct {
-	target *url.URL
-}
-
-func (h *hostRewriteTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	req.URL.Scheme = h.target.Scheme
-	req.URL.Host = h.target.Host
-	return http.DefaultTransport.RoundTrip(req)
-}
-
-// newTestRESTClient wires a real api.RESTClient at the given test
-// server. AuthToken must be non-empty so go-gh's header-injection
-// layer leaves Authorization alone.
-func newTestRESTClient(t *testing.T, server *httptest.Server) *api.RESTClient {
-	t.Helper()
-	u, err := url.Parse(server.URL)
-	if err != nil {
-		t.Fatalf("parse server URL: %v", err)
-	}
-	client, err := api.NewRESTClient(api.ClientOptions{
-		Host:         "github.com",
-		AuthToken:    "test-token",
-		Transport:    &hostRewriteTransport{target: u},
-		LogIgnoreEnv: true,
-	})
-	if err != nil {
-		t.Fatalf("api.NewRESTClient: %v", err)
-	}
-	return client
-}
 
 // TestCommitTree_RetriesOnNonFastForward exercises the rebase loop
 // end-to-end: a concurrent-writer race on the first patchRef forces
@@ -145,7 +109,7 @@ func TestCommitTree_RetriesOnNonFastForward(t *testing.T) {
 
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
-	client := newTestRESTClient(t, server)
+	client := githubtest.NewTestClient(t, server)
 
 	build := func(parentSHA string) (map[string]string, error) {
 		mu.Lock()
@@ -211,7 +175,7 @@ func TestCommitTree_PropagatesBuildErrorWithoutRetry(t *testing.T) {
 
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
-	client := newTestRESTClient(t, server)
+	client := githubtest.NewTestClient(t, server)
 
 	wantErr := "classroom \"x\" already exists"
 	build := func(parentSHA string) (map[string]string, error) {
@@ -283,7 +247,7 @@ func TestCommitTree_NoOpOnEmptyMap(t *testing.T) {
 
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
-	client := newTestRESTClient(t, server)
+	client := githubtest.NewTestClient(t, server)
 
 	gotSHA, err := commitTree(client, "o", "r", "main", "noop", func(string) (map[string]string, error) {
 		return nil, nil
@@ -307,6 +271,3 @@ func TestCommitTree_NoOpOnEmptyMap(t *testing.T) {
 type builtError struct{ msg string }
 
 func (e *builtError) Error() string { return e.msg }
-
-// Compile-time guard for go-gh's RoundTripper contract.
-var _ http.RoundTripper = (*hostRewriteTransport)(nil)

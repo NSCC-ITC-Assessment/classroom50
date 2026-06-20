@@ -7,7 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cli/go-gh/v2/pkg/api"
+	"github.com/foundation50/gh-teacher/internal/cliutil"
+	"github.com/foundation50/gh-teacher/internal/githubapi"
 )
 
 func TestIsHTTPStatus(t *testing.T) {
@@ -28,13 +29,13 @@ func TestIsHTTPStatus(t *testing.T) {
 		},
 		{
 			name: "direct HTTPError with matching code",
-			err:  &api.HTTPError{StatusCode: http.StatusNotFound},
+			err:  &githubapi.HTTPError{StatusCode: http.StatusNotFound},
 			code: http.StatusNotFound,
 			want: true,
 		},
 		{
 			name: "direct HTTPError with non-matching code",
-			err:  &api.HTTPError{StatusCode: http.StatusConflict},
+			err:  &githubapi.HTTPError{StatusCode: http.StatusConflict},
 			code: http.StatusNotFound,
 			want: false,
 		},
@@ -42,13 +43,13 @@ func TestIsHTTPStatus(t *testing.T) {
 			name: "wrapped HTTPError still resolves",
 			// errors.As walks the chain, so a caller that wraps via
 			// fmt.Errorf("ctx: %w", err) doesn't break classification.
-			err:  fmt.Errorf("GET something: %w", &api.HTTPError{StatusCode: http.StatusUnprocessableEntity}),
+			err:  fmt.Errorf("GET something: %w", &githubapi.HTTPError{StatusCode: http.StatusUnprocessableEntity}),
 			code: http.StatusUnprocessableEntity,
 			want: true,
 		},
 		{
 			name: "doubly-wrapped HTTPError still resolves",
-			err:  fmt.Errorf("outer: %w", fmt.Errorf("inner: %w", &api.HTTPError{StatusCode: http.StatusForbidden})),
+			err:  fmt.Errorf("outer: %w", fmt.Errorf("inner: %w", &githubapi.HTTPError{StatusCode: http.StatusForbidden})),
 			code: http.StatusForbidden,
 			want: true,
 		},
@@ -62,14 +63,14 @@ func TestIsHTTPStatus(t *testing.T) {
 			name: "HTTPError with code 0 matches only 0",
 			// Zero-status must not accidentally satisfy a real
 			// status check.
-			err:  &api.HTTPError{},
+			err:  &githubapi.HTTPError{},
 			code: http.StatusNotFound,
 			want: false,
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := isHTTPStatus(tc.err, tc.code); got != tc.want {
+			if got := cliutil.IsHTTPStatus(tc.err, tc.code); got != tc.want {
 				t.Fatalf("isHTTPStatus(%v, %d) = %v, want %v", tc.err, tc.code, got, tc.want)
 			}
 		})

@@ -7,6 +7,9 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/foundation50/gh-teacher/internal/githubapi"
+	"github.com/foundation50/gh-teacher/internal/githubtest"
 )
 
 // TestPaginateAll covers the shared paginator's behavior that no
@@ -31,10 +34,11 @@ func TestPaginateAll(t *testing.T) {
 		})
 		server := httptest.NewServer(mux)
 		t.Cleanup(server.Close)
-		client := newTestRESTClient(t, server)
+		client := githubtest.NewTestClient(t, server)
 
-		got, err := paginateAll[item](client, 2, 10,
+		got, err := githubapi.PaginateAll[item](client, 2, 10,
 			func(page int) string { return fmt.Sprintf("things?per_page=2&page=%d", page) }, nil)
+
 		if err != nil {
 			t.Fatalf("paginateAll: %v", err)
 		}
@@ -61,12 +65,13 @@ func TestPaginateAll(t *testing.T) {
 		})
 		server = httptest.NewServer(mux)
 		t.Cleanup(server.Close)
-		client := newTestRESTClient(t, server)
+		client := githubtest.NewTestClient(t, server)
 
 		// perPage is deliberately larger than any page so the short-page
 		// heuristic alone could not have driven this walk.
-		got, err := paginateAll[item](client, 100, 10,
+		got, err := githubapi.PaginateAll[item](client, 100, 10,
 			func(page int) string { return "things?per_page=100&page=1" }, nil)
+
 		if err != nil {
 			t.Fatalf("paginateAll: %v", err)
 		}
@@ -89,10 +94,11 @@ func TestPaginateAll(t *testing.T) {
 		})
 		server := httptest.NewServer(mux)
 		t.Cleanup(server.Close)
-		client := newTestRESTClient(t, server)
+		client := githubtest.NewTestClient(t, server)
 
-		got, err := paginateAll[item](client, 2, 10,
+		got, err := githubapi.PaginateAll[item](client, 2, 10,
 			func(page int) string { return "things?per_page=2&page=1" }, nil)
+
 		if err != nil {
 			t.Fatalf("paginateAll: %v", err)
 		}
@@ -111,10 +117,11 @@ func TestPaginateAll(t *testing.T) {
 		})
 		server := httptest.NewServer(mux)
 		t.Cleanup(server.Close)
-		client := newTestRESTClient(t, server)
+		client := githubtest.NewTestClient(t, server)
 
-		got, err := paginateAll[item](client, 2, 10,
+		got, err := githubapi.PaginateAll[item](client, 2, 10,
 			func(page int) string { return fmt.Sprintf("things?per_page=2&page=%d", page) }, nil)
+
 		if err != nil {
 			t.Fatalf("paginateAll: %v", err)
 		}
@@ -131,10 +138,11 @@ func TestPaginateAll(t *testing.T) {
 		})
 		server := httptest.NewServer(mux)
 		t.Cleanup(server.Close)
-		client := newTestRESTClient(t, server)
+		client := githubtest.NewTestClient(t, server)
 
-		_, err := paginateAll[item](client, 1, 3,
+		_, err := githubapi.PaginateAll[item](client, 1, 3,
 			func(page int) string { return fmt.Sprintf("things?per_page=1&page=%d", page) }, nil)
+
 		if err == nil || !strings.Contains(err.Error(), "safety cap") {
 			t.Fatalf("err = %v, want a 'safety cap' error when the cap is exhausted", err)
 		}
@@ -147,10 +155,11 @@ func TestPaginateAll(t *testing.T) {
 		})
 		server := httptest.NewServer(mux)
 		t.Cleanup(server.Close)
-		client := newTestRESTClient(t, server)
+		client := githubtest.NewTestClient(t, server)
 
-		_, err := paginateAll[item](client, 2, 10,
+		_, err := githubapi.PaginateAll[item](client, 2, 10,
 			func(page int) string { return "things?per_page=2&page=1" }, nil)
+
 		if err == nil || !strings.Contains(err.Error(), "GET") {
 			t.Fatalf("err = %v, want a default 'GET ...' wrap", err)
 		}
@@ -163,11 +172,12 @@ func TestPaginateAll(t *testing.T) {
 		})
 		server := httptest.NewServer(mux)
 		t.Cleanup(server.Close)
-		client := newTestRESTClient(t, server)
+		client := githubtest.NewTestClient(t, server)
 
-		_, err := paginateAll[item](client, 2, 10,
+		_, err := githubapi.PaginateAll[item](client, 2, 10,
 			func(page int) string { return "things?per_page=2&page=1" },
 			func(path string, err error) error { return fmt.Errorf("mapped: widgets not found") })
+
 		if err == nil || !strings.Contains(err.Error(), "mapped: widgets not found") {
 			t.Fatalf("err = %v, want the onErr-mapped message", err)
 		}

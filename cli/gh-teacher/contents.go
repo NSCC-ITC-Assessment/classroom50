@@ -6,7 +6,8 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/cli/go-gh/v2/pkg/api"
+	"github.com/foundation50/gh-teacher/internal/cliutil"
+	"github.com/foundation50/gh-teacher/internal/githubapi"
 )
 
 // contentEntry is one immediate child returned by the GitHub contents
@@ -26,11 +27,11 @@ type contentEntry struct {
 // doesn't exist (404). The contents API returns a JSON array for a
 // directory; callers must only pass directory paths (a file path
 // returns a JSON object and fails to decode).
-func listDirContents(client *api.RESTClient, owner, repo, path, ref string) ([]contentEntry, bool, error) {
+func listDirContents(client githubapi.Client, owner, repo, path, ref string) ([]contentEntry, bool, error) {
 	apiPath := contentsAPIPath(owner, repo, path, ref)
 	var entries []contentEntry
 	if err := client.Get(apiPath, &entries); err != nil {
-		if isHTTPStatus(err, http.StatusNotFound) {
+		if cliutil.IsHTTPStatus(err, http.StatusNotFound) {
 			return nil, false, nil
 		}
 		return nil, false, fmt.Errorf("GET %s: %w", apiPath, err)
@@ -54,7 +55,7 @@ func contentsAPIPath(owner, repo, path, ref string) string {
 }
 
 // commitTreeSHA returns the tree SHA of commit `commitSHA`.
-func commitTreeSHA(client *api.RESTClient, owner, repo, commitSHA string) (string, error) {
+func commitTreeSHA(client githubapi.Client, owner, repo, commitSHA string) (string, error) {
 	path := fmt.Sprintf("repos/%s/%s/git/commits/%s",
 		url.PathEscape(owner), url.PathEscape(repo), url.PathEscape(commitSHA))
 	var resp struct {
@@ -75,7 +76,7 @@ func commitTreeSHA(client *api.RESTClient, owner, repo, commitSHA string) (strin
 // those blobs are deleted, so listing directory entries is
 // unnecessary. Errors if the tree response is truncated, since a
 // partial list would under-delete the subtree.
-func listSubtreeBlobPaths(client *api.RESTClient, owner, repo, commitSHA, prefix string) ([]string, error) {
+func listSubtreeBlobPaths(client githubapi.Client, owner, repo, commitSHA, prefix string) ([]string, error) {
 	treeSHA, err := commitTreeSHA(client, owner, repo, commitSHA)
 	if err != nil {
 		return nil, err

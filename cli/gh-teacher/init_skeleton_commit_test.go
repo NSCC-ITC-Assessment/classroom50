@@ -11,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/foundation50/gh-teacher/internal/githubtest"
 )
 
 // TestCommitSkeleton_RetriesTransientTreeWrite reproduces the
@@ -82,7 +84,7 @@ func TestCommitSkeleton_RetriesTransientTreeWrite(t *testing.T) {
 
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
-	client := newTestRESTClient(t, server)
+	client := githubtest.NewTestClient(t, server)
 
 	var out bytes.Buffer
 	if err := commitSkeleton(client, strings.NewReader(""), &out, io.Discard, "o", "r", "main", false); err != nil {
@@ -172,7 +174,7 @@ func TestCommitSkeleton_UpToDateSkeletonNoOps(t *testing.T) {
 
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
-	client := newTestRESTClient(t, server)
+	client := githubtest.NewTestClient(t, server)
 
 	var out bytes.Buffer
 	if err := commitSkeleton(client, strings.NewReader(""), &out, io.Discard, "o", "r", "main", false); err != nil {
@@ -245,7 +247,7 @@ func TestCommitSkeleton_RefreshesStaleFiles(t *testing.T) {
 
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
-	client := newTestRESTClient(t, server)
+	client := githubtest.NewTestClient(t, server)
 
 	var out, errOut bytes.Buffer
 	if err := commitSkeleton(client, strings.NewReader(""), &out, &errOut, "o", "r", "main", true); err != nil {
@@ -289,7 +291,7 @@ func TestCommitSkeleton_RefreshReportsLandedCount(t *testing.T) {
 
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
-	client := newTestRESTClient(t, server)
+	client := githubtest.NewTestClient(t, server)
 
 	var out, errOut bytes.Buffer
 	if err := commitSkeleton(client, strings.NewReader(""), &out, &errOut, "o", "r", "main", true); err != nil {
@@ -324,7 +326,7 @@ func TestCommitSkeleton_RefreshAllFixedConcurrently(t *testing.T) {
 
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
-	client := newTestRESTClient(t, server)
+	client := githubtest.NewTestClient(t, server)
 
 	var out, errOut bytes.Buffer
 	if err := commitSkeleton(client, strings.NewReader(""), &out, &errOut, "o", "r", "main", true); err != nil {
@@ -348,7 +350,7 @@ func TestCommitSkeleton_RefreshPromptAccepted(t *testing.T) {
 
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
-	client := newTestRESTClient(t, server)
+	client := githubtest.NewTestClient(t, server)
 
 	var out, errOut bytes.Buffer
 	if err := commitSkeleton(client, strings.NewReader("y\n"), &out, &errOut, "o", "r", "main", false); err != nil {
@@ -386,7 +388,7 @@ func TestCommitSkeleton_RefreshDeclined(t *testing.T) {
 
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
-	client := newTestRESTClient(t, server)
+	client := githubtest.NewTestClient(t, server)
 
 	var out bytes.Buffer
 	if err := commitSkeleton(client, strings.NewReader("n\n"), &out, io.Discard, "o", "r", "main", false); err != nil {
@@ -441,7 +443,7 @@ func TestCommitSkeleton_MissingWorkflowScopeFailsFast(t *testing.T) {
 
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
-	client := newTestRESTClient(t, server)
+	client := githubtest.NewTestClient(t, server)
 
 	var out bytes.Buffer
 	err := commitSkeleton(client, strings.NewReader(""), &out, io.Discard, "o", "r", "main", false)
@@ -515,7 +517,7 @@ func TestCommitSkeleton_NotFoundWithWorkflowScopeStillRetries(t *testing.T) {
 
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
-	client := newTestRESTClient(t, server)
+	client := githubtest.NewTestClient(t, server)
 
 	var out bytes.Buffer
 	if err := commitSkeleton(client, strings.NewReader(""), &out, io.Discard, "o", "r", "main", false); err != nil {
@@ -590,7 +592,7 @@ func TestCommitSkeleton_NotFoundWithoutScopeHeaderStillRetries(t *testing.T) {
 
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
-	client := newTestRESTClient(t, server)
+	client := githubtest.NewTestClient(t, server)
 
 	var out bytes.Buffer
 	if err := commitSkeleton(client, strings.NewReader(""), &out, io.Discard, "o", "r", "main", false); err != nil {

@@ -11,6 +11,8 @@ import (
 	"testing"
 
 	"golang.org/x/crypto/nacl/box"
+
+	"github.com/foundation50/gh-teacher/internal/githubtest"
 )
 
 func TestServiceSecretExists(t *testing.T) {
@@ -34,7 +36,7 @@ func TestServiceSecretExists(t *testing.T) {
 				w.WriteHeader(tc.status)
 			}))
 			t.Cleanup(server.Close)
-			client := newTestRESTClient(t, server)
+			client := githubtest.NewTestClient(t, server)
 
 			got, err := serviceSecretExists(client, "o", "classroom50")
 			if got != tc.want {
@@ -75,7 +77,7 @@ func TestValidateServiceToken(t *testing.T) {
 				w.WriteHeader(tc.status)
 			}))
 			t.Cleanup(server.Close)
-			client := newTestRESTClient(t, server)
+			client := githubtest.NewTestClient(t, server)
 
 			err := validateServiceTokenWithClient(client, "cs50")
 			if tc.wantErr && err == nil {
@@ -133,7 +135,7 @@ func TestProvisionServiceSecret_PutStatus(t *testing.T) {
 			})
 			server := httptest.NewServer(mux)
 			t.Cleanup(server.Close)
-			client := newTestRESTClient(t, server)
+			client := githubtest.NewTestClient(t, server)
 
 			err := provisionServiceSecret(client, io.Discard, "o", "classroom50", []byte("ghp_test"), "stored")
 			if tc.wantErr {

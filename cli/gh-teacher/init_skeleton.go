@@ -12,8 +12,9 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/cli/go-gh/v2/pkg/api"
 	"github.com/foundation50/classroom50-cli-shared/gittree"
+	"github.com/foundation50/gh-teacher/internal/cliutil"
+	"github.com/foundation50/gh-teacher/internal/githubapi"
 )
 
 // skeletonFS holds the files committed by `gh teacher init`. The
@@ -94,7 +95,7 @@ var errMissingWorkflowScope = errors.New("auth token is missing the `workflow` O
 // for the branch tip to settle, then retry the read+build for any lag
 // that slips through. Both run on every path -- "already exists" is
 // often a seconds-old repo.
-func commitSkeleton(client *api.RESTClient, in io.Reader, out, errOut io.Writer, owner, repo, defaultBranch string, assumeYes bool) error {
+func commitSkeleton(client githubapi.Client, in io.Reader, out, errOut io.Writer, owner, repo, defaultBranch string, assumeYes bool) error {
 	files, err := skeletonFiles(defaultBranch)
 	if err != nil {
 		return err
@@ -117,12 +118,12 @@ func commitSkeleton(client *api.RESTClient, in io.Reader, out, errOut io.Writer,
 
 	// Blobs are content-addressed, so upload once; a retry below
 	// reuses these SHAs.
-	entries, err := gittree.UploadBlobs(client, owner, repo, files)
+	entries, err := githubapi.UploadBlobs(client, owner, repo, files)
 	if err != nil {
 		return err
 	}
 
-	if _, err := gittree.CommitWithFreshRepoRetry(client, owner, repo, defaultBranch, skeletonCommitMessage, entries, skeletonFreshRepoRetry()); err != nil {
+	if _, err := githubapi.CommitWithFreshRepoRetry(client, owner, repo, defaultBranch, skeletonCommitMessage, entries, skeletonFreshRepoRetry()); err != nil {
 		return err
 	}
 
@@ -136,7 +137,7 @@ func commitSkeleton(client *api.RESTClient, in io.Reader, out, errOut io.Writer,
 // overwrite resets local customizations), then commit only the stale
 // paths through the optimistic-rebase loop. Declining is not an error
 // — init continues with the rest of its steps.
-func refreshSkeleton(client *api.RESTClient, in io.Reader, out, errOut io.Writer, owner, repo, branch string, files map[string]string, assumeYes bool) error {
+func refreshSkeleton(client githubapi.Client, in io.Reader, out, errOut io.Writer, owner, repo, branch string, files map[string]string, assumeYes bool) error {
 	stale, err := diffSkeleton(client, owner, repo, branch, files)
 	if err != nil {
 		return err
@@ -195,7 +196,7 @@ func refreshSkeleton(client *api.RESTClient, in io.Reader, out, errOut io.Writer
 
 // diffSkeleton returns the sorted skeleton paths whose repo content at
 // `ref` is missing or differs from the embedded version.
-func diffSkeleton(client *api.RESTClient, owner, repo, ref string, files map[string]string) ([]string, error) {
+func diffSkeleton(client githubapi.Client, owner, repo, ref string, files map[string]string) ([]string, error) {
 	var stale []string
 	for path, want := range files {
 		got, exists, err := readFileContents(client, owner, repo, path, ref)
@@ -248,8 +249,8 @@ func isSkeletonRetryable(err error) bool {
 	if errors.Is(err, errMissingWorkflowScope) {
 		return false
 	}
-	return isHTTPStatus(err, http.StatusNotFound) ||
-		isHTTPStatus(err, http.StatusConflict) ||
+	return cliutil.IsHTTPStatus(err, http.StatusNotFound) ||
+		cliutil.IsHTTPStatus(err, http.StatusConflict) ||
 		errors.Is(err, errRefNotReady)
 }
 
@@ -257,7 +258,7 @@ func isSkeletonRetryable(err error) bool {
 // present but missing `workflow`. An absent header (a fine-grained PAT
 // doesn't set it) returns false, so we fall back rather than guess.
 func tokenLacksWorkflowScope(err error) bool {
-	httpErr, ok := errors.AsType[*api.HTTPError](err)
+	httpErr, ok := errors.AsType[*githubapi.HTTPError](err)
 	if !ok {
 		return false
 	}
@@ -269,7 +270,7 @@ func tokenLacksWorkflowScope(err error) bool {
 }
 
 // contentsExists: 404 → false, 200 → true, else error.
-func contentsExists(client *api.RESTClient, owner, repo, path, ref string) (bool, error) {
+func contentsExists(client githubapi.Client, owner, repo, path, ref string) (bool, error) {
 	segs := strings.Split(path, "/")
 	for i := range segs {
 		segs[i] = url.PathEscape(segs[i])
@@ -278,7 +279,7 @@ func contentsExists(client *api.RESTClient, owner, repo, path, ref string) (bool
 		url.PathEscape(owner), url.PathEscape(repo),
 		strings.Join(segs, "/"), url.PathEscape(ref))
 	if err := client.Get(apiPath, nil); err != nil {
-		if isHTTPStatus(err, http.StatusNotFound) {
+		if cliutil.IsHTTPStatus(err, http.StatusNotFound) {
 			return false, nil
 		}
 		return false, fmt.Errorf("GET %s: %w", apiPath, err)

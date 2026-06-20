@@ -9,6 +9,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/foundation50/gh-teacher/internal/githubtest"
 )
 
 // postInvitationsErr drives a POST /orgs/{org}/invitations failure through
@@ -32,7 +34,7 @@ func postInvitationsErr(t *testing.T, org, username string, status int, oauthSco
 	}
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
-	client := newTestRESTClient(t, server)
+	client := githubtest.NewTestClient(t, server)
 
 	// Drive through inviteOrgByID so the real POST → classify path runs.
 	return inviteOrgByID(client, org, username, 42, "direct_member")
@@ -125,7 +127,7 @@ func TestLookupUser(t *testing.T) {
 		})
 		server := httptest.NewServer(mux)
 		t.Cleanup(server.Close)
-		client := newTestRESTClient(t, server)
+		client := githubtest.NewTestClient(t, server)
 
 		login, id, err := lookupUser(client, "alice")
 		if err != nil || login != "alice" || id != 7 {
@@ -140,7 +142,7 @@ func TestLookupUser(t *testing.T) {
 		})
 		server := httptest.NewServer(mux)
 		t.Cleanup(server.Close)
-		client := newTestRESTClient(t, server)
+		client := githubtest.NewTestClient(t, server)
 
 		_, _, err := lookupUser(client, "ghost")
 		if err == nil || !strings.Contains(err.Error(), `GitHub user "ghost" not found`) {
@@ -162,7 +164,7 @@ func TestInviteToOrg_HappyPath(t *testing.T) {
 	})
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
-	client := newTestRESTClient(t, server)
+	client := githubtest.NewTestClient(t, server)
 
 	var out, errOut bytes.Buffer
 	if err := inviteToOrg(client, &out, &errOut, "o", "bob", "direct_member", false); err != nil {

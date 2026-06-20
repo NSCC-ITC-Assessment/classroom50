@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/foundation50/gh-teacher/internal/githubtest"
 )
 
 func TestListDirContents(t *testing.T) {
@@ -27,7 +29,7 @@ func TestListDirContents(t *testing.T) {
 
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
-	client := newTestRESTClient(t, server)
+	client := githubtest.NewTestClient(t, server)
 
 	t.Run("root listing decodes entries", func(t *testing.T) {
 		entries, ok, err := listDirContents(client, "o", "classroom50", "", "main")
@@ -78,7 +80,7 @@ func TestListSubtreeBlobPaths(t *testing.T) {
 
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
-	client := newTestRESTClient(t, server)
+	client := githubtest.NewTestClient(t, server)
 
 	paths, err := listSubtreeBlobPaths(client, "o", "classroom50", "parent-sha", "cs-principles")
 	if err != nil {
@@ -111,7 +113,7 @@ func TestListSubtreeBlobPaths_TruncatedErrors(t *testing.T) {
 	})
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
-	client := newTestRESTClient(t, server)
+	client := githubtest.NewTestClient(t, server)
 
 	if _, err := listSubtreeBlobPaths(client, "o", "classroom50", "parent-sha", "cs-principles"); err == nil {
 		t.Fatal("expected error on truncated tree, got nil")

@@ -3,8 +3,8 @@ package main
 import (
 	"fmt"
 
-	"github.com/cli/go-gh/v2/pkg/api"
 	"github.com/foundation50/classroom50-cli-shared/contract"
+	"github.com/foundation50/gh-teacher/internal/githubapi"
 )
 
 // defaultAutograderName is a sentinel meaning "use the universal
@@ -43,6 +43,6 @@ func validateAutograderName(name string) error {
 // Callers SHOULD skip this probe when name == defaultAutograderName
 // — the default shim is embedded in gh-student and has no on-disk
 // counterpart in the config repo.
-func autograderExists(client *api.RESTClient, owner, repo, classroom, name, ref string) (bool, error) {
+func autograderExists(client githubapi.Client, owner, repo, classroom, name, ref string) (bool, error) {
 	return contentsExists(client, owner, repo, autograderFilePath(classroom, name), ref)
 }

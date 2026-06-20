@@ -9,6 +9,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/foundation50/gh-teacher/internal/githubtest"
 )
 
 // autograderRepoMock is a minimal <org>/classroom50 server for the
@@ -136,7 +138,7 @@ func TestRunAutograderShow(t *testing.T) {
 		}}
 		server := httptest.NewServer(mock.handler(t))
 		t.Cleanup(server.Close)
-		client := newTestRESTClient(t, server)
+		client := githubtest.NewTestClient(t, server)
 
 		var out, errOut bytes.Buffer
 		if err := runAutograderShow(client, &out, &errOut, "o", "cs-principles", false, false); err != nil {
@@ -157,7 +159,7 @@ func TestRunAutograderShow(t *testing.T) {
 		}}
 		server := httptest.NewServer(mock.handler(t))
 		t.Cleanup(server.Close)
-		client := newTestRESTClient(t, server)
+		client := githubtest.NewTestClient(t, server)
 
 		var out, errOut bytes.Buffer
 		if err := runAutograderShow(client, &out, &errOut, "o", "cs-principles", false, false); err != nil {
@@ -175,7 +177,7 @@ func TestRunAutograderShow(t *testing.T) {
 		}}
 		server := httptest.NewServer(mock.handler(t))
 		t.Cleanup(server.Close)
-		client := newTestRESTClient(t, server)
+		client := githubtest.NewTestClient(t, server)
 
 		var out, errOut bytes.Buffer
 		if err := runAutograderShow(client, &out, &errOut, "o", "cs-principles", true, false); err != nil {
@@ -205,7 +207,7 @@ func TestRunAutograderShow(t *testing.T) {
 		}}
 		server := httptest.NewServer(mock.handler(t))
 		t.Cleanup(server.Close)
-		client := newTestRESTClient(t, server)
+		client := githubtest.NewTestClient(t, server)
 
 		var out, errOut bytes.Buffer
 		if err := runAutograderShow(client, &out, &errOut, "o", "cs-principles", false, false); err != nil {
@@ -225,7 +227,7 @@ func TestRunAutograderShow(t *testing.T) {
 		}}
 		server := httptest.NewServer(mock.handler(t))
 		t.Cleanup(server.Close)
-		client := newTestRESTClient(t, server)
+		client := githubtest.NewTestClient(t, server)
 
 		var out, errOut bytes.Buffer
 		if err := runAutograderShow(client, &out, &errOut, "o", "cs-principles", true, true); err != nil {
@@ -244,7 +246,7 @@ func TestRunAutograderShow(t *testing.T) {
 		mock := &autograderRepoMock{files: map[string]string{}}
 		server := httptest.NewServer(mock.handler(t))
 		t.Cleanup(server.Close)
-		client := newTestRESTClient(t, server)
+		client := githubtest.NewTestClient(t, server)
 
 		var out, errOut bytes.Buffer
 		err := runAutograderShow(client, &out, &errOut, "o", "ghost", false, false)
@@ -265,7 +267,7 @@ func TestRunAutograderList(t *testing.T) {
 	}}
 	server := httptest.NewServer(mock.handler(t))
 	t.Cleanup(server.Close)
-	client := newTestRESTClient(t, server)
+	client := githubtest.NewTestClient(t, server)
 
 	t.Run("default text lists shims and override dirs, skips default + stray", func(t *testing.T) {
 		var out, errOut bytes.Buffer
@@ -322,7 +324,7 @@ func TestRunAutograderList_EmptyDir(t *testing.T) {
 	}}
 	server := httptest.NewServer(mock.handler(t))
 	t.Cleanup(server.Close)
-	client := newTestRESTClient(t, server)
+	client := githubtest.NewTestClient(t, server)
 
 	var out, errOut bytes.Buffer
 	if err := runAutograderList(client, &out, &errOut, "o", "cs-principles", false, false); err != nil {
@@ -345,7 +347,7 @@ func TestRemoveClassroomDefaultAutograder(t *testing.T) {
 		}}
 		server := httptest.NewServer(mock.handler(t))
 		t.Cleanup(server.Close)
-		client := newTestRESTClient(t, server)
+		client := githubtest.NewTestClient(t, server)
 
 		var out, errOut bytes.Buffer
 		err := removeClassroomDefaultAutograder(client, strings.NewReader(""), &out, &errOut, "o", "cs-principles", true)
@@ -366,7 +368,7 @@ func TestRemoveClassroomDefaultAutograder(t *testing.T) {
 		}}
 		server := httptest.NewServer(mock.handler(t))
 		t.Cleanup(server.Close)
-		client := newTestRESTClient(t, server)
+		client := githubtest.NewTestClient(t, server)
 
 		var out, errOut bytes.Buffer
 		err := removeClassroomDefaultAutograder(client, strings.NewReader(""), &out, &errOut, "o", "cs-principles", true)
@@ -385,7 +387,7 @@ func TestRemoveClassroomDefaultAutograder(t *testing.T) {
 		mock := &autograderRepoMock{files: map[string]string{}}
 		server := httptest.NewServer(mock.handler(t))
 		t.Cleanup(server.Close)
-		client := newTestRESTClient(t, server)
+		client := githubtest.NewTestClient(t, server)
 
 		var out, errOut bytes.Buffer
 		err := removeClassroomDefaultAutograder(client, strings.NewReader(""), &out, &errOut, "o", "ghost", true)
@@ -401,7 +403,7 @@ func TestRemoveClassroomDefaultAutograder(t *testing.T) {
 		}}
 		server := httptest.NewServer(mock.handler(t))
 		t.Cleanup(server.Close)
-		client := newTestRESTClient(t, server)
+		client := githubtest.NewTestClient(t, server)
 
 		var out, errOut bytes.Buffer
 		err := removeClassroomDefaultAutograder(client, strings.NewReader("n\n"), &out, &errOut, "o", "cs-principles", false)
@@ -420,7 +422,7 @@ func TestRemoveClassroomDefaultAutograder(t *testing.T) {
 		}}
 		server := httptest.NewServer(mock.handler(t))
 		t.Cleanup(server.Close)
-		client := newTestRESTClient(t, server)
+		client := githubtest.NewTestClient(t, server)
 
 		var out, errOut bytes.Buffer
 		err := removeClassroomDefaultAutograder(client, strings.NewReader("y\n"), &out, &errOut, "o", "cs-principles", false)

@@ -8,8 +8,9 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/cli/go-gh/v2/pkg/api"
 	"github.com/spf13/cobra"
+
+	"github.com/foundation50/gh-teacher/internal/githubapi"
 )
 
 // auditCmd implements `gh teacher audit <org>`: a read-only audit of the
@@ -67,7 +68,7 @@ func auditCmd() *cobra.Command {
 				return errors.New("org must not be empty")
 			}
 
-			client, err := requireAuthClient(cmd)
+			client, err := githubapi.RequireAuthClient(cmd)
 			if err != nil {
 				return err
 			}
@@ -146,7 +147,7 @@ type auditSetting struct {
 // unreadable manual hardening items. A read failure yields ReadOK=false
 // with LockdownComplete=false (we can't prove the lockdown holds, so the
 // scriptable exit status is conservatively a failure).
-func buildAuditReport(client *api.RESTClient, org, plan string) auditReport {
+func buildAuditReport(client githubapi.Client, org, plan string) auditReport {
 	settingsURL := fmt.Sprintf("https://github.com/organizations/%s/settings/member_privileges", org)
 	report := auditReport{
 		Org:              org,
@@ -183,7 +184,7 @@ func buildAuditReport(client *api.RESTClient, org, plan string) auditReport {
 // to compare live values against the desired lockdown. Separated from
 // init's verifyOrgDefaults (which both reads and emits warnings) so audit
 // can do a clean read without init's side effects.
-func readOrgMemberSettings(client *api.RESTClient, org string) (map[string]any, error) {
+func readOrgMemberSettings(client githubapi.Client, org string) (map[string]any, error) {
 	path := fmt.Sprintf("orgs/%s", url.PathEscape(org))
 	var live map[string]any
 	if err := client.Get(path, &live); err != nil {

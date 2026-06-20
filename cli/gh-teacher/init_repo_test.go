@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/foundation50/gh-teacher/internal/githubtest"
 )
 
 func TestEnsureClassroomRulesets_CreatesBoth(t *testing.T) {
@@ -44,7 +46,7 @@ func TestEnsureClassroomRulesets_CreatesBoth(t *testing.T) {
 		}
 	}))
 	t.Cleanup(server.Close)
-	client := newTestRESTClient(t, server)
+	client := githubtest.NewTestClient(t, server)
 
 	var out, errOut bytes.Buffer
 	ready, err := ensureClassroomRulesets(client, &out, &errOut, "cs50-fall-2026")
@@ -137,7 +139,7 @@ func TestEnsureClassroomRulesets_UpdatesExisting(t *testing.T) {
 		}
 	}))
 	t.Cleanup(server.Close)
-	client := newTestRESTClient(t, server)
+	client := githubtest.NewTestClient(t, server)
 
 	var out, errOut bytes.Buffer
 	ready, err := ensureClassroomRulesets(client, &out, &errOut, "cs50-fall-2026")
@@ -197,7 +199,7 @@ func TestEnsureClassroomRulesets_CreateForbiddenWarnsButSucceeds(t *testing.T) {
 		_, _ = w.Write([]byte(`{"message":"Upgrade your plan"}`))
 	}))
 	t.Cleanup(server.Close)
-	client := newTestRESTClient(t, server)
+	client := githubtest.NewTestClient(t, server)
 
 	var out, errOut bytes.Buffer
 	ready, err := ensureClassroomRulesets(client, &out, &errOut, "cs50-fall-2026")
@@ -232,7 +234,7 @@ func TestEnsureClassroomRulesets_ListFailsWarnsButSucceeds(t *testing.T) {
 		_, _ = w.Write([]byte(`{"message":"Not Found"}`))
 	}))
 	t.Cleanup(server.Close)
-	client := newTestRESTClient(t, server)
+	client := githubtest.NewTestClient(t, server)
 
 	var out, errOut bytes.Buffer
 	ready, err := ensureClassroomRulesets(client, &out, &errOut, "cs50-fall-2026")
@@ -318,7 +320,7 @@ func TestApplyOrgMemberDefaults_HappyPath(t *testing.T) {
 		}
 	}))
 	t.Cleanup(server.Close)
-	client := newTestRESTClient(t, server)
+	client := githubtest.NewTestClient(t, server)
 
 	var out, errOut bytes.Buffer
 	complete, _, err := applyOrgMemberDefaults(client, &out, &errOut, "cs50-fall-2026", "team")
@@ -446,7 +448,7 @@ func TestApplyOrgMemberDefaults_ForbiddenWarnsButSucceeds(t *testing.T) {
 		_, _ = w.Write([]byte(`{"message":"Resource not accessible by integration"}`))
 	}))
 	t.Cleanup(server.Close)
-	client := newTestRESTClient(t, server)
+	client := githubtest.NewTestClient(t, server)
 
 	var out, errOut bytes.Buffer
 	complete, unenforced, err := applyOrgMemberDefaults(client, &out, &errOut, "locked-org", "enterprise")
@@ -493,7 +495,7 @@ func TestApplyOrgMemberDefaults_TransportFailurePropagates(t *testing.T) {
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
 	t.Cleanup(server.Close)
-	client := newTestRESTClient(t, server)
+	client := githubtest.NewTestClient(t, server)
 
 	var out, errOut bytes.Buffer
 	_, _, err := applyOrgMemberDefaults(client, &out, &errOut, "o", "team")
@@ -552,7 +554,7 @@ func TestApplyOrgMemberDefaults_UnprocessableFallsBackPerField(t *testing.T) {
 		_, _ = w.Write([]byte(`{}`))
 	}))
 	t.Cleanup(server.Close)
-	client := newTestRESTClient(t, server)
+	client := githubtest.NewTestClient(t, server)
 
 	var out, errOut bytes.Buffer
 	complete, unenforced, err := applyOrgMemberDefaults(client, &out, &errOut, "enterprise-org", "enterprise")
@@ -610,7 +612,7 @@ func TestApplyOrgMemberDefaults_FallbackTransportFailurePropagates(t *testing.T)
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
 	t.Cleanup(server.Close)
-	client := newTestRESTClient(t, server)
+	client := githubtest.NewTestClient(t, server)
 
 	var out, errOut bytes.Buffer
 	complete, _, err := applyOrgMemberDefaults(client, &out, &errOut, "o", "team")
@@ -669,7 +671,7 @@ func TestApplyOrgMemberDefaults_SilentNoOpDetectedByReadBack(t *testing.T) {
 		}
 	}))
 	t.Cleanup(server.Close)
-	client := newTestRESTClient(t, server)
+	client := githubtest.NewTestClient(t, server)
 
 	var out, errOut bytes.Buffer
 	complete, unenforced, err := applyOrgMemberDefaults(client, &out, &errOut, "enterprise-org", "enterprise")
@@ -725,7 +727,7 @@ func TestApplyOrgMemberDefaults_SilentNoOpTeamPlanWording(t *testing.T) {
 		}
 	}))
 	t.Cleanup(server.Close)
-	client := newTestRESTClient(t, server)
+	client := githubtest.NewTestClient(t, server)
 
 	var out, errOut bytes.Buffer
 	complete, unenforced, err := applyOrgMemberDefaults(client, &out, &errOut, "team-org", "team")
@@ -832,7 +834,7 @@ func TestApplyOrgMemberDefaults_ReadBackFailureIsNonBlocking(t *testing.T) {
 		_, _ = w.Write([]byte(`{}`))
 	}))
 	t.Cleanup(server.Close)
-	client := newTestRESTClient(t, server)
+	client := githubtest.NewTestClient(t, server)
 
 	var out, errOut bytes.Buffer
 	complete, _, err := applyOrgMemberDefaults(client, &out, &errOut, "o", "team")
@@ -929,7 +931,7 @@ func TestEnablePages_CreatesAndSetsPublic(t *testing.T) {
 		}
 	}))
 	t.Cleanup(server.Close)
-	client := newTestRESTClient(t, server)
+	client := githubtest.NewTestClient(t, server)
 
 	var out, errOut bytes.Buffer
 	if err := enablePages(client, &out, &errOut, "o", "r"); err != nil {
@@ -981,7 +983,7 @@ func TestEnablePages_AlreadyEnabledStillSetsPublic(t *testing.T) {
 		}
 	}))
 	t.Cleanup(server.Close)
-	client := newTestRESTClient(t, server)
+	client := githubtest.NewTestClient(t, server)
 
 	var out, errOut bytes.Buffer
 	if err := enablePages(client, &out, &errOut, "o", "r"); err != nil {
@@ -1024,7 +1026,7 @@ func TestEnablePages_VisibilityReadBackCatchesSilentNoOp(t *testing.T) {
 		}
 	}))
 	t.Cleanup(server.Close)
-	client := newTestRESTClient(t, server)
+	client := githubtest.NewTestClient(t, server)
 
 	var out, errOut bytes.Buffer
 	if err := enablePages(client, &out, &errOut, "o", "r"); err != nil {
@@ -1054,7 +1056,7 @@ func TestEnablePages_VisibilityReadBackFailureIsNonBlocking(t *testing.T) {
 		}
 	}))
 	t.Cleanup(server.Close)
-	client := newTestRESTClient(t, server)
+	client := githubtest.NewTestClient(t, server)
 
 	var out, errOut bytes.Buffer
 	if err := enablePages(client, &out, &errOut, "o", "r"); err != nil {
@@ -1081,7 +1083,7 @@ func TestEnablePages_VisibilityPUTFailureWarnsButSucceeds(t *testing.T) {
 		}
 	}))
 	t.Cleanup(server.Close)
-	client := newTestRESTClient(t, server)
+	client := githubtest.NewTestClient(t, server)
 
 	var out, errOut bytes.Buffer
 	if err := enablePages(client, &out, &errOut, "o", "r"); err != nil {
@@ -1116,7 +1118,7 @@ func TestEnablePages_PlanWithoutVisibilityControlIsSuccess(t *testing.T) {
 		}
 	}))
 	t.Cleanup(server.Close)
-	client := newTestRESTClient(t, server)
+	client := githubtest.NewTestClient(t, server)
 
 	var out, errOut bytes.Buffer
 	if err := enablePages(client, &out, &errOut, "o", "r"); err != nil {
@@ -1145,7 +1147,7 @@ func TestEnablePages_OtherBadRequestStillWarns(t *testing.T) {
 		}
 	}))
 	t.Cleanup(server.Close)
-	client := newTestRESTClient(t, server)
+	client := githubtest.NewTestClient(t, server)
 
 	var out, errOut bytes.Buffer
 	if err := enablePages(client, &out, &errOut, "o", "r"); err != nil {
@@ -1167,7 +1169,7 @@ func TestEnablePages_POSTFailurePropagates(t *testing.T) {
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
 	t.Cleanup(server.Close)
-	client := newTestRESTClient(t, server)
+	client := githubtest.NewTestClient(t, server)
 
 	var out, errOut bytes.Buffer
 	err := enablePages(client, &out, &errOut, "o", "r")
@@ -1204,7 +1206,7 @@ func TestEnableReusableWorkflowAccess_HappyPath(t *testing.T) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	t.Cleanup(server.Close)
-	client := newTestRESTClient(t, server)
+	client := githubtest.NewTestClient(t, server)
 
 	var out, errOut bytes.Buffer
 	if err := enableReusableWorkflowAccess(client, &out, &errOut, "o", "r"); err != nil {
@@ -1246,7 +1248,7 @@ func TestEnableReusableWorkflowAccess_OrgPolicyWarns(t *testing.T) {
 		_, _ = w.Write([]byte(`{"message":"Resource not accessible by integration"}`))
 	}))
 	t.Cleanup(server.Close)
-	client := newTestRESTClient(t, server)
+	client := githubtest.NewTestClient(t, server)
 
 	var out, errOut bytes.Buffer
 	if err := enableReusableWorkflowAccess(client, &out, &errOut, "o", "r"); err != nil {
@@ -1288,7 +1290,7 @@ func TestEnableReusableWorkflowAccess_UnexpectedStatusWarns(t *testing.T) {
 		_, _ = w.Write([]byte(`{"unexpected": true}`))
 	}))
 	t.Cleanup(server.Close)
-	client := newTestRESTClient(t, server)
+	client := githubtest.NewTestClient(t, server)
 
 	var out, errOut bytes.Buffer
 	if err := enableReusableWorkflowAccess(client, &out, &errOut, "o", "r"); err != nil {
@@ -1328,7 +1330,7 @@ func TestEnsureOrgActionsEnabled_AlreadyAllIsNoOp(t *testing.T) {
 		_, _ = w.Write([]byte(`{"enabled_repositories":"all"}`))
 	}))
 	t.Cleanup(server.Close)
-	client := newTestRESTClient(t, server)
+	client := githubtest.NewTestClient(t, server)
 
 	var out, errOut bytes.Buffer
 	if err := ensureOrgActionsEnabled(client, &out, &errOut, "cs50-fall-2026"); err != nil {
@@ -1375,7 +1377,7 @@ func TestEnsureOrgActionsEnabled_NoneEnablesAllRepositories(t *testing.T) {
 		}
 	}))
 	t.Cleanup(server.Close)
-	client := newTestRESTClient(t, server)
+	client := githubtest.NewTestClient(t, server)
 
 	var out, errOut bytes.Buffer
 	if err := ensureOrgActionsEnabled(client, &out, &errOut, "cs50-fall-2026"); err != nil {
@@ -1413,7 +1415,7 @@ func TestEnsureOrgActionsEnabled_EnableForbiddenWarnsButSucceeds(t *testing.T) {
 		}
 	}))
 	t.Cleanup(server.Close)
-	client := newTestRESTClient(t, server)
+	client := githubtest.NewTestClient(t, server)
 
 	var out, errOut bytes.Buffer
 	if err := ensureOrgActionsEnabled(client, &out, &errOut, "cs50-fall-2026"); err != nil {
@@ -1441,7 +1443,7 @@ func TestEnsureOrgActionsEnabled_SelectedWarnsNoPut(t *testing.T) {
 		_, _ = w.Write([]byte(`{"enabled_repositories":"selected"}`))
 	}))
 	t.Cleanup(server.Close)
-	client := newTestRESTClient(t, server)
+	client := githubtest.NewTestClient(t, server)
 
 	var out, errOut bytes.Buffer
 	if err := ensureOrgActionsEnabled(client, &out, &errOut, "cs50-fall-2026"); err != nil {
@@ -1478,7 +1480,7 @@ func TestEnsureOrgActionsEnabled_UnexpectedValueWarnsNoPut(t *testing.T) {
 		_, _ = w.Write([]byte(`{"enabled_repositories":"someday_new_value"}`))
 	}))
 	t.Cleanup(server.Close)
-	client := newTestRESTClient(t, server)
+	client := githubtest.NewTestClient(t, server)
 
 	var out, errOut bytes.Buffer
 	if err := ensureOrgActionsEnabled(client, &out, &errOut, "cs50-fall-2026"); err != nil {
@@ -1512,7 +1514,7 @@ func TestEnsureOrgActionsEnabled_ReadFailureWarnsButSucceeds(t *testing.T) {
 		_, _ = w.Write([]byte(`{"message":"boom"}`))
 	}))
 	t.Cleanup(server.Close)
-	client := newTestRESTClient(t, server)
+	client := githubtest.NewTestClient(t, server)
 
 	var out, errOut bytes.Buffer
 	if err := ensureOrgActionsEnabled(client, &out, &errOut, "cs50-fall-2026"); err != nil {
@@ -1549,7 +1551,7 @@ func TestEnsureRepoActionsEnabled_AlreadyEnabledIsNoOp(t *testing.T) {
 		_, _ = w.Write([]byte(`{"enabled":true,"allowed_actions":"all"}`))
 	}))
 	t.Cleanup(server.Close)
-	client := newTestRESTClient(t, server)
+	client := githubtest.NewTestClient(t, server)
 
 	var out, errOut bytes.Buffer
 	if err := ensureRepoActionsEnabled(client, &out, &errOut, "cs50-fall-2026", "classroom50"); err != nil {
@@ -1596,7 +1598,7 @@ func TestEnsureRepoActionsEnabled_DisabledEnables(t *testing.T) {
 		}
 	}))
 	t.Cleanup(server.Close)
-	client := newTestRESTClient(t, server)
+	client := githubtest.NewTestClient(t, server)
 
 	var out, errOut bytes.Buffer
 	if err := ensureRepoActionsEnabled(client, &out, &errOut, "cs50-fall-2026", "classroom50"); err != nil {
@@ -1646,7 +1648,7 @@ func TestEnsureRepoActionsEnabled_EnableForbiddenWarnsButSucceeds(t *testing.T) 
 		}
 	}))
 	t.Cleanup(server.Close)
-	client := newTestRESTClient(t, server)
+	client := githubtest.NewTestClient(t, server)
 
 	var out, errOut bytes.Buffer
 	if err := ensureRepoActionsEnabled(client, &out, &errOut, "cs50-fall-2026", "classroom50"); err != nil {
@@ -1679,7 +1681,7 @@ func TestEnsureRepoActionsEnabled_ReadFailureWarnsButSucceeds(t *testing.T) {
 		_, _ = w.Write([]byte(`{"message":"boom"}`))
 	}))
 	t.Cleanup(server.Close)
-	client := newTestRESTClient(t, server)
+	client := githubtest.NewTestClient(t, server)
 
 	var out, errOut bytes.Buffer
 	if err := ensureRepoActionsEnabled(client, &out, &errOut, "cs50-fall-2026", "classroom50"); err != nil {
@@ -1710,7 +1712,7 @@ func TestEnsureRepoActionsEnabled_UnexpectedStatusWarns(t *testing.T) {
 		}
 	}))
 	t.Cleanup(server.Close)
-	client := newTestRESTClient(t, server)
+	client := githubtest.NewTestClient(t, server)
 
 	var out, errOut bytes.Buffer
 	if err := ensureRepoActionsEnabled(client, &out, &errOut, "cs50-fall-2026", "classroom50"); err != nil {
@@ -1736,7 +1738,7 @@ func TestEnsureRepoActionsEnabled_PUTFailurePropagates(t *testing.T) {
 		}
 	}))
 	t.Cleanup(server.Close)
-	client := newTestRESTClient(t, server)
+	client := githubtest.NewTestClient(t, server)
 
 	var out, errOut bytes.Buffer
 	err := ensureRepoActionsEnabled(client, &out, &errOut, "cs50-fall-2026", "classroom50")
@@ -1764,7 +1766,7 @@ func TestEnsureRepoActionsEnabled_EnableUnavailableWarns(t *testing.T) {
 		}
 	}))
 	t.Cleanup(server.Close)
-	client := newTestRESTClient(t, server)
+	client := githubtest.NewTestClient(t, server)
 
 	var out, errOut bytes.Buffer
 	if err := ensureRepoActionsEnabled(client, &out, &errOut, "cs50-fall-2026", "classroom50"); err != nil {
@@ -1794,7 +1796,7 @@ func TestEnsureOrgCanCreatePRs_AlreadyEnabledIsNoOp(t *testing.T) {
 		_, _ = w.Write([]byte(`{"default_workflow_permissions":"write","can_approve_pull_request_reviews":true}`))
 	}))
 	t.Cleanup(server.Close)
-	client := newTestRESTClient(t, server)
+	client := githubtest.NewTestClient(t, server)
 
 	var out, errOut bytes.Buffer
 	ready, err := ensureOrgCanCreatePRs(client, &out, &errOut, "cs50-fall-2026")
@@ -1842,7 +1844,7 @@ func TestEnsureOrgCanCreatePRs_EnablesWhenOff(t *testing.T) {
 		}
 	}))
 	t.Cleanup(server.Close)
-	client := newTestRESTClient(t, server)
+	client := githubtest.NewTestClient(t, server)
 
 	var out, errOut bytes.Buffer
 	ready, err := ensureOrgCanCreatePRs(client, &out, &errOut, "cs50-fall-2026")
@@ -1880,7 +1882,7 @@ func TestEnsureOrgCanCreatePRs_ForbiddenWarnsButSucceeds(t *testing.T) {
 		}
 	}))
 	t.Cleanup(server.Close)
-	client := newTestRESTClient(t, server)
+	client := githubtest.NewTestClient(t, server)
 
 	var out, errOut bytes.Buffer
 	ready, err := ensureOrgCanCreatePRs(client, &out, &errOut, "cs50-fall-2026")

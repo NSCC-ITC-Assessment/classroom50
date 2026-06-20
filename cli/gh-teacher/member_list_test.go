@@ -8,6 +8,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/foundation50/gh-teacher/internal/githubtest"
 )
 
 // memberMock serves the org-members / org-invitations / repo-
@@ -99,7 +101,7 @@ func TestRunMemberListOrg(t *testing.T) {
 	}
 	server := httptest.NewServer(mock.handler(t))
 	t.Cleanup(server.Close)
-	client := newTestRESTClient(t, server)
+	client := githubtest.NewTestClient(t, server)
 
 	t.Run("default table labels roles and pending invites", func(t *testing.T) {
 		var out, errOut bytes.Buffer
@@ -169,7 +171,7 @@ func TestRunMemberListOrg_EmptyAndJSONArray(t *testing.T) {
 	mock := &memberMock{} // no members, no invites
 	server := httptest.NewServer(mock.handler(t))
 	t.Cleanup(server.Close)
-	client := newTestRESTClient(t, server)
+	client := githubtest.NewTestClient(t, server)
 
 	t.Run("--json on empty org emits [] not null", func(t *testing.T) {
 		var out, errOut bytes.Buffer
@@ -214,7 +216,7 @@ func TestRunMemberListOrg_InvitationsForbidden(t *testing.T) {
 			}
 			server := httptest.NewServer(mock.handler(t))
 			t.Cleanup(server.Close)
-			client := newTestRESTClient(t, server)
+			client := githubtest.NewTestClient(t, server)
 
 			var out, errOut bytes.Buffer
 			err := runMemberListOrg(client, &out, &errOut, "o", false, false)
@@ -234,7 +236,7 @@ func TestRunMemberListOrg_Pagination(t *testing.T) {
 	mock := &memberMock{orgMembers: members}
 	server := httptest.NewServer(mock.handler(t))
 	t.Cleanup(server.Close)
-	client := newTestRESTClient(t, server)
+	client := githubtest.NewTestClient(t, server)
 
 	var out, errOut bytes.Buffer
 	if err := runMemberListOrg(client, &out, &errOut, "o", true, false); err != nil {
@@ -258,7 +260,7 @@ func TestRunMemberListRepo(t *testing.T) {
 	}
 	server := httptest.NewServer(mock.handler(t))
 	t.Cleanup(server.Close)
-	client := newTestRESTClient(t, server)
+	client := githubtest.NewTestClient(t, server)
 
 	t.Run("default table lists collaborators with permission level", func(t *testing.T) {
 		var out, errOut bytes.Buffer
@@ -320,7 +322,7 @@ func TestRunMemberListRepo_EmptyRoleName(t *testing.T) {
 	}}
 	server := httptest.NewServer(mock.handler(t))
 	t.Cleanup(server.Close)
-	client := newTestRESTClient(t, server)
+	client := githubtest.NewTestClient(t, server)
 
 	t.Run("--json keeps empty role, not a sentinel", func(t *testing.T) {
 		var out, errOut bytes.Buffer
@@ -358,7 +360,7 @@ func TestRunMemberList_ErrorPaths(t *testing.T) {
 		mock := &memberMock{membersErr: http.StatusInternalServerError}
 		server := httptest.NewServer(mock.handler(t))
 		t.Cleanup(server.Close)
-		client := newTestRESTClient(t, server)
+		client := githubtest.NewTestClient(t, server)
 
 		var out, errOut bytes.Buffer
 		err := runMemberListOrg(client, &out, &errOut, "o", false, false)
@@ -371,7 +373,7 @@ func TestRunMemberList_ErrorPaths(t *testing.T) {
 		mock := &memberMock{membersErr: http.StatusNotFound}
 		server := httptest.NewServer(mock.handler(t))
 		t.Cleanup(server.Close)
-		client := newTestRESTClient(t, server)
+		client := githubtest.NewTestClient(t, server)
 
 		var out, errOut bytes.Buffer
 		err := runMemberListOrg(client, &out, &errOut, "o", false, false)
@@ -384,7 +386,7 @@ func TestRunMemberList_ErrorPaths(t *testing.T) {
 		mock := &memberMock{collaboratorErr: http.StatusNotFound}
 		server := httptest.NewServer(mock.handler(t))
 		t.Cleanup(server.Close)
-		client := newTestRESTClient(t, server)
+		client := githubtest.NewTestClient(t, server)
 
 		var out, errOut bytes.Buffer
 		err := runMemberListRepo(client, &out, &errOut, "o", "hello", false, false)
@@ -400,7 +402,7 @@ func TestRunMemberList_ErrorPaths(t *testing.T) {
 		mock := &memberMock{collaboratorErr: http.StatusInternalServerError}
 		server := httptest.NewServer(mock.handler(t))
 		t.Cleanup(server.Close)
-		client := newTestRESTClient(t, server)
+		client := githubtest.NewTestClient(t, server)
 
 		var out, errOut bytes.Buffer
 		if err := runMemberListRepo(client, &out, &errOut, "o", "hello", false, false); err == nil {
@@ -413,7 +415,7 @@ func TestRunMemberListRepo_EmptyCollaborators(t *testing.T) {
 	mock := &memberMock{collaborators: nil}
 	server := httptest.NewServer(mock.handler(t))
 	t.Cleanup(server.Close)
-	client := newTestRESTClient(t, server)
+	client := githubtest.NewTestClient(t, server)
 
 	var out, errOut bytes.Buffer
 	if err := runMemberListRepo(client, &out, &errOut, "o", "hello", false, false); err != nil {
@@ -432,7 +434,7 @@ func TestRunMemberListRepo_Pagination(t *testing.T) {
 	mock := &memberMock{collaborators: collabs}
 	server := httptest.NewServer(mock.handler(t))
 	t.Cleanup(server.Close)
-	client := newTestRESTClient(t, server)
+	client := githubtest.NewTestClient(t, server)
 
 	var out, errOut bytes.Buffer
 	if err := runMemberListRepo(client, &out, &errOut, "o", "hello", true, true); err != nil {
@@ -454,7 +456,7 @@ func TestRunMemberListOrg_InvitationsPagination(t *testing.T) {
 	}
 	server := httptest.NewServer(mock.handler(t))
 	t.Cleanup(server.Close)
-	client := newTestRESTClient(t, server)
+	client := githubtest.NewTestClient(t, server)
 
 	var out, errOut bytes.Buffer
 	if err := runMemberListOrg(client, &out, &errOut, "o", true, false); err != nil {

@@ -10,8 +10,9 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/cli/go-gh/v2/pkg/api"
 	"github.com/spf13/cobra"
+
+	"github.com/foundation50/gh-teacher/internal/githubapi"
 )
 
 // requireClassroomExists errors unless <classroom>/classroom.json is
@@ -19,7 +20,7 @@ import (
 // read/write commands so a typo'd classroom name surfaces as a clear
 // "run classroom add" error instead of an empty listing or a phantom
 // directory. Mirrors set-default's original inline guard.
-func requireClassroomExists(client *api.RESTClient, org, classroom, branch string) error {
+func requireClassroomExists(client githubapi.Client, org, classroom, branch string) error {
 	marker := classroom + "/classroom.json"
 	exists, err := contentsExists(client, org, configRepoName, marker, branch)
 	if err != nil {
@@ -87,7 +88,7 @@ func autograderShowCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			client, err := requireAuthClient(cmd)
+			client, err := githubapi.RequireAuthClient(cmd)
 			if err != nil {
 				return err
 			}
@@ -102,7 +103,7 @@ func autograderShowCmd() *cobra.Command {
 // runAutograderShow reads <classroom>/autograder.py and renders it as
 // either the raw body (default) or a metadata object (--json). A
 // missing file is a clean exit-0 "none" state, not an error.
-func runAutograderShow(client *api.RESTClient, out, errOut io.Writer, org, classroom string, asJSON, quiet bool) error {
+func runAutograderShow(client githubapi.Client, out, errOut io.Writer, org, classroom string, asJSON, quiet bool) error {
 	branch, err := resolveConfigRepoBranch(client, org)
 	if err != nil {
 		return err
@@ -207,7 +208,7 @@ func autograderListCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			client, err := requireAuthClient(cmd)
+			client, err := githubapi.RequireAuthClient(cmd)
 			if err != nil {
 				return err
 			}
@@ -222,7 +223,7 @@ func autograderListCmd() *cobra.Command {
 // runAutograderList enumerates the immediate children of
 // <classroom>/autograders/ in one contents-API call. A missing
 // autograders/ directory (404) is a clean empty listing, not an error.
-func runAutograderList(client *api.RESTClient, out, errOut io.Writer, org, classroom string, asJSON, quiet bool) error {
+func runAutograderList(client githubapi.Client, out, errOut io.Writer, org, classroom string, asJSON, quiet bool) error {
 	branch, err := resolveConfigRepoBranch(client, org)
 	if err != nil {
 		return err
@@ -332,7 +333,7 @@ func autograderRemoveCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			client, err := requireAuthClient(cmd)
+			client, err := githubapi.RequireAuthClient(cmd)
 			if err != nil {
 				return err
 			}
@@ -346,7 +347,7 @@ func autograderRemoveCmd() *cobra.Command {
 // removeClassroomDefaultAutograder deletes <classroom>/autograder.py via
 // commitTreeChange. Existence is re-probed inside the build callback so
 // a concurrent delete collapses to a clean no-op rather than an error.
-func removeClassroomDefaultAutograder(client *api.RESTClient, in io.Reader, out, errOut io.Writer, org, classroom string, skipConfirm bool) error {
+func removeClassroomDefaultAutograder(client githubapi.Client, in io.Reader, out, errOut io.Writer, org, classroom string, skipConfirm bool) error {
 	branch, err := resolveConfigRepoBranch(client, org)
 	if err != nil {
 		return err

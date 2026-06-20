@@ -7,8 +7,10 @@ import (
 	"io"
 	"strings"
 
-	"github.com/foundation50/classroom50-cli-shared/contract"
 	"github.com/spf13/cobra"
+
+	"github.com/foundation50/classroom50-cli-shared/contract"
+	"github.com/foundation50/gh-teacher/internal/githubapi"
 )
 
 // configRepoName: per-org classroom config repo. Hardcoded across
@@ -82,7 +84,7 @@ func initCmd() *cobra.Command {
 				return errors.New("org must not be empty")
 			}
 
-			client, err := requireAuthClient(cmd)
+			client, err := githubapi.RequireAuthClient(cmd)
 			if err != nil {
 				return err
 			}

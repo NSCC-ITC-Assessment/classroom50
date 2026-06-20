@@ -3,8 +3,9 @@ package main
 import (
 	"fmt"
 
-	"github.com/foundation50/classroom50-cli-shared/ghutil"
 	"github.com/spf13/cobra"
+
+	"github.com/foundation50/gh-teacher/internal/githubapi"
 )
 
 func whoamiCmd() *cobra.Command {
@@ -14,11 +15,11 @@ func whoamiCmd() *cobra.Command {
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cmd.SilenceUsage = true
-			client, err := requireAuthClient(cmd)
+			client, err := githubapi.RequireAuthClient(cmd)
 			if err != nil {
 				return err
 			}
-			login, _, err := ghutil.CurrentUser(client)
+			login, _, err := githubapi.CurrentUser(client)
 			if err != nil {
 				return err
 			}

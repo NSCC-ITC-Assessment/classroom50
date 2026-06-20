@@ -8,6 +8,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/foundation50/gh-teacher/internal/githubtest"
 )
 
 // rosterListMock is a minimal <org>/classroom50 server for the
@@ -59,7 +61,7 @@ func TestRunRosterList(t *testing.T) {
 		}}
 		server := httptest.NewServer(mock.handler(t))
 		t.Cleanup(server.Close)
-		client := newTestRESTClient(t, server)
+		client := githubtest.NewTestClient(t, server)
 
 		var out, errOut bytes.Buffer
 		if err := runRosterList(client, &out, &errOut, "o", "cs-principles", false, false); err != nil {
@@ -101,7 +103,7 @@ func TestRunRosterList(t *testing.T) {
 		mock := &rosterListMock{files: map[string]string{"cs-principles/students.csv": csv}}
 		server := httptest.NewServer(mock.handler(t))
 		t.Cleanup(server.Close)
-		client := newTestRESTClient(t, server)
+		client := githubtest.NewTestClient(t, server)
 
 		var out, errOut bytes.Buffer
 		if err := runRosterList(client, &out, &errOut, "o", "cs-principles", true, false); err != nil {
@@ -140,7 +142,7 @@ func TestRunRosterList(t *testing.T) {
 		}}
 		server := httptest.NewServer(mock.handler(t))
 		t.Cleanup(server.Close)
-		client := newTestRESTClient(t, server)
+		client := githubtest.NewTestClient(t, server)
 
 		var out, errOut bytes.Buffer
 		if err := runRosterList(client, &out, &errOut, "o", "cs-principles", true, false); err != nil {
@@ -157,7 +159,7 @@ func TestRunRosterList(t *testing.T) {
 		}}
 		server := httptest.NewServer(mock.handler(t))
 		t.Cleanup(server.Close)
-		client := newTestRESTClient(t, server)
+		client := githubtest.NewTestClient(t, server)
 
 		var out, errOut bytes.Buffer
 		if err := runRosterList(client, &out, &errOut, "o", "cs-principles", false, true); err != nil {
@@ -187,7 +189,7 @@ func TestRunRosterList(t *testing.T) {
 		}}
 		server := httptest.NewServer(mock.handler(t))
 		t.Cleanup(server.Close)
-		client := newTestRESTClient(t, server)
+		client := githubtest.NewTestClient(t, server)
 
 		var out, errOut bytes.Buffer
 		if err := runRosterList(client, &out, &errOut, "o", "cs-principles", true, true); err != nil {
@@ -208,7 +210,7 @@ func TestRunRosterList(t *testing.T) {
 		}}
 		server := httptest.NewServer(mock.handler(t))
 		t.Cleanup(server.Close)
-		client := newTestRESTClient(t, server)
+		client := githubtest.NewTestClient(t, server)
 
 		var out, errOut bytes.Buffer
 		if err := runRosterList(client, &out, &errOut, "o", "cs-principles", false, false); err != nil {
@@ -226,7 +228,7 @@ func TestRunRosterList(t *testing.T) {
 		mock := &rosterListMock{files: map[string]string{}}
 		server := httptest.NewServer(mock.handler(t))
 		t.Cleanup(server.Close)
-		client := newTestRESTClient(t, server)
+		client := githubtest.NewTestClient(t, server)
 
 		var out, errOut bytes.Buffer
 		err := runRosterList(client, &out, &errOut, "o", "ghost", false, false)
@@ -245,7 +247,7 @@ func TestRunRosterList(t *testing.T) {
 		}
 		server := httptest.NewServer(mock.handler(t))
 		t.Cleanup(server.Close)
-		client := newTestRESTClient(t, server)
+		client := githubtest.NewTestClient(t, server)
 
 		var out, errOut bytes.Buffer
 		err := runRosterList(client, &out, &errOut, "o", "cs-principles", false, false)
@@ -270,7 +272,7 @@ func TestRunRosterList(t *testing.T) {
 		}}
 		server := httptest.NewServer(mock.handler(t))
 		t.Cleanup(server.Close)
-		client := newTestRESTClient(t, server)
+		client := githubtest.NewTestClient(t, server)
 
 		var out, errOut bytes.Buffer
 		err := runRosterList(client, &out, &errOut, "o", "cs-principles", false, false)

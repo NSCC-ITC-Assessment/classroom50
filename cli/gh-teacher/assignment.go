@@ -10,8 +10,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/cli/go-gh/v2/pkg/api"
 	"github.com/spf13/cobra"
+
+	"github.com/foundation50/gh-teacher/internal/cliutil"
+	"github.com/foundation50/gh-teacher/internal/githubapi"
 )
 
 func assignmentCmd() *cobra.Command {
@@ -165,7 +167,7 @@ func assignmentAddCmd() *cobra.Command {
 				return err
 			}
 
-			client, err := requireAuthClient(cmd)
+			client, err := githubapi.RequireAuthClient(cmd)
 			if err != nil {
 				return err
 			}
@@ -218,7 +220,7 @@ func assignmentRemoveCmd() *cobra.Command {
 			if err := validateShortName(slug, "slug"); err != nil {
 				return err
 			}
-			client, err := requireAuthClient(cmd)
+			client, err := githubapi.RequireAuthClient(cmd)
 			if err != nil {
 				return err
 			}
@@ -267,7 +269,7 @@ func assignmentListCmd() *cobra.Command {
 			if err := validateShortName(classroom, "classroom"); err != nil {
 				return err
 			}
-			client, err := requireAuthClient(cmd)
+			client, err := githubapi.RequireAuthClient(cmd)
 			if err != nil {
 				return err
 			}
@@ -284,7 +286,7 @@ func assignmentListCmd() *cobra.Command {
 // runAssignmentList: one branch resolve, one file read, no commit.
 // Missing assignments.json points the teacher at
 // `gh teacher classroom add`.
-func runAssignmentList(client *api.RESTClient, out, errOut io.Writer, org, classroom string, asJSON, quiet bool) error {
+func runAssignmentList(client githubapi.Client, out, errOut io.Writer, org, classroom string, asJSON, quiet bool) error {
 	branch, err := resolveConfigRepoBranch(client, org)
 	if err != nil {
 		return err
@@ -386,7 +388,7 @@ func validateModeAndSizeFlags(mode string, maxGroupSize int, sizeProvided bool) 
 	return modeVal, nil
 }
 
-func runAssignmentAdd(client *api.RESTClient, out, errOut io.Writer, org, classroom, slug, name, description string, tmpl templateArg, due string, dueMetaVal *dueMeta, mode string, maxGroupSize int, autograder string, runtime *runtimeRef, tests []testSpec, feedbackPR bool) error {
+func runAssignmentAdd(client githubapi.Client, out, errOut io.Writer, org, classroom, slug, name, description string, tmpl templateArg, due string, dueMetaVal *dueMeta, mode string, maxGroupSize int, autograder string, runtime *runtimeRef, tests []testSpec, feedbackPR bool) error {
 	branch, err := resolveConfigRepoBranch(client, org)
 	if err != nil {
 		return err
@@ -546,7 +548,7 @@ func runAssignmentAdd(client *api.RESTClient, out, errOut io.Writer, org, classr
 	return nil
 }
 
-func runAssignmentRemove(client *api.RESTClient, out io.Writer, org, classroom, slug string) error {
+func runAssignmentRemove(client githubapi.Client, out io.Writer, org, classroom, slug string) error {
 	branch, err := resolveConfigRepoBranch(client, org)
 	if err != nil {
 		return err
@@ -592,7 +594,7 @@ func runAssignmentRemove(client *api.RESTClient, out io.Writer, org, classroom, 
 // rebase-consistent reads inside commitTree, branch name for the
 // read-only list path — the contents API accepts both). Missing
 // file → points the teacher at `gh teacher classroom add`.
-func loadAssignments(client *api.RESTClient, org, classroom, ref string) (assignmentsJSON, error) {
+func loadAssignments(client githubapi.Client, org, classroom, ref string) (assignmentsJSON, error) {
 	path := assignmentsFilePath(classroom)
 	data, ok, err := readFileContents(client, org, configRepoName, path, ref)
 	if err != nil {
@@ -715,7 +717,7 @@ func dueZoneName(loc *time.Location, t time.Time) string {
 // assignment must be rejected (out-of-org private). Post-HTTP
 // decisions live in resolveTemplateBranch so the decision table is
 // unit-testable without an httptest scaffold.
-func validateTemplateRepo(client *api.RESTClient, t templateArg) (ref templateRef, private bool, err error) {
+func validateTemplateRepo(client githubapi.Client, t templateArg) (ref templateRef, private bool, err error) {
 	path := fmt.Sprintf("repos/%s/%s", url.PathEscape(t.Owner), url.PathEscape(t.Repo))
 	var resp struct {
 		IsTemplate    bool   `json:"is_template"`
@@ -723,7 +725,7 @@ func validateTemplateRepo(client *api.RESTClient, t templateArg) (ref templateRe
 		Private       bool   `json:"private"`
 	}
 	if err := client.Get(path, &resp); err != nil {
-		if isHTTPStatus(err, http.StatusNotFound) {
+		if cliutil.IsHTTPStatus(err, http.StatusNotFound) {
 			return templateRef{}, false, fmt.Errorf("template `%s/%s` is not visible to your account — either make it public, or copy it into your org and reference the copy",
 				t.Owner, t.Repo)
 		}

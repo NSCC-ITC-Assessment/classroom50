@@ -10,7 +10,8 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/cli/go-gh/v2/pkg/api"
+	"github.com/foundation50/gh-teacher/internal/cliutil"
+	"github.com/foundation50/gh-teacher/internal/githubapi"
 )
 
 // plansThatSupportPrivatePages: GitHub plan slugs that allow Pages
@@ -280,7 +281,7 @@ func allOrgMemberDefaultSettings() []orgMemberDefaultSetting {
 // from which critical fields the org rejected. init surfaces an
 // explicit "lockdown INCOMPLETE" warning when complete=false so a
 // half-locked org never hides behind a clean success line.
-func applyOrgMemberDefaults(client *api.RESTClient, out, errOut io.Writer, org, plan string) (complete bool, unenforced []unenforcedSetting, err error) {
+func applyOrgMemberDefaults(client githubapi.Client, out, errOut io.Writer, org, plan string) (complete bool, unenforced []unenforcedSetting, err error) {
 	settings := orgMemberDefaultSettings(plan)
 	combined := make(map[string]any, len(settings))
 	for _, s := range settings {
@@ -299,7 +300,7 @@ func applyOrgMemberDefaults(client *api.RESTClient, out, errOut io.Writer, org, 
 		if isSecondaryRateLimit(err) {
 			return false, nil, fmt.Errorf("PATCH %s: secondary rate limit (retry shortly): %w", path, err)
 		}
-		if isHTTPStatus(err, http.StatusForbidden) || isHTTPStatus(err, http.StatusUnprocessableEntity) {
+		if cliutil.IsHTTPStatus(err, http.StatusForbidden) || cliutil.IsHTTPStatus(err, http.StatusUnprocessableEntity) {
 			return applyOrgMemberDefaultsPerField(client, out, errOut, org, plan)
 		}
 		return false, nil, fmt.Errorf("PATCH %s: %w", path, err)
@@ -373,7 +374,7 @@ func classifyOrgDefaults(live map[string]any, plan string) (verdicts []orgDefaul
 // replaying what it *tried* to do. ok is true when nothing critical is
 // unenforced. A read failure returns ok=true with a single warning (the
 // writes reported success; don't manufacture a false checklist).
-func verifyOrgDefaults(client *api.RESTClient, errOut io.Writer, org, plan string) (ok bool, unenforced []unenforcedSetting) {
+func verifyOrgDefaults(client githubapi.Client, errOut io.Writer, org, plan string) (ok bool, unenforced []unenforcedSetting) {
 	path := fmt.Sprintf("orgs/%s", url.PathEscape(org))
 	var live map[string]any
 	if err := client.Get(path, &live); err != nil {
@@ -432,7 +433,7 @@ func orgFieldMatches(live, desired any) bool {
 // a rate-limit 403 must be treated as transient (retry), not as a field
 // the teacher should go toggle by hand.
 func isSecondaryRateLimit(err error) bool {
-	httpErr, ok := errors.AsType[*api.HTTPError](err)
+	httpErr, ok := errors.AsType[*githubapi.HTTPError](err)
 	if !ok {
 		return false
 	}
@@ -466,7 +467,7 @@ func orgMemberDefaultsSummary(plan string) string {
 // error mid-loop still aborts init, but first reports which policies were
 // already applied and which were never attempted — the org is left
 // partially mutated and the teacher needs to know exactly where.
-func applyOrgMemberDefaultsPerField(client *api.RESTClient, out, errOut io.Writer, org, plan string) (complete bool, unenforced []unenforcedSetting, err error) {
+func applyOrgMemberDefaultsPerField(client githubapi.Client, out, errOut io.Writer, org, plan string) (complete bool, unenforced []unenforcedSetting, err error) {
 	path := fmt.Sprintf("orgs/%s", url.PathEscape(org))
 	settingsURL := fmt.Sprintf("https://github.com/organizations/%s/settings/member_privileges", org)
 	settings := orgMemberDefaultSettings(plan)
@@ -486,7 +487,7 @@ func applyOrgMemberDefaultsPerField(client *api.RESTClient, out, errOut io.Write
 				reportPartialMemberDefaults(errOut, org, settings, applied, i, settingsURL)
 				return false, nil, fmt.Errorf("PATCH %s: secondary rate limit: %w", path, reqErr)
 			}
-			if isHTTPStatus(reqErr, http.StatusForbidden) || isHTTPStatus(reqErr, http.StatusUnprocessableEntity) {
+			if cliutil.IsHTTPStatus(reqErr, http.StatusForbidden) || cliutil.IsHTTPStatus(reqErr, http.StatusUnprocessableEntity) {
 				// Plan-gated rejection: don't warn here. The read-back
 				// below reports the true residual state as one checklist.
 				continue
@@ -547,7 +548,7 @@ type orgActionsPermissions struct {
 // Actions and never run otherwise. "all" -> noop; "selected"/unknown
 // -> warn. Read failures and a rejected enable (403/409/422, usually
 // enterprise-locked) warn and continue so init still finishes.
-func ensureOrgActionsEnabled(client *api.RESTClient, out, errOut io.Writer, org string) error {
+func ensureOrgActionsEnabled(client githubapi.Client, out, errOut io.Writer, org string) error {
 	path := fmt.Sprintf("orgs/%s/actions/permissions", url.PathEscape(org))
 
 	var perms orgActionsPermissions
@@ -582,7 +583,7 @@ func ensureOrgActionsEnabled(client *api.RESTClient, out, errOut io.Writer, org 
 	}
 	resp, err := client.Request(http.MethodPut, path, bytes.NewReader(body))
 	if err != nil {
-		if isHTTPStatus(err, http.StatusForbidden) || isHTTPStatus(err, http.StatusConflict) || isHTTPStatus(err, http.StatusUnprocessableEntity) {
+		if cliutil.IsHTTPStatus(err, http.StatusForbidden) || cliutil.IsHTTPStatus(err, http.StatusConflict) || cliutil.IsHTTPStatus(err, http.StatusUnprocessableEntity) {
 			_, _ = fmt.Fprintf(errOut, "Warning: %s: couldn't enable GitHub Actions (%v); this is often an enterprise-level policy an org admin can't override — ask an enterprise admin to enable Actions for the org at https://github.com/organizations/%s/settings/actions. Classroom50 workflows won't run until then.\n",
 				org, err, org)
 			return nil
@@ -629,7 +630,7 @@ type orgWorkflowPermissions struct {
 // required-review rule to a repo in this org, a student-controlled
 // workflow token could satisfy it via self-approval -- documented in the
 // wiki so that choice is made knowingly.
-func ensureOrgCanCreatePRs(client *api.RESTClient, out, errOut io.Writer, org string) (bool, error) {
+func ensureOrgCanCreatePRs(client githubapi.Client, out, errOut io.Writer, org string) (bool, error) {
 	path := fmt.Sprintf("orgs/%s/actions/permissions/workflow", url.PathEscape(org))
 
 	var current orgWorkflowPermissions
@@ -652,7 +653,7 @@ func ensureOrgCanCreatePRs(client *api.RESTClient, out, errOut io.Writer, org st
 
 	resp, err := client.Request(http.MethodPut, path, bytes.NewReader(body))
 	if err != nil {
-		if isHTTPStatus(err, http.StatusForbidden) || isHTTPStatus(err, http.StatusConflict) {
+		if cliutil.IsHTTPStatus(err, http.StatusForbidden) || cliutil.IsHTTPStatus(err, http.StatusConflict) {
 			_, _ = fmt.Fprintf(errOut, "Warning: %s: couldn't enable Actions-created pull requests (%v); the opt-in Feedback PR won't open until an org admin turns on \"Allow GitHub Actions to create and approve pull requests\" at https://github.com/organizations/%s/settings/actions\n", org, err, org)
 			return false, nil
 		}
@@ -678,7 +679,7 @@ type repoActionsPermissions struct {
 // independent of the org-wide setting. A read failure or a rejected
 // enable (403/409/422, usually an org/enterprise policy) warns and
 // continues, matching init's warn-and-carry-on convention.
-func ensureRepoActionsEnabled(client *api.RESTClient, out, errOut io.Writer, owner, repo string) error {
+func ensureRepoActionsEnabled(client githubapi.Client, out, errOut io.Writer, owner, repo string) error {
 	path := fmt.Sprintf("repos/%s/%s/actions/permissions", url.PathEscape(owner), url.PathEscape(repo))
 
 	var perms repoActionsPermissions
@@ -700,7 +701,7 @@ func ensureRepoActionsEnabled(client *api.RESTClient, out, errOut io.Writer, own
 	}
 	resp, err := client.Request(http.MethodPut, path, bytes.NewReader(body))
 	if err != nil {
-		if isHTTPStatus(err, http.StatusForbidden) || isHTTPStatus(err, http.StatusConflict) || isHTTPStatus(err, http.StatusUnprocessableEntity) {
+		if cliutil.IsHTTPStatus(err, http.StatusForbidden) || cliutil.IsHTTPStatus(err, http.StatusConflict) || cliutil.IsHTTPStatus(err, http.StatusUnprocessableEntity) {
 			_, _ = fmt.Fprintf(errOut, "Warning: %s/%s: couldn't enable Actions (%v); this is often an org or enterprise policy — enable it at https://github.com/%s/%s/settings/actions. Classroom50's publish-pages and collect-scores workflows won't run until then.\n",
 				owner, repo, err, owner, repo)
 			return nil
@@ -732,7 +733,7 @@ type configRepo struct {
 // it if absent. 422 → name is taken; fall back to GET so init
 // re-runs succeed. default_branch flows through so an org policy
 // rename doesn't break the bootstrap.
-func ensureConfigRepo(client *api.RESTClient, org string) (repo configRepo, created bool, err error) {
+func ensureConfigRepo(client githubapi.Client, org string) (repo configRepo, created bool, err error) {
 	body, err := json.Marshal(struct {
 		Name     string `json:"name"`
 		Private  bool   `json:"private"`
@@ -748,7 +749,7 @@ func ensureConfigRepo(client *api.RESTClient, org string) (repo configRepo, crea
 
 	createPath := fmt.Sprintf("orgs/%s/repos", url.PathEscape(org))
 	if err := client.Post(createPath, bytes.NewReader(body), &repo); err != nil {
-		if isHTTPStatus(err, http.StatusUnprocessableEntity) {
+		if cliutil.IsHTTPStatus(err, http.StatusUnprocessableEntity) {
 			getPath := fmt.Sprintf("repos/%s/%s", url.PathEscape(org), configRepoName)
 			if getErr := client.Get(getPath, &repo); getErr != nil {
 				return configRepo{}, false, fmt.Errorf("GET %s: %w", getPath, getErr)
@@ -770,7 +771,7 @@ func ensureConfigRepo(client *api.RESTClient, org string) (repo configRepo, crea
 // visibility PUT fires either way so re-runs reconcile a
 // previously-private site. Success lines land on `out`; the
 // visibility step warns to `errOut` if the API rejects it.
-func enablePages(client *api.RESTClient, out, errOut io.Writer, owner, repo string) error {
+func enablePages(client githubapi.Client, out, errOut io.Writer, owner, repo string) error {
 	body, err := json.Marshal(struct {
 		BuildType string `json:"build_type"`
 	}{BuildType: "workflow"})
@@ -781,7 +782,7 @@ func enablePages(client *api.RESTClient, out, errOut io.Writer, owner, repo stri
 	switch err := client.Post(path, bytes.NewReader(body), nil); {
 	case err == nil:
 		_, _ = fmt.Fprintf(out, "%s/%s: Pages enabled (build_type=workflow)\n", owner, repo)
-	case isHTTPStatus(err, http.StatusConflict):
+	case cliutil.IsHTTPStatus(err, http.StatusConflict):
 		_, _ = fmt.Fprintf(out, "%s/%s: Pages already enabled\n", owner, repo)
 	default:
 		return fmt.Errorf("POST %s: %w", path, err)
@@ -797,7 +798,7 @@ func enablePages(client *api.RESTClient, out, errOut io.Writer, owner, repo stri
 // tier) sites are unconditionally public, which is exactly the state
 // init wants, so this response is a success, not a warning.
 func isPrivatePagesUnsupported(err error) bool {
-	httpErr, ok := errors.AsType[*api.HTTPError](err)
+	httpErr, ok := errors.AsType[*githubapi.HTTPError](err)
 	return ok && httpErr.StatusCode == http.StatusBadRequest &&
 		strings.Contains(httpErr.Message, "Private pages is not enabled")
 }
@@ -810,7 +811,7 @@ func isPrivatePagesUnsupported(err error) bool {
 // already public by plan default; any other status emits a
 // `Warning:` to `errOut` and returns nil so a quirky org policy
 // doesn't fail the whole init.
-func setPagesPublic(client *api.RESTClient, out, errOut io.Writer, owner, repo string) error {
+func setPagesPublic(client githubapi.Client, out, errOut io.Writer, owner, repo string) error {
 	body, err := json.Marshal(struct {
 		Public bool `json:"public"`
 	}{Public: true})
@@ -853,7 +854,7 @@ func setPagesPublic(client *api.RESTClient, out, errOut io.Writer, owner, repo s
 // readPagesPublic GETs the repo Pages config and returns whether the
 // site is public. known=false on any read failure so the caller treats
 // an unverifiable read-back as non-blocking (no false alarm).
-func readPagesPublic(client *api.RESTClient, owner, repo string) (public, known bool) {
+func readPagesPublic(client githubapi.Client, owner, repo string) (public, known bool) {
 	path := fmt.Sprintf("repos/%s/%s/pages", url.PathEscape(owner), url.PathEscape(repo))
 	var resp struct {
 		Public bool `json:"public"`
@@ -870,7 +871,7 @@ func readPagesPublic(client *api.RESTClient, owner, repo string) (public, known 
 // the default branch directly, and a PR requirement would block
 // both. Force-push + delete blocking bounds the blast radius of an
 // account compromise.
-func applyBranchProtection(client *api.RESTClient, out io.Writer, owner, repo, branch string) error {
+func applyBranchProtection(client githubapi.Client, out io.Writer, owner, repo, branch string) error {
 	// Classic branch protection requires the four null fields to
 	// be present (not omitted); a JSON literal is simpler than
 	// juggling pointer types.
@@ -972,7 +973,7 @@ type rulesetRule struct {
 // on any failure (a plan without org rulesets, or a policy lock) so a
 // quirky org doesn't fail the whole init — mirrors the other org-setup
 // helpers.
-func ensureClassroomRulesets(client *api.RESTClient, out, errOut io.Writer, org string) (bool, error) {
+func ensureClassroomRulesets(client githubapi.Client, out, errOut io.Writer, org string) (bool, error) {
 	existing, err := listOrgRulesets(client, org)
 	if err != nil {
 		_, _ = fmt.Fprintf(errOut, "Warning: %s: could not list org rulesets (%v); skipping Feedback PR branch protections. Apply them manually at https://github.com/organizations/%s/settings/rules if students can force-push submissions or merge feedback PRs.\n",
@@ -1049,12 +1050,12 @@ func ensureClassroomRulesets(client *api.RESTClient, out, errOut io.Writer, org 
 // ruleset and updating (PUT by ID) an existing one to reconcile drift.
 // Paginated so an org with many rulesets doesn't hide the Classroom 50
 // entries (which would make the reconcile re-POST and 422).
-func listOrgRulesets(client *api.RESTClient, org string) (map[string]int64, error) {
+func listOrgRulesets(client githubapi.Client, org string) (map[string]int64, error) {
 	type orgRuleset struct {
 		ID   int64  `json:"id"`
 		Name string `json:"name"`
 	}
-	rulesets, err := paginateAll[orgRuleset](client, 100, 100,
+	rulesets, err := githubapi.PaginateAll[orgRuleset](client, 100, 100,
 		func(page int) string {
 			return fmt.Sprintf("orgs/%s/rulesets?per_page=100&page=%d", url.PathEscape(org), page)
 		}, nil)
@@ -1069,7 +1070,7 @@ func listOrgRulesets(client *api.RESTClient, org string) (map[string]int64, erro
 }
 
 // createOrgRuleset POSTs a single ruleset.
-func createOrgRuleset(client *api.RESTClient, org string, body orgRulesetBody) error {
+func createOrgRuleset(client githubapi.Client, org string, body orgRulesetBody) error {
 	payload, err := json.Marshal(body)
 	if err != nil {
 		return fmt.Errorf("encode ruleset %q: %w", body.Name, err)
@@ -1085,7 +1086,7 @@ func createOrgRuleset(client *api.RESTClient, org string, body orgRulesetBody) e
 // ID, so re-running init reconciles a stale ruleset (e.g. one created by
 // an older CLI that targeted the wrong branch pattern) to the current
 // definition rather than leaving it as-is.
-func updateOrgRuleset(client *api.RESTClient, org string, id int64, body orgRulesetBody) error {
+func updateOrgRuleset(client githubapi.Client, org string, id int64, body orgRulesetBody) error {
 	payload, err := json.Marshal(body)
 	if err != nil {
 		return fmt.Errorf("encode ruleset %q: %w", body.Name, err)
@@ -1123,7 +1124,7 @@ func rulesetMissDescription(name string) string {
 // new-repo default flipped to read-only in 2023.) 409 → org enforces
 // a unified policy; reportOrgWorkflowPermissions logs the effective
 // setting and continues.
-func setWorkflowPermissions(client *api.RESTClient, out io.Writer, owner, repo string) error {
+func setWorkflowPermissions(client githubapi.Client, out io.Writer, owner, repo string) error {
 	body, err := json.Marshal(struct {
 		DefaultWorkflowPermissions   string `json:"default_workflow_permissions"`
 		CanApprovePullRequestReviews bool   `json:"can_approve_pull_request_reviews"`
@@ -1138,7 +1139,7 @@ func setWorkflowPermissions(client *api.RESTClient, out io.Writer, owner, repo s
 		url.PathEscape(owner), url.PathEscape(repo))
 	resp, err := client.Request(http.MethodPut, path, bytes.NewReader(body))
 	if err != nil {
-		if isHTTPStatus(err, http.StatusConflict) {
+		if cliutil.IsHTTPStatus(err, http.StatusConflict) {
 			return reportOrgWorkflowPermissions(client, out, owner, repo)
 		}
 		return fmt.Errorf("PUT %s: %w", path, err)
@@ -1156,7 +1157,7 @@ func setWorkflowPermissions(client *api.RESTClient, out io.Writer, owner, repo s
 // value under enforced policy). Always returns nil — a `read`
 // default doesn't break the bootstrap because skeleton workflows
 // declare their own permissions.
-func reportOrgWorkflowPermissions(client *api.RESTClient, out io.Writer, owner, repo string) error {
+func reportOrgWorkflowPermissions(client githubapi.Client, out io.Writer, owner, repo string) error {
 	path := fmt.Sprintf("repos/%s/%s/actions/permissions/workflow",
 		url.PathEscape(owner), url.PathEscape(repo))
 	var resp struct {
@@ -1189,7 +1190,7 @@ func reportOrgWorkflowPermissions(client *api.RESTClient, out io.Writer, owner, 
 // warning to errOut, since some orgs lock this at the enterprise
 // layer and the teacher's recourse is a settings change rather
 // than a CLI fix.
-func enableReusableWorkflowAccess(client *api.RESTClient, out, errOut io.Writer, owner, repo string) error {
+func enableReusableWorkflowAccess(client githubapi.Client, out, errOut io.Writer, owner, repo string) error {
 	body, err := json.Marshal(struct {
 		AccessLevel string `json:"access_level"`
 	}{AccessLevel: "organization"})
@@ -1200,7 +1201,7 @@ func enableReusableWorkflowAccess(client *api.RESTClient, out, errOut io.Writer,
 		url.PathEscape(owner), url.PathEscape(repo))
 	resp, err := client.Request(http.MethodPut, path, bytes.NewReader(body))
 	if err != nil {
-		if isHTTPStatus(err, http.StatusForbidden) || isHTTPStatus(err, http.StatusConflict) {
+		if cliutil.IsHTTPStatus(err, http.StatusForbidden) || cliutil.IsHTTPStatus(err, http.StatusConflict) {
 			_, _ = fmt.Fprintf(errOut, "Warning: %s/%s: couldn't enable reusable-workflow access for the org (%v); student-repo autograde workflows may 403 on `uses:`. Retry with an org-admin token: gh api -X PUT /repos/%s/%s/actions/permissions/access -f access_level=organization — or toggle manually at https://github.com/%s/%s/settings/actions → Access if students see workflow-resolution errors.\n",
 				owner, repo, err, owner, repo, owner, repo)
 			return nil

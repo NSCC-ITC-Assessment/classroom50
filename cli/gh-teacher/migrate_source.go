@@ -9,7 +9,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/cli/go-gh/v2/pkg/api"
+	"github.com/foundation50/gh-teacher/internal/cliutil"
+	"github.com/foundation50/gh-teacher/internal/githubapi"
 )
 
 // classroomAPIPerPage matches the Classroom API's max-per-page cap.
@@ -92,11 +93,11 @@ type classroomStarterCodeRepo struct {
 
 // getClassroom calls `GET /classrooms/{id}`; 404 → an actionable
 // error pointing the teacher at `gh classroom list`.
-func getClassroom(client *api.RESTClient, id int64) (classroomDetail, error) {
+func getClassroom(client githubapi.Client, id int64) (classroomDetail, error) {
 	path := fmt.Sprintf("classrooms/%d", id)
 	var out classroomDetail
 	if err := client.Get(path, &out); err != nil {
-		if isHTTPStatus(err, http.StatusNotFound) {
+		if cliutil.IsHTTPStatus(err, http.StatusNotFound) {
 			return classroomDetail{}, fmt.Errorf("classroom %d is not accessible to you — confirm you are a GitHub Classroom admin for that classroom (run `gh classroom list`)", id)
 		}
 		return classroomDetail{}, fmt.Errorf("GET %s: %w", path, err)
@@ -106,8 +107,8 @@ func getClassroom(client *api.RESTClient, id int64) (classroomDetail, error) {
 
 // listClassrooms walks `GET /classrooms` with page/per_page
 // pagination, capped at classroomMigrateSourcePagesMax.
-func listClassrooms(client *api.RESTClient) ([]classroomListItem, error) {
-	return paginateAll[classroomListItem](client, classroomAPIPerPage, classroomMigrateSourcePagesMax,
+func listClassrooms(client githubapi.Client) ([]classroomListItem, error) {
+	return githubapi.PaginateAll[classroomListItem](client, classroomAPIPerPage, classroomMigrateSourcePagesMax,
 		func(page int) string {
 			return fmt.Sprintf("classrooms?per_page=%d&page=%d", classroomAPIPerPage, page)
 		}, nil)
@@ -115,8 +116,8 @@ func listClassrooms(client *api.RESTClient) ([]classroomListItem, error) {
 
 // listClassroomAssignments walks `GET /classrooms/{id}/assignments`
 // with the same pagination + cap as listClassrooms.
-func listClassroomAssignments(client *api.RESTClient, classroomID int64) ([]classroomAssignmentListItem, error) {
-	return paginateAll[classroomAssignmentListItem](client, classroomAPIPerPage, classroomMigrateSourcePagesMax,
+func listClassroomAssignments(client githubapi.Client, classroomID int64) ([]classroomAssignmentListItem, error) {
+	return githubapi.PaginateAll[classroomAssignmentListItem](client, classroomAPIPerPage, classroomMigrateSourcePagesMax,
 		func(page int) string {
 			return fmt.Sprintf("classrooms/%d/assignments?per_page=%d&page=%d", classroomID, classroomAPIPerPage, page)
 		}, nil)
@@ -124,11 +125,11 @@ func listClassroomAssignments(client *api.RESTClient, classroomID int64) ([]clas
 
 // getClassroomAssignment calls `GET /assignments/{id}`; 404 → an
 // actionable error.
-func getClassroomAssignment(client *api.RESTClient, assignmentID int64) (classroomAssignmentDetail, error) {
+func getClassroomAssignment(client githubapi.Client, assignmentID int64) (classroomAssignmentDetail, error) {
 	path := fmt.Sprintf("assignments/%d", assignmentID)
 	var out classroomAssignmentDetail
 	if err := client.Get(path, &out); err != nil {
-		if isHTTPStatus(err, http.StatusNotFound) {
+		if cliutil.IsHTTPStatus(err, http.StatusNotFound) {
 			return classroomAssignmentDetail{}, fmt.Errorf("assignment %d is not accessible to you (must be admin of its classroom)", assignmentID)
 		}
 		return classroomAssignmentDetail{}, fmt.Errorf("GET %s: %w", path, err)
@@ -143,7 +144,7 @@ func getClassroomAssignment(client *api.RESTClient, assignmentID int64) (classro
 // includeArchived. Multi-match enumerates with IDs and asks for
 // re-run with --source <id>. The org-login path exists because
 // GitHub Classroom is 1:1 with orgs.
-func resolveSource(client *api.RESTClient, errOut io.Writer, source string, includeArchived bool) (classroomDetail, error) {
+func resolveSource(client githubapi.Client, errOut io.Writer, source string, includeArchived bool) (classroomDetail, error) {
 	source = strings.TrimSpace(source)
 	if source == "" {
 		return classroomDetail{}, errors.New("--source must not be empty (pass a numeric classroom ID or an org login)")
@@ -215,7 +216,7 @@ func resolveSource(client *api.RESTClient, errOut io.Writer, source string, incl
 
 // fetchAssignmentsForClassroom lists assignments then fetches each
 // detail; returns results in listing order so output is deterministic.
-func fetchAssignmentsForClassroom(client *api.RESTClient, classroomID int64) ([]classroomAssignmentDetail, error) {
+func fetchAssignmentsForClassroom(client githubapi.Client, classroomID int64) ([]classroomAssignmentDetail, error) {
 	listing, err := listClassroomAssignments(client, classroomID)
 	if err != nil {
 		return nil, err

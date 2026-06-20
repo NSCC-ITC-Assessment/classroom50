@@ -10,9 +10,10 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/cli/go-gh/v2/pkg/api"
-	"github.com/foundation50/classroom50-cli-shared/ghutil"
 	"github.com/spf13/cobra"
+
+	"github.com/foundation50/gh-teacher/internal/cliutil"
+	"github.com/foundation50/gh-teacher/internal/githubapi"
 )
 
 var repoPermissions = []string{"pull", "triage", "push", "maintain", "admin"}
@@ -52,7 +53,7 @@ func inviteCmd() *cobra.Command {
 				return errors.New("username must not be empty")
 			}
 
-			client, err := requireAuthClient(cmd)
+			client, err := githubapi.RequireAuthClient(cmd)
 			if err != nil {
 				return err
 			}
@@ -101,7 +102,7 @@ func validRepoPermission(p string) bool {
 	return false
 }
 
-func inviteToOrg(client *api.RESTClient, out, errOut io.Writer, org, username, role string, quiet bool) error {
+func inviteToOrg(client githubapi.Client, out, errOut io.Writer, org, username, role string, quiet bool) error {
 	_, userID, err := lookupUser(client, username)
 	if err != nil {
 		return err
@@ -120,7 +121,7 @@ func inviteToOrg(client *api.RESTClient, out, errOut io.Writer, org, username, r
 // lookup; callers that already have the numeric ID save the call.
 // `username` is still required so classifyOrgInviteError can produce
 // "already a member" / "pending invite" messages.
-func inviteOrgByID(client *api.RESTClient, org, username string, userID int64, role string) error {
+func inviteOrgByID(client githubapi.Client, org, username string, userID int64, role string) error {
 	body, err := json.Marshal(map[string]any{
 		"invitee_id": userID,
 		"role":       role,
@@ -138,14 +139,14 @@ func inviteOrgByID(client *api.RESTClient, org, username string, userID int64, r
 // lookupUser → (canonical login, immutable numeric ID). Roster
 // commands keep both; inviteToOrg uses only the ID. 404 →
 // "GitHub user not found".
-func lookupUser(client *api.RESTClient, username string) (login string, userID int64, err error) {
+func lookupUser(client githubapi.Client, username string) (login string, userID int64, err error) {
 	path := fmt.Sprintf("users/%s", url.PathEscape(username))
 	var user struct {
 		Login string `json:"login"`
 		ID    int64  `json:"id"`
 	}
 	if err := client.Get(path, &user); err != nil {
-		if isHTTPStatus(err, http.StatusNotFound) {
+		if cliutil.IsHTTPStatus(err, http.StatusNotFound) {
 			return "", 0, fmt.Errorf("GitHub user %q not found", username)
 		}
 		return "", 0, fmt.Errorf("GET %s: %w", path, err)
@@ -166,8 +167,8 @@ func (e *orgMembershipKnownError) Error() string { return e.msg }
 
 // classifyOrgInviteError maps POST /orgs/{org}/invitations errors to
 // user-facing messages. Unrecognized errors wrap with request context.
-func classifyOrgInviteError(client *api.RESTClient, org, username, path string, err error) error {
-	if httpErr, ok := errors.AsType[*api.HTTPError](err); ok {
+func classifyOrgInviteError(client githubapi.Client, org, username, path string, err error) error {
+	if httpErr, ok := errors.AsType[*githubapi.HTTPError](err); ok {
 		switch httpErr.StatusCode {
 		case http.StatusUnauthorized:
 			return errors.New("authentication failed; run `gh teacher login` to (re)authenticate")
@@ -226,7 +227,7 @@ const (
 // header. Shared by classifyOrgInviteError (POST) and
 // classifyMembershipReadError (GET) so the admin:org scope-vs-admin
 // distinction stays identical across the invite and read paths.
-func classifyOrgForbidden(httpErr *api.HTTPError) orgForbiddenKind {
+func classifyOrgForbidden(httpErr *githubapi.HTTPError) orgForbiddenKind {
 	scopes := httpErr.Headers.Get("X-OAuth-Scopes")
 	switch {
 	case scopes == "":
@@ -249,7 +250,7 @@ func hasOrgAdminScope(scopes string) bool {
 
 // getMembershipState returns the org membership state ("active" or
 // "pending"), or false on lookup failure.
-func getMembershipState(client *api.RESTClient, org, username string) (string, bool) {
+func getMembershipState(client githubapi.Client, org, username string) (string, bool) {
 	path := fmt.Sprintf("orgs/%s/memberships/%s", url.PathEscape(org), url.PathEscape(username))
 	var resp struct {
 		State string `json:"state"`
@@ -260,8 +261,8 @@ func getMembershipState(client *api.RESTClient, org, username string) (string, b
 	return resp.State, true
 }
 
-func inviteToRepo(client *api.RESTClient, out io.Writer, owner, repo, username, permission string, quiet bool) error {
-	status, err := ghutil.SetCollaborator(client, owner, repo, username, permission)
+func inviteToRepo(client githubapi.Client, out io.Writer, owner, repo, username, permission string, quiet bool) error {
+	status, err := githubapi.SetCollaborator(client, owner, repo, username, permission)
 	if err != nil {
 		return err
 	}

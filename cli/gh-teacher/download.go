@@ -15,9 +15,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/cli/go-gh/v2/pkg/api"
 	"github.com/cli/go-gh/v2/pkg/auth"
 	"github.com/spf13/cobra"
+
+	"github.com/foundation50/gh-teacher/internal/cliutil"
+	"github.com/foundation50/gh-teacher/internal/githubapi"
 )
 
 // dirTimestampFormat: filesystem-safe and lexicographically sortable.
@@ -126,7 +128,7 @@ func downloadCmd() *cobra.Command {
 					time.Now().Format(dirTimestampFormat))
 			}
 
-			client, err := requireAuthClient(cmd)
+			client, err := githubapi.RequireAuthClient(cmd)
 			if err != nil {
 				return err
 			}
@@ -152,7 +154,7 @@ func downloadCmd() *cobra.Command {
 // submit-tag release, write a scores.csv summary at the dir root.
 // Roster entries without a repo on the org are reported as missing
 // — not a hard failure.
-func downloadByRoster(client *api.RESTClient, out, errOut io.Writer, org, classroom, assignment, dir string, quiet bool) error {
+func downloadByRoster(client githubapi.Client, out, errOut io.Writer, org, classroom, assignment, dir string, quiet bool) error {
 	branch, err := resolveConfigRepoBranch(client, org)
 	if err != nil {
 		return err
@@ -326,7 +328,7 @@ func downloadByRoster(client *api.RESTClient, out, errOut io.Writer, org, classr
 // one whose name starts with <classroom>-<assignment>-. Skips the
 // roster lookup, result.json refresh, and scores.csv summary —
 // those all depend on the config repo being bootstrapped.
-func downloadByPattern(client *api.RESTClient, out, errOut io.Writer, org, classroom, assignment, dir string, quiet bool) error {
+func downloadByPattern(client githubapi.Client, out, errOut io.Writer, org, classroom, assignment, dir string, quiet bool) error {
 	// Deterministic head of assignmentRepoName — cross-binary
 	// contract with cli/gh-student/accept.go.
 	prefix := strings.ToLower(classroom) + "-" + strings.ToLower(assignment) + "-"
@@ -464,10 +466,10 @@ func targetExists(path string) (bool, error) {
 // repoExistsOnOrg returns true iff GET /repos/{org}/{repo} returns
 // 200. 404 → false. Other errors propagate so a network or auth
 // failure doesn't get silently treated as "student didn't accept".
-func repoExistsOnOrg(client *api.RESTClient, org, repo string) (bool, error) {
+func repoExistsOnOrg(client githubapi.Client, org, repo string) (bool, error) {
 	path := fmt.Sprintf("repos/%s/%s", url.PathEscape(org), url.PathEscape(repo))
 	if err := client.Get(path, nil); err != nil {
-		if isHTTPStatus(err, http.StatusNotFound) {
+		if cliutil.IsHTTPStatus(err, http.StatusNotFound) {
 			return false, nil
 		}
 		return false, fmt.Errorf("GET %s: %w", path, err)
@@ -478,7 +480,7 @@ func repoExistsOnOrg(client *api.RESTClient, org, repo string) (bool, error) {
 // loadScores reads scores.json at `ref`. Absent file → empty
 // (non-nil) container so a fresh classroom still produces a
 // roster-shaped scores.csv with every row blank.
-func loadScores(client *api.RESTClient, org, classroom, ref string) (scoresJSON, error) {
+func loadScores(client githubapi.Client, org, classroom, ref string) (scoresJSON, error) {
 	path := scoresFilePath(classroom)
 	data, ok, err := readFileContents(client, org, configRepoName, path, ref)
 	if err != nil {
@@ -799,7 +801,7 @@ func stringifyOverride(v any) string {
 // them in avoids per-row keyring/env lookups, and apiBase lets
 // rewriteAssetURL retarget the asset host on GHES or test setups
 // where the asset URL doesn't match the configured API.
-func refreshResultJSON(client *api.RESTClient, token, apiBase, org, repo, target string) error {
+func refreshResultJSON(client githubapi.Client, token, apiBase, org, repo, target string) error {
 	releases, err := listAllSubmitReleases(client, org, repo)
 	if err != nil {
 		return err
@@ -872,12 +874,12 @@ type releaseAsset struct {
 
 // latestRelease GETs /repos/{owner}/{repo}/releases/latest. 404 →
 // (zero, false, nil). Other HTTP errors propagate.
-func latestRelease(client *api.RESTClient, owner, repo string) (release, bool, error) {
+func latestRelease(client githubapi.Client, owner, repo string) (release, bool, error) {
 	path := fmt.Sprintf("repos/%s/%s/releases/latest",
 		url.PathEscape(owner), url.PathEscape(repo))
 	var rel release
 	if err := client.Get(path, &rel); err != nil {
-		if isHTTPStatus(err, http.StatusNotFound) {
+		if cliutil.IsHTTPStatus(err, http.StatusNotFound) {
 			return release{}, false, nil
 		}
 		return release{}, false, fmt.Errorf("GET %s: %w", path, err)
@@ -892,8 +894,8 @@ func latestRelease(client *api.RESTClient, owner, repo string) (release, bool, e
 // releases, and all N are returned. Non-submit releases (e.g. a
 // student's hand-created tag) are filtered out. Mirrors
 // `all_submit_releases` in collect_scores.py.
-func listAllSubmitReleases(client *api.RESTClient, owner, repo string) ([]release, error) {
-	all, err := paginateAll[release](client, allReleasesPerPage, allReleasesPagesMax,
+func listAllSubmitReleases(client githubapi.Client, owner, repo string) ([]release, error) {
+	all, err := githubapi.PaginateAll[release](client, allReleasesPerPage, allReleasesPagesMax,
 		func(page int) string {
 			return fmt.Sprintf("repos/%s/%s/releases?per_page=%d&page=%d",
 				url.PathEscape(owner), url.PathEscape(repo), allReleasesPerPage, page)
@@ -901,7 +903,7 @@ func listAllSubmitReleases(client *api.RESTClient, owner, repo string) ([]releas
 			// A repo with no releases (or not accepted yet) 404s; treat
 			// it as "no submissions" rather than a hard failure, matching
 			// latestRelease's 404 handling.
-			if isHTTPStatus(err, http.StatusNotFound) {
+			if cliutil.IsHTTPStatus(err, http.StatusNotFound) {
 				return errNoReleases
 			}
 			return fmt.Errorf("GET %s: %w", path, err)
@@ -931,7 +933,7 @@ var errNoReleases = errors.New("no releases")
 // non-submit tag (e.g. a student created their own release), scan
 // a bounded recent-releases window so the actual submission isn't
 // hidden. Mirrors `latest_submit_release_or_none` in collect_scores.py.
-func latestSubmitRelease(client *api.RESTClient, owner, repo string) (release, bool, error) {
+func latestSubmitRelease(client githubapi.Client, owner, repo string) (release, bool, error) {
 	rel, ok, err := latestRelease(client, owner, repo)
 	if err != nil || !ok {
 		return rel, ok, err
@@ -954,7 +956,7 @@ func latestSubmitRelease(client *api.RESTClient, owner, repo string) (release, b
 // listRecentReleases returns up to `limit` releases (newest first)
 // from /releases?per_page=N. Caller bounds the window — releases
 // older than that are irrelevant to the submit-tag fallback.
-func listRecentReleases(client *api.RESTClient, owner, repo string, limit int) ([]release, error) {
+func listRecentReleases(client githubapi.Client, owner, repo string, limit int) ([]release, error) {
 	if limit < 1 {
 		limit = 1
 	}
@@ -1094,8 +1096,8 @@ const (
 // listOrgRepoNames returns every repo name in the org. Shared by
 // download (pattern mode) and teardown (wildcard nuke); both want the
 // unfiltered name list and map/filter it themselves.
-func listOrgRepoNames(client *api.RESTClient, org string) ([]string, error) {
-	repos, err := paginateAll[struct {
+func listOrgRepoNames(client githubapi.Client, org string) ([]string, error) {
+	repos, err := githubapi.PaginateAll[struct {
 		Name string `json:"name"`
 	}](client, orgRepoPerPage, orgRepoPagesMax,
 		func(page int) string {

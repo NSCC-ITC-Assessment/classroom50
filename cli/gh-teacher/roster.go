@@ -10,8 +10,10 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/cli/go-gh/v2/pkg/api"
 	"github.com/spf13/cobra"
+
+	"github.com/foundation50/gh-teacher/internal/cliutil"
+	"github.com/foundation50/gh-teacher/internal/githubapi"
 )
 
 func rosterCmd() *cobra.Command {
@@ -81,7 +83,7 @@ func rosterAddCmd() *cobra.Command {
 			if err := validateRosterEmail(emailVal); err != nil {
 				return err
 			}
-			client, err := requireAuthClient(cmd)
+			client, err := githubapi.RequireAuthClient(cmd)
 			if err != nil {
 				return err
 			}
@@ -123,7 +125,7 @@ func rosterRemoveCmd() *cobra.Command {
 			if err := validateShortName(classroom, "classroom"); err != nil {
 				return err
 			}
-			client, err := requireAuthClient(cmd)
+			client, err := githubapi.RequireAuthClient(cmd)
 			if err != nil {
 				return err
 			}
@@ -162,7 +164,7 @@ func rosterImportCmd() *cobra.Command {
 			if err := validateShortName(classroom, "classroom"); err != nil {
 				return err
 			}
-			client, err := requireAuthClient(cmd)
+			client, err := githubapi.RequireAuthClient(cmd)
 			if err != nil {
 				return err
 			}
@@ -180,11 +182,11 @@ func rosterFilePath(classroom string) string {
 
 // resolveConfigRepoBranch fetches <org>/classroom50's default
 // branch. 404 → "run `gh teacher init` first".
-func resolveConfigRepoBranch(client *api.RESTClient, org string) (string, error) {
+func resolveConfigRepoBranch(client githubapi.Client, org string) (string, error) {
 	repoPath := fmt.Sprintf("repos/%s/%s", url.PathEscape(org), configRepoName)
 	var repo configRepo
 	if err := client.Get(repoPath, &repo); err != nil {
-		if isHTTPStatus(err, http.StatusNotFound) {
+		if cliutil.IsHTTPStatus(err, http.StatusNotFound) {
 			return "", fmt.Errorf("%s/%s not found — run `gh teacher init %s` first", org, configRepoName, org)
 		}
 		return "", fmt.Errorf("GET %s: %w", repoPath, err)
@@ -199,7 +201,7 @@ func resolveConfigRepoBranch(client *api.RESTClient, org string) (string, error)
 // loadRoster reads students.csv at a specific commit SHA so the
 // build callback's read stays consistent across rebase attempts.
 // Missing file → points the teacher at `gh teacher classroom add`.
-func loadRoster(client *api.RESTClient, org, classroom, parentSHA string) ([]rosterRow, error) {
+func loadRoster(client githubapi.Client, org, classroom, parentSHA string) ([]rosterRow, error) {
 	path := rosterFilePath(classroom)
 	data, ok, err := readFileContents(client, org, configRepoName, path, parentSHA)
 	if err != nil {
@@ -222,7 +224,7 @@ func loadRoster(client *api.RESTClient, org, classroom, parentSHA string) ([]ros
 // during a bulk import. A 422 "already member/pending" from
 // inviteOrgByID is recovered as success so a TOCTOU race between
 // pre-check and invite can't surface a spurious failure.
-func inviteIfNotMember(client *api.RESTClient, org, username string, userID int64) (state string, err error) {
+func inviteIfNotMember(client githubapi.Client, org, username string, userID int64) (state string, err error) {
 	if s, ok := getMembershipState(client, org, username); ok {
 		switch s {
 		case "active":
@@ -245,7 +247,7 @@ func inviteIfNotMember(client *api.RESTClient, org, username string, userID int6
 // commit fails after an invite landed, the org would be ahead of the
 // roster with no clean recovery. This order leaves the roster ahead
 // of org membership, which a re-run reconciles.
-func runRosterAdd(client *api.RESTClient, out, errOut io.Writer, org, classroom, username, firstName, lastName, email, section string) error {
+func runRosterAdd(client githubapi.Client, out, errOut io.Writer, org, classroom, username, firstName, lastName, email, section string) error {
 	branch, err := resolveConfigRepoBranch(client, org)
 	if err != nil {
 		return err
@@ -328,7 +330,7 @@ func runRosterAdd(client *api.RESTClient, out, errOut io.Writer, org, classroom,
 	return nil
 }
 
-func runRosterRemove(client *api.RESTClient, out io.Writer, org, classroom, username string) error {
+func runRosterRemove(client githubapi.Client, out io.Writer, org, classroom, username string) error {
 	branch, err := resolveConfigRepoBranch(client, org)
 	if err != nil {
 		return err
@@ -383,7 +385,7 @@ func runRosterRemove(client *api.RESTClient, out io.Writer, org, classroom, user
 	return nil
 }
 
-func runRosterImport(client *api.RESTClient, out, errOut io.Writer, org, classroom, csvPath string) error {
+func runRosterImport(client githubapi.Client, out, errOut io.Writer, org, classroom, csvPath string) error {
 	branch, err := resolveConfigRepoBranch(client, org)
 	if err != nil {
 		return err

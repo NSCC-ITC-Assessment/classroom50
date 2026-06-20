@@ -6,6 +6,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/foundation50/gh-teacher/internal/githubtest"
 )
 
 func TestAutograderFilePath(t *testing.T) {
@@ -140,7 +142,7 @@ func TestAutograderExists(t *testing.T) {
 
 			server := httptest.NewServer(mux)
 			t.Cleanup(server.Close)
-			client := newTestRESTClient(t, server)
+			client := githubtest.NewTestClient(t, server)
 
 			got, err := autograderExists(client, "cs50", "classroom50", "cs-principles", tc.queryName, "main")
 			if err != nil {

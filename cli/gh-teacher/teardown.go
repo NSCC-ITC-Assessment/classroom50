@@ -9,8 +9,10 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/cli/go-gh/v2/pkg/api"
 	"github.com/spf13/cobra"
+
+	"github.com/foundation50/gh-teacher/internal/cliutil"
+	"github.com/foundation50/gh-teacher/internal/githubapi"
 )
 
 // teardownCmd implements `gh teacher teardown <org>`: deletes every
@@ -46,7 +48,7 @@ func teardownCmd() *cobra.Command {
 			if org == "" {
 				return errors.New("org must not be empty")
 			}
-			client, err := requireAuthClient(cmd)
+			client, err := githubapi.RequireAuthClient(cmd)
 			if err != nil {
 				return err
 			}
@@ -68,7 +70,7 @@ func teardownCmd() *cobra.Command {
 // `gh teacher login -s delete_repo`) get a 403 on the first DELETE
 // with an actionable hint, which is the safer default for users
 // who don't realize a destructive command is about to run.
-func runTeardown(client *api.RESTClient, in io.Reader, out, errOut io.Writer, org string, skipConfirm bool) error {
+func runTeardown(client githubapi.Client, in io.Reader, out, errOut io.Writer, org string, skipConfirm bool) error {
 	if err := requireConfigRepo(client, org); err != nil {
 		return err
 	}
@@ -132,10 +134,10 @@ func runTeardown(client *api.RESTClient, in io.Reader, out, errOut io.Writer, or
 // requireConfigRepo confirms <org>/classroom50 exists. 404 is the
 // "not a Classroom 50 org" guard — teardown refuses to touch orgs
 // that don't carry the marker. Other errors propagate.
-func requireConfigRepo(client *api.RESTClient, org string) error {
+func requireConfigRepo(client githubapi.Client, org string) error {
 	path := fmt.Sprintf("repos/%s/%s", url.PathEscape(org), configRepoName)
 	if err := client.Get(path, nil); err != nil {
-		if isHTTPStatus(err, http.StatusNotFound) {
+		if cliutil.IsHTTPStatus(err, http.StatusNotFound) {
 			return fmt.Errorf("%s/%s not found — refusing teardown on an org without the Classroom 50 marker repo. Run `gh teacher init %s` first if this is intended, or delete repos manually via the web UI",
 				org, configRepoName, org)
 		}
@@ -169,11 +171,11 @@ func orderRepoDeletions(repos []string) []string {
 // missing the `delete_repo` scope; surface an actionable hint.
 // 204 is the success status; anything else propagates with the
 // raw HTTP code so a transient infra error is visible.
-func deleteRepo(client *api.RESTClient, owner, repo string) error {
+func deleteRepo(client githubapi.Client, owner, repo string) error {
 	path := fmt.Sprintf("repos/%s/%s", url.PathEscape(owner), url.PathEscape(repo))
 	resp, err := client.Request(http.MethodDelete, path, nil)
 	if err != nil {
-		if isHTTPStatus(err, http.StatusForbidden) {
+		if cliutil.IsHTTPStatus(err, http.StatusForbidden) {
 			return fmt.Errorf("403 Forbidden — typically your token lacks the `delete_repo` OAuth scope (opt in with `gh teacher login -s delete_repo`); 403 can also mean your account doesn't have delete permission on this repo")
 		}
 		return fmt.Errorf("DELETE %s: %w", path, err)

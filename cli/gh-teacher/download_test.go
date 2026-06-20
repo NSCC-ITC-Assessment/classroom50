@@ -11,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/foundation50/gh-teacher/internal/githubtest"
 )
 
 func TestAssignmentRepoName(t *testing.T) {
@@ -601,7 +603,7 @@ func TestLatestRelease(t *testing.T) {
 
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
-	client := newTestRESTClient(t, server)
+	client := githubtest.NewTestClient(t, server)
 
 	t.Run("present release decodes", func(t *testing.T) {
 		rel, ok, err := latestRelease(client, "o", "has-release")
@@ -655,7 +657,7 @@ func TestListOrgRepoNames(t *testing.T) {
 		})
 		server := httptest.NewServer(mux)
 		t.Cleanup(server.Close)
-		client := newTestRESTClient(t, server)
+		client := githubtest.NewTestClient(t, server)
 
 		names, err := listOrgRepoNames(client, "o")
 		if err != nil {
@@ -682,7 +684,7 @@ func TestListOrgRepoNames(t *testing.T) {
 		})
 		server := httptest.NewServer(mux)
 		t.Cleanup(server.Close)
-		client := newTestRESTClient(t, server)
+		client := githubtest.NewTestClient(t, server)
 
 		if _, err := listOrgRepoNames(client, "o"); err == nil || !strings.Contains(err.Error(), "safety cap") {
 			t.Fatalf("err = %v, want a 'safety cap' error when the cap is exhausted", err)
@@ -704,7 +706,7 @@ func TestRepoExistsOnOrg(t *testing.T) {
 
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
-	client := newTestRESTClient(t, server)
+	client := githubtest.NewTestClient(t, server)
 
 	if ok, err := repoExistsOnOrg(client, "o", "exists"); err != nil || !ok {
 		t.Errorf("exists: ok=%v err=%v", ok, err)
@@ -880,7 +882,7 @@ func TestRefreshResultJSON(t *testing.T) {
 
 	server = httptest.NewServer(mux)
 	t.Cleanup(server.Close)
-	client := newTestRESTClient(t, server)
+	client := githubtest.NewTestClient(t, server)
 
 	t.Run("collects every submission newest-first and points result.json at the latest", func(t *testing.T) {
 		target := filepath.Join(dir, "has-result")
@@ -1005,7 +1007,7 @@ func TestListAllSubmitReleases(t *testing.T) {
 		})
 		server := httptest.NewServer(mux)
 		t.Cleanup(server.Close)
-		client := newTestRESTClient(t, server)
+		client := githubtest.NewTestClient(t, server)
 
 		rels, err := listAllSubmitReleases(client, "o", "r")
 		if err != nil {
@@ -1032,7 +1034,7 @@ func TestListAllSubmitReleases(t *testing.T) {
 		})
 		server := httptest.NewServer(mux)
 		t.Cleanup(server.Close)
-		client := newTestRESTClient(t, server)
+		client := githubtest.NewTestClient(t, server)
 
 		rels, err := listAllSubmitReleases(client, "o", "missing")
 		if err != nil {
@@ -1059,7 +1061,7 @@ func TestListAllSubmitReleases(t *testing.T) {
 		})
 		server := httptest.NewServer(mux)
 		t.Cleanup(server.Close)
-		client := newTestRESTClient(t, server)
+		client := githubtest.NewTestClient(t, server)
 
 		rels, err := listAllSubmitReleases(client, "o", "many")
 		if err != nil {
@@ -1166,7 +1168,7 @@ func TestLatestSubmitRelease(t *testing.T) {
 
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
-	client := newTestRESTClient(t, server)
+	client := githubtest.NewTestClient(t, server)
 
 	t.Run("latest is submit-tag → fast path returns it", func(t *testing.T) {
 		rel, ok, err := latestSubmitRelease(client, "o", "submit-latest")
@@ -1216,7 +1218,7 @@ func TestListRecentReleases(t *testing.T) {
 		_ = json.NewEncoder(w).Encode([]map[string]any{{"tag_name": "a"}, {"tag_name": "b"}})
 	}))
 	t.Cleanup(server.Close)
-	client := newTestRESTClient(t, server)
+	client := githubtest.NewTestClient(t, server)
 
 	cases := []struct {
 		limit       int

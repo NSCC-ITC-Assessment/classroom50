@@ -6,8 +6,9 @@ import (
 	"io"
 	"strings"
 
-	"github.com/cli/go-gh/v2/pkg/api"
 	"github.com/spf13/cobra"
+
+	"github.com/foundation50/gh-teacher/internal/githubapi"
 )
 
 // assignmentTestCmd is the `gh teacher assignment test` command group:
@@ -116,7 +117,7 @@ func assignmentTestAddCmd() *cobra.Command {
 				return err
 			}
 
-			client, err := requireAuthClient(cmd)
+			client, err := githubapi.RequireAuthClient(cmd)
 			if err != nil {
 				return err
 			}
@@ -144,7 +145,7 @@ func assignmentTestAddCmd() *cobra.Command {
 // build closure against each attempt's parent SHA, so concurrent edits
 // rebase cleanly. validateAssignmentEntry re-runs in the closure to
 // enforce the count cap + name uniqueness against the merged array.
-func runAssignmentTestAdd(client *api.RESTClient, out io.Writer, org, classroom, slug string, spec testSpec) error {
+func runAssignmentTestAdd(client githubapi.Client, out io.Writer, org, classroom, slug string, spec testSpec) error {
 	branch, err := resolveConfigRepoBranch(client, org)
 	if err != nil {
 		return err
@@ -224,7 +225,7 @@ func assignmentTestListCmd() *cobra.Command {
 			if err := validateShortName(slug, "slug"); err != nil {
 				return err
 			}
-			client, err := requireAuthClient(cmd)
+			client, err := githubapi.RequireAuthClient(cmd)
 			if err != nil {
 				return err
 			}
@@ -236,7 +237,7 @@ func assignmentTestListCmd() *cobra.Command {
 	return cmd
 }
 
-func runAssignmentTestList(client *api.RESTClient, out, errOut io.Writer, org, classroom, slug string, asJSON, quiet bool) error {
+func runAssignmentTestList(client githubapi.Client, out, errOut io.Writer, org, classroom, slug string, asJSON, quiet bool) error {
 	branch, err := resolveConfigRepoBranch(client, org)
 	if err != nil {
 		return err
@@ -306,7 +307,7 @@ func assignmentTestRemoveCmd() *cobra.Command {
 			if err := validateShortName(slug, "slug"); err != nil {
 				return err
 			}
-			client, err := requireAuthClient(cmd)
+			client, err := githubapi.RequireAuthClient(cmd)
 			if err != nil {
 				return err
 			}
@@ -316,7 +317,7 @@ func assignmentTestRemoveCmd() *cobra.Command {
 	return cmd
 }
 
-func runAssignmentTestRemove(client *api.RESTClient, out io.Writer, org, classroom, slug, testName string) error {
+func runAssignmentTestRemove(client githubapi.Client, out io.Writer, org, classroom, slug, testName string) error {
 	branch, err := resolveConfigRepoBranch(client, org)
 	if err != nil {
 		return err
@@ -378,7 +379,7 @@ const materializeScriptPath = ".github/scripts/materialize_tests.py"
 // the tests would land in assignments.json but never reach the Pages
 // bundle, and every submission would silently fall back (classroom
 // default or vacuous pass) while looking graded.
-func ensureDeclarativeTestsSupported(client *api.RESTClient, org, ref string) error {
+func ensureDeclarativeTestsSupported(client githubapi.Client, org, ref string) error {
 	exists, err := contentsExists(client, org, configRepoName, materializeScriptPath, ref)
 	if err != nil {
 		return fmt.Errorf("check %s/%s/%s: %w", org, configRepoName, materializeScriptPath, err)
@@ -395,7 +396,7 @@ func ensureDeclarativeTestsSupported(client *api.RESTClient, org, ref string) er
 // repo: the runner prefers autograder.py, so the tests would silently
 // never run. Probed against `ref` so a caller inside a commitTree build
 // closure sees the same parent state as the rest of its read.
-func ensureNoPerAssignmentAutograder(client *api.RESTClient, org, classroom, slug, ref string) error {
+func ensureNoPerAssignmentAutograder(client githubapi.Client, org, classroom, slug, ref string) error {
 	path := perAssignmentAutograderPath(classroom, slug)
 	exists, err := contentsExists(client, org, configRepoName, path, ref)
 	if err != nil {

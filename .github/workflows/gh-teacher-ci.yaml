@@ -51,5 +51,22 @@ jobs:
       - name: Build
         run: go build ./...
 
+      - name: Single go-gh importer guard
+        # The GitHub REST API seam (internal/githubapi) is the ONLY
+        # package allowed to import go-gh; internal/githubtest may too
+        # because it constructs real clients for white-box tests. Any
+        # other non-test file importing it means a domain package
+        # reached around the seam — fail the build.
+        run: |
+          offenders=$(grep -rl --include='*.go' 'github.com/cli/go-gh/v2/pkg/api' . \
+            | grep -v '_test\.go$' \
+            | grep -v '^\./internal/githubapi/' \
+            | grep -v '^\./internal/githubtest/' || true)
+          if [ -n "$offenders" ]; then
+            echo "::error::go-gh/api may only be imported by internal/githubapi (and internal/githubtest for test clients). Offending files:"
+            echo "$offenders"
+            exit 1
+          fi
+
       - name: Test
         run: go test ./...

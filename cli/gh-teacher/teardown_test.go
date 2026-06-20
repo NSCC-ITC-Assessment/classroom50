@@ -7,6 +7,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/foundation50/gh-teacher/internal/githubtest"
 )
 
 // teardownTestServer is a stateful in-memory backing for end-to-end
@@ -80,7 +82,7 @@ func TestRunTeardown_HappyPath(t *testing.T) {
 	defer server.Close()
 
 	var out, errOut bytes.Buffer
-	if err := runTeardown(newTestRESTClient(t, server), strings.NewReader(""), &out, &errOut, "classroom50-test", true); err != nil {
+	if err := runTeardown(githubtest.NewTestClient(t, server), strings.NewReader(""), &out, &errOut, "classroom50-test", true); err != nil {
 		t.Fatalf("runTeardown: %v\nstdout:\n%s\nstderr:\n%s", err, out.String(), errOut.String())
 	}
 
@@ -118,7 +120,7 @@ func TestRunTeardown_RefusesWithoutMarkerRepo(t *testing.T) {
 	defer server.Close()
 
 	var out, errOut bytes.Buffer
-	err := runTeardown(newTestRESTClient(t, server), strings.NewReader(""), &out, &errOut, "random-org", true)
+	err := runTeardown(githubtest.NewTestClient(t, server), strings.NewReader(""), &out, &errOut, "random-org", true)
 	if err == nil {
 		t.Fatalf("expected refusal when classroom50 doesn't exist")
 	}
@@ -145,7 +147,7 @@ func TestRunTeardown_ConfirmationRejected(t *testing.T) {
 
 	var out, errOut bytes.Buffer
 	in := strings.NewReader("not-the-org-name\n")
-	err := runTeardown(newTestRESTClient(t, server), in, &out, &errOut, "myorg", false)
+	err := runTeardown(githubtest.NewTestClient(t, server), in, &out, &errOut, "myorg", false)
 	if err == nil {
 		t.Fatalf("expected error when confirmation doesn't match")
 	}
@@ -171,7 +173,7 @@ func TestRunTeardown_ConfirmationAccepted(t *testing.T) {
 
 	var out, errOut bytes.Buffer
 	in := strings.NewReader("myorg\n")
-	if err := runTeardown(newTestRESTClient(t, server), in, &out, &errOut, "myorg", false); err != nil {
+	if err := runTeardown(githubtest.NewTestClient(t, server), in, &out, &errOut, "myorg", false); err != nil {
 		t.Fatalf("runTeardown: %v", err)
 	}
 	state.mu.Lock()
@@ -195,7 +197,7 @@ func TestRunTeardown_PartialFailurePreservesMarker(t *testing.T) {
 	defer server.Close()
 
 	var out, errOut bytes.Buffer
-	err := runTeardown(newTestRESTClient(t, server), strings.NewReader(""), &out, &errOut, "o", true)
+	err := runTeardown(githubtest.NewTestClient(t, server), strings.NewReader(""), &out, &errOut, "o", true)
 	if err == nil {
 		t.Fatalf("expected non-zero exit on partial failure")
 	}

@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/foundation50/gh-teacher/internal/githubtest"
 )
 
 // migrateTestServer serves the four endpoints discovery hits:
@@ -95,7 +97,7 @@ func TestRunMigrate_DryRun_HappyPath(t *testing.T) {
 		stdout bytes.Buffer
 		stderr bytes.Buffer
 	)
-	err := runMigrate(newTestRESTClient(t, server), &stdout, &stderr, migrateOptions{
+	err := runMigrate(githubtest.NewTestClient(t, server), &stdout, &stderr, migrateOptions{
 		Source: "95884",
 		Target: "cs50-fall-2026",
 		DryRun: true,
@@ -145,7 +147,7 @@ func TestRunMigrate_DryRun_EmptyClassroom(t *testing.T) {
 	defer server.Close()
 
 	var stdout, stderr bytes.Buffer
-	err := runMigrate(newTestRESTClient(t, server), &stdout, &stderr, migrateOptions{
+	err := runMigrate(githubtest.NewTestClient(t, server), &stdout, &stderr, migrateOptions{
 		Source: "95885",
 		Target: "cs50-fall-2026",
 		DryRun: true,
@@ -171,7 +173,7 @@ func TestRunMigrate_NonDryRun_HappyPath(t *testing.T) {
 	defer server.Close()
 
 	var stdout, stderr bytes.Buffer
-	err := runMigrate(newTestRESTClient(t, server), &stdout, &stderr, migrateOptions{
+	err := runMigrate(githubtest.NewTestClient(t, server), &stdout, &stderr, migrateOptions{
 		Source: "95884",
 		Target: "cs50-fall-2026",
 		DryRun: false,
@@ -252,7 +254,7 @@ func TestRunMigrate_NonDryRun_AlreadyExists(t *testing.T) {
 	defer server.Close()
 
 	var stdout, stderr bytes.Buffer
-	err := runMigrate(newTestRESTClient(t, server), &stdout, &stderr, migrateOptions{
+	err := runMigrate(githubtest.NewTestClient(t, server), &stdout, &stderr, migrateOptions{
 		Source: "95884",
 		Target: "cs50-fall-2026",
 		DryRun: false,
@@ -281,7 +283,7 @@ func TestRunMigrate_NonDryRun_SkipsSourceNotTemplate(t *testing.T) {
 	defer server.Close()
 
 	var stdout, stderr bytes.Buffer
-	err := runMigrate(newTestRESTClient(t, server), &stdout, &stderr, migrateOptions{
+	err := runMigrate(githubtest.NewTestClient(t, server), &stdout, &stderr, migrateOptions{
 		Source: "95884",
 		Target: "cs50-fall-2026",
 		DryRun: false,
@@ -323,7 +325,7 @@ func TestRunMigrate_ShortNameOverride(t *testing.T) {
 	defer server.Close()
 
 	var stdout, stderr bytes.Buffer
-	err := runMigrate(newTestRESTClient(t, server), &stdout, &stderr, migrateOptions{
+	err := runMigrate(githubtest.NewTestClient(t, server), &stdout, &stderr, migrateOptions{
 		Source:    "95884",
 		Target:    "cs50-fall-2026",
 		ShortName: "cs-principles",

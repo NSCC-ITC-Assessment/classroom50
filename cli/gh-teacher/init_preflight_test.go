@@ -7,6 +7,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/foundation50/gh-teacher/internal/githubtest"
 )
 
 // preflightTestServer wires a mux covering the endpoints preflight hits:
@@ -77,7 +79,7 @@ func TestRunPreflight_AllOK(t *testing.T) {
 		scopes: "admin:org, workflow, repo",
 		plan:   "team",
 	})
-	client := newTestRESTClient(t, server)
+	client := githubtest.NewTestClient(t, server)
 
 	res := runPreflight(client, "cs50", tokenSource{envSet: true})
 	if res.Failed {
@@ -98,7 +100,7 @@ func TestRunPreflight_MissingScopeFails(t *testing.T) {
 		scopes: "repo", // no admin:org, no workflow
 		plan:   "enterprise",
 	})
-	client := newTestRESTClient(t, server)
+	client := githubtest.NewTestClient(t, server)
 
 	res := runPreflight(client, "cs50", tokenSource{envSet: true})
 	if !res.Failed {
@@ -124,7 +126,7 @@ func TestRunPreflight_NoScopeHeaderWarns(t *testing.T) {
 	// A fine-grained PAT returns no X-OAuth-Scopes header — we can't
 	// verify, so warn (not fail).
 	server := newPreflightServer(t, preflightTestServer{scopes: "", plan: "team"})
-	client := newTestRESTClient(t, server)
+	client := githubtest.NewTestClient(t, server)
 
 	res := runPreflight(client, "cs50", tokenSource{envSet: true})
 	if res.Failed {
@@ -140,7 +142,7 @@ func TestRunPreflight_OrgNotFoundFails(t *testing.T) {
 		scopes:    "admin:org, workflow",
 		orgStatus: http.StatusNotFound,
 	})
-	client := newTestRESTClient(t, server)
+	client := githubtest.NewTestClient(t, server)
 
 	res := runPreflight(client, "ghost-org", tokenSource{envSet: true})
 	if !res.Failed {
@@ -157,7 +159,7 @@ func TestRunPreflight_NonOwnerFails(t *testing.T) {
 		plan:           "team",
 		membershipRole: "member",
 	})
-	client := newTestRESTClient(t, server)
+	client := githubtest.NewTestClient(t, server)
 
 	res := runPreflight(client, "cs50", tokenSource{envSet: true})
 	if !res.Failed {
@@ -173,7 +175,7 @@ func TestRunPreflight_PlanWarnsButContinues(t *testing.T) {
 		scopes: "admin:org, workflow",
 		plan:   "free",
 	})
-	client := newTestRESTClient(t, server)
+	client := githubtest.NewTestClient(t, server)
 
 	res := runPreflight(client, "cs50", tokenSource{envSet: true})
 	if res.Failed {

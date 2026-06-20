@@ -9,7 +9,8 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/cli/go-gh/v2/pkg/api"
+	"github.com/foundation50/gh-teacher/internal/cliutil"
+	"github.com/foundation50/gh-teacher/internal/githubapi"
 )
 
 // classroomTeamName derives the GitHub team name for a classroom from
@@ -50,7 +51,7 @@ type teamRef struct {
 // feature, or hand-authored) yields ok=false so callers can shape an
 // actionable "run classroom add" message rather than blindly hitting a
 // 404 against a guessed slug.
-func resolveClassroomTeam(client *api.RESTClient, org, shortName, ref string) (teamRef, bool, error) {
+func resolveClassroomTeam(client githubapi.Client, org, shortName, ref string) (teamRef, bool, error) {
 	c, ok, err := loadClassroom(client, org, shortName, ref)
 	if err != nil {
 		return teamRef{}, false, err
@@ -87,7 +88,7 @@ func canonicalTeamSlugShortName(shortName string) bool {
 //
 // `members_can_create_teams: false` (set by init's lockdown) does not
 // block this — the teacher authenticates as an org owner.
-func ensureClassroomTeam(client *api.RESTClient, org, shortName string) (teamRef, error) {
+func ensureClassroomTeam(client githubapi.Client, org, shortName string) (teamRef, error) {
 	// Guard the slug==name invariant the team paths rely on (see
 	// canonicalTeamSlugShortName). shortNamePattern alone permits
 	// consecutive/trailing hyphens, which GitHub would slugify away.
@@ -111,10 +112,10 @@ func ensureClassroomTeam(client *api.RESTClient, org, shortName string) (teamRef
 		// the adopt read 404s, the 422 was NOT a name collision —
 		// surface the original create error, which reflects the real
 		// cause.
-		if isHTTPStatus(err, http.StatusUnprocessableEntity) {
+		if cliutil.IsHTTPStatus(err, http.StatusUnprocessableEntity) {
 			adopted, adoptErr := adoptClassroomTeam(client, org, shortName)
 			if adoptErr != nil {
-				if isHTTPStatus(adoptErr, http.StatusNotFound) {
+				if cliutil.IsHTTPStatus(adoptErr, http.StatusNotFound) {
 					return teamRef{}, fmt.Errorf("POST %s: %w", createPath, err)
 				}
 				return teamRef{}, adoptErr
@@ -130,7 +131,7 @@ func ensureClassroomTeam(client *api.RESTClient, org, shortName string) (teamRef
 // reconciles its privacy to `secret` (an older or hand-created team
 // might be `closed`). Used by ensureClassroomTeam on the 422
 // already-exists path.
-func adoptClassroomTeam(client *api.RESTClient, org, shortName string) (teamRef, error) {
+func adoptClassroomTeam(client githubapi.Client, org, shortName string) (teamRef, error) {
 	slug := classroomTeamSlug(shortName)
 	getPath := fmt.Sprintf("orgs/%s/teams/%s", url.PathEscape(org), url.PathEscape(slug))
 	var existing struct {
@@ -170,7 +171,7 @@ func adoptClassroomTeam(client *api.RESTClient, org, shortName string) (teamRef,
 // persisted id before deletion. A 404 (already gone) is treated as
 // success so `classroom remove` is idempotent. A zero/empty ref (a
 // classroom with no persisted team, e.g. pre-feature) is a no-op.
-func deleteClassroomTeam(client *api.RESTClient, org string, team teamRef) error {
+func deleteClassroomTeam(client githubapi.Client, org string, team teamRef) error {
 	if team.Slug == "" {
 		return nil
 	}
@@ -184,7 +185,7 @@ func deleteClassroomTeam(client *api.RESTClient, org string, team teamRef) error
 			ID int64 `json:"id"`
 		}
 		if err := client.Get(getPath, &live); err != nil {
-			if isHTTPStatus(err, http.StatusNotFound) {
+			if cliutil.IsHTTPStatus(err, http.StatusNotFound) {
 				return nil // already gone
 			}
 			return fmt.Errorf("GET %s (verify team before delete): %w", getPath, err)
@@ -197,7 +198,7 @@ func deleteClassroomTeam(client *api.RESTClient, org string, team teamRef) error
 	path := fmt.Sprintf("orgs/%s/teams/%s", url.PathEscape(org), url.PathEscape(team.Slug))
 	resp, err := client.Request(http.MethodDelete, path, nil)
 	if err != nil {
-		if isHTTPStatus(err, http.StatusNotFound) {
+		if cliutil.IsHTTPStatus(err, http.StatusNotFound) {
 			return nil
 		}
 		return fmt.Errorf("DELETE %s: %w", path, err)
@@ -213,7 +214,7 @@ func deleteClassroomTeam(client *api.RESTClient, org string, team teamRef) error
 // member the membership is active immediately; for a not-yet-member it
 // goes pending until they accept the org invite. Idempotent — re-adding
 // a member is a clean no-op.
-func addTeamMembership(client *api.RESTClient, org, slug, username string) error {
+func addTeamMembership(client githubapi.Client, org, slug, username string) error {
 	body, err := json.Marshal(map[string]any{"role": "member"})
 	if err != nil {
 		return fmt.Errorf("encode membership body: %w", err)
@@ -233,12 +234,12 @@ func addTeamMembership(client *api.RESTClient, org, slug, username string) error
 // `slug`. A 404 (not a member, or the team is gone) is treated as
 // success so `roster remove` is idempotent. Does not affect org
 // membership.
-func removeTeamMembership(client *api.RESTClient, org, slug, username string) error {
+func removeTeamMembership(client githubapi.Client, org, slug, username string) error {
 	path := fmt.Sprintf("orgs/%s/teams/%s/memberships/%s",
 		url.PathEscape(org), url.PathEscape(slug), url.PathEscape(username))
 	resp, err := client.Request(http.MethodDelete, path, nil)
 	if err != nil {
-		if isHTTPStatus(err, http.StatusNotFound) {
+		if cliutil.IsHTTPStatus(err, http.StatusNotFound) {
 			return nil
 		}
 		return fmt.Errorf("DELETE %s: %w", path, err)
@@ -253,12 +254,12 @@ func removeTeamMembership(client *api.RESTClient, org, slug, username string) er
 // .../teams/{slug}/repos/{owner}/{repo} returns 204 when the team has
 // access, 404 when it doesn't. Used to keep grantTeamRepoRead
 // idempotent (skip the PUT when already granted).
-func teamHasRepoAccess(client *api.RESTClient, org, slug, repoOwner, repo string) (bool, error) {
+func teamHasRepoAccess(client githubapi.Client, org, slug, repoOwner, repo string) (bool, error) {
 	path := fmt.Sprintf("orgs/%s/teams/%s/repos/%s/%s",
 		url.PathEscape(org), url.PathEscape(slug), url.PathEscape(repoOwner), url.PathEscape(repo))
 	resp, err := client.Request(http.MethodGet, path, nil)
 	if err != nil {
-		if isHTTPStatus(err, http.StatusNotFound) {
+		if cliutil.IsHTTPStatus(err, http.StatusNotFound) {
 			return false, nil
 		}
 		return false, fmt.Errorf("GET %s: %w", path, err)
@@ -273,7 +274,7 @@ func teamHasRepoAccess(client *api.RESTClient, org, slug, repoOwner, repo string
 // needs to generate from a private, org-owned template. Idempotent:
 // skips the PUT when the team already has access. Returns whether a
 // new grant was applied.
-func grantTeamRepoRead(client *api.RESTClient, org, slug, repoOwner, repo string) (granted bool, err error) {
+func grantTeamRepoRead(client githubapi.Client, org, slug, repoOwner, repo string) (granted bool, err error) {
 	has, err := teamHasRepoAccess(client, org, slug, repoOwner, repo)
 	if err != nil {
 		return false, err

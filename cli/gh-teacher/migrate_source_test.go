@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/foundation50/gh-teacher/internal/githubtest"
 )
 
 // writeJSON encodes v as JSON into w and fails the test on error.
@@ -42,7 +44,7 @@ func TestGetClassroom_HappyPath(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := newTestRESTClient(t, server)
+	client := githubtest.NewTestClient(t, server)
 	got, err := getClassroom(client, 95884)
 	if err != nil {
 		t.Fatalf("getClassroom: %v", err)
@@ -59,7 +61,7 @@ func TestGetClassroom_NotFound(t *testing.T) {
 	}))
 	defer server.Close()
 
-	_, err := getClassroom(newTestRESTClient(t, server), 99999)
+	_, err := getClassroom(githubtest.NewTestClient(t, server), 99999)
 	if err == nil {
 		t.Fatalf("expected 404 error")
 	}
@@ -98,7 +100,7 @@ func TestListClassrooms_Pagination(t *testing.T) {
 	}))
 	defer server.Close()
 
-	got, err := listClassrooms(newTestRESTClient(t, server))
+	got, err := listClassrooms(githubtest.NewTestClient(t, server))
 	if err != nil {
 		t.Fatalf("listClassrooms: %v", err)
 	}
@@ -132,7 +134,7 @@ func TestListClassroomAssignments_Pagination(t *testing.T) {
 	}))
 	defer server.Close()
 
-	got, err := listClassroomAssignments(newTestRESTClient(t, server), 42)
+	got, err := listClassroomAssignments(githubtest.NewTestClient(t, server), 42)
 	if err != nil {
 		t.Fatalf("listClassroomAssignments: %v", err)
 	}
@@ -160,7 +162,7 @@ func TestGetClassroomAssignment_NullableDeadline(t *testing.T) {
 	}))
 	defer server.Close()
 
-	got, err := getClassroomAssignment(newTestRESTClient(t, server), 239897)
+	got, err := getClassroomAssignment(githubtest.NewTestClient(t, server), 239897)
 	if err != nil {
 		t.Fatalf("getClassroomAssignment: %v", err)
 	}
@@ -182,7 +184,7 @@ func TestResolveSource_NumericHappyPath(t *testing.T) {
 	defer server.Close()
 
 	var errOut bytes.Buffer
-	got, err := resolveSource(newTestRESTClient(t, server), &errOut, "95884", false)
+	got, err := resolveSource(githubtest.NewTestClient(t, server), &errOut, "95884", false)
 	if err != nil {
 		t.Fatalf("resolveSource: %v", err)
 	}
@@ -201,7 +203,7 @@ func TestResolveSource_NumericArchivedWarns(t *testing.T) {
 	defer server.Close()
 
 	var errOut bytes.Buffer
-	got, err := resolveSource(newTestRESTClient(t, server), &errOut, "95884", false)
+	got, err := resolveSource(githubtest.NewTestClient(t, server), &errOut, "95884", false)
 	if err != nil {
 		t.Fatalf("resolveSource: %v", err)
 	}
@@ -224,7 +226,7 @@ func TestResolveSource_OrgSingleMatch(t *testing.T) {
 	defer server.Close()
 
 	var errOut bytes.Buffer
-	got, err := resolveSource(newTestRESTClient(t, server), &errOut, "classroom50test", false)
+	got, err := resolveSource(githubtest.NewTestClient(t, server), &errOut, "classroom50test", false)
 	if err != nil {
 		t.Fatalf("resolveSource: %v", err)
 	}
@@ -239,7 +241,7 @@ func TestResolveSource_OrgZeroMatches(t *testing.T) {
 	})))
 	defer server.Close()
 
-	_, err := resolveSource(newTestRESTClient(t, server), io.Discard, "no-such-org", false)
+	_, err := resolveSource(githubtest.NewTestClient(t, server), io.Discard, "no-such-org", false)
 	if err == nil {
 		t.Fatalf("expected zero-match error")
 	}
@@ -258,7 +260,7 @@ func TestResolveSource_OrgMultipleMatches(t *testing.T) {
 	})))
 	defer server.Close()
 
-	_, err := resolveSource(newTestRESTClient(t, server), io.Discard, "shared-org", false)
+	_, err := resolveSource(githubtest.NewTestClient(t, server), io.Discard, "shared-org", false)
 	if err == nil {
 		t.Fatalf("expected multi-match error")
 	}
@@ -279,7 +281,7 @@ func TestResolveSource_OrgArchivedSkipUnlessIncluded(t *testing.T) {
 	defer server.Close()
 
 	// Without --include-archived, only the active one resolves.
-	got, err := resolveSource(newTestRESTClient(t, server), io.Discard, "shared-org", false)
+	got, err := resolveSource(githubtest.NewTestClient(t, server), io.Discard, "shared-org", false)
 	if err != nil {
 		t.Fatalf("resolveSource(no archived): %v", err)
 	}
@@ -288,7 +290,7 @@ func TestResolveSource_OrgArchivedSkipUnlessIncluded(t *testing.T) {
 	}
 
 	// With --include-archived, both match — multi-match error.
-	_, err = resolveSource(newTestRESTClient(t, server), io.Discard, "shared-org", true)
+	_, err = resolveSource(githubtest.NewTestClient(t, server), io.Discard, "shared-org", true)
 	if err == nil {
 		t.Fatalf("expected multi-match error with --include-archived")
 	}
@@ -305,7 +307,7 @@ func TestResolveSource_OrgCaseInsensitive(t *testing.T) {
 	})))
 	defer server.Close()
 
-	got, err := resolveSource(newTestRESTClient(t, server), io.Discard, "classroom50test", false)
+	got, err := resolveSource(githubtest.NewTestClient(t, server), io.Discard, "classroom50test", false)
 	if err != nil {
 		t.Fatalf("resolveSource: %v", err)
 	}
@@ -382,7 +384,7 @@ func TestFetchAssignmentsForClassroom(t *testing.T) {
 	}))
 	defer server.Close()
 
-	got, err := fetchAssignmentsForClassroom(newTestRESTClient(t, server), 95884)
+	got, err := fetchAssignmentsForClassroom(githubtest.NewTestClient(t, server), 95884)
 	if err != nil {
 		t.Fatalf("fetchAssignmentsForClassroom: %v", err)
 	}

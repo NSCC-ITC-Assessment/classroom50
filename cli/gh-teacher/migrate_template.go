@@ -9,8 +9,8 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/cli/go-gh/v2/pkg/api"
-	"github.com/foundation50/classroom50-cli-shared/ghutil"
+	"github.com/foundation50/gh-teacher/internal/cliutil"
+	"github.com/foundation50/gh-teacher/internal/githubapi"
 )
 
 // templateAction classifies what the template-copy phase did for
@@ -53,7 +53,7 @@ type targetRepoProbe struct {
 // probeTargetRepo calls GET /repos/{owner}/{repo} and returns its
 // existence + is_template status. 404 is the safe-to-generate path;
 // any other error propagates.
-func probeTargetRepo(client *api.RESTClient, owner, repo string) (targetRepoProbe, error) {
+func probeTargetRepo(client githubapi.Client, owner, repo string) (targetRepoProbe, error) {
 	path := fmt.Sprintf("repos/%s/%s", url.PathEscape(owner), url.PathEscape(repo))
 	var resp struct {
 		IsTemplate    bool   `json:"is_template"`
@@ -61,7 +61,7 @@ func probeTargetRepo(client *api.RESTClient, owner, repo string) (targetRepoProb
 		Private       bool   `json:"private"`
 	}
 	if err := client.Get(path, &resp); err != nil {
-		if isHTTPStatus(err, http.StatusNotFound) {
+		if cliutil.IsHTTPStatus(err, http.StatusNotFound) {
 			return targetRepoProbe{Exists: false}, nil
 		}
 		return targetRepoProbe{}, fmt.Errorf("GET %s: %w", path, err)
@@ -71,13 +71,13 @@ func probeTargetRepo(client *api.RESTClient, owner, repo string) (targetRepoProb
 
 // verifySourceIsTemplate confirms the source starter repo carries
 // `is_template: true`. GitHub's generate endpoint requires it.
-func verifySourceIsTemplate(client *api.RESTClient, owner, repo string) (bool, error) {
+func verifySourceIsTemplate(client githubapi.Client, owner, repo string) (bool, error) {
 	path := fmt.Sprintf("repos/%s/%s", url.PathEscape(owner), url.PathEscape(repo))
 	var resp struct {
 		IsTemplate bool `json:"is_template"`
 	}
 	if err := client.Get(path, &resp); err != nil {
-		if isHTTPStatus(err, http.StatusNotFound) {
+		if cliutil.IsHTTPStatus(err, http.StatusNotFound) {
 			return false, fmt.Errorf("source repo %s/%s not accessible to your account", owner, repo)
 		}
 		return false, fmt.Errorf("GET %s: %w", path, err)
@@ -91,7 +91,7 @@ func verifySourceIsTemplate(client *api.RESTClient, owner, repo string) (bool, e
 //
 // `private` defaults to false on the API; we always pass it
 // explicitly so the target inherits the source's privacy.
-func generateFromTemplate(client *api.RESTClient, srcOwner, srcRepo, targetOwner, targetName, description string, private bool) (string, error) {
+func generateFromTemplate(client githubapi.Client, srcOwner, srcRepo, targetOwner, targetName, description string, private bool) (string, error) {
 	body, err := json.Marshal(struct {
 		Owner              string `json:"owner"`
 		Name               string `json:"name"`
@@ -136,7 +136,7 @@ func generateFromTemplate(client *api.RESTClient, srcOwner, srcRepo, targetOwner
 // markAsTemplate flips the repo's `is_template` flag via PATCH.
 // `generate` always produces a non-template repo, so this is the
 // follow-up that makes the new repo usable for `gh student accept`.
-func markAsTemplate(client *api.RESTClient, owner, repo string) error {
+func markAsTemplate(client githubapi.Client, owner, repo string) error {
 	body, err := json.Marshal(struct {
 		IsTemplate bool `json:"is_template"`
 	}{IsTemplate: true})
@@ -170,7 +170,7 @@ func targetTemplateName(slug, suffix string) string {
 // probe → generate → mark-as-template, in plan order so downstream
 // commit + output stay deterministic. Best-effort: a per-assignment
 // failure becomes a Skipped resolvedTemplate, not a hard error.
-func runTemplateCopy(client *api.RESTClient, errOut io.Writer, plan migrationPlan, templateSuffix string) ([]resolvedTemplate, error) {
+func runTemplateCopy(client githubapi.Client, errOut io.Writer, plan migrationPlan, templateSuffix string) ([]resolvedTemplate, error) {
 	out := make([]resolvedTemplate, 0, len(plan.Assignments))
 	for _, a := range plan.Assignments {
 		r, err := copyOneTemplate(client, errOut, plan.TargetOrg, templateSuffix, plan.Classroom.ID, a)
@@ -196,7 +196,7 @@ func runTemplateCopy(client *api.RESTClient, errOut io.Writer, plan migrationPla
 // comes from the discovery context (plan.Classroom.ID), not from
 // `a.Classroom.ID`, which the Classroom API doesn't reliably
 // populate on the assignment-detail response.
-func copyOneTemplate(client *api.RESTClient, errOut io.Writer, targetOrg, templateSuffix string, classroomID int64, a classroomAssignmentDetail) (resolvedTemplate, error) {
+func copyOneTemplate(client githubapi.Client, errOut io.Writer, targetOrg, templateSuffix string, classroomID int64, a classroomAssignmentDetail) (resolvedTemplate, error) {
 	skip := func(reason string) resolvedTemplate {
 		_, _ = fmt.Fprintf(errOut, "Skipping %q: %s\n", a.Slug, reason)
 		return resolvedTemplate{Assignment: a, Action: templateActionSkipped, SkipReason: reason}
@@ -282,8 +282,8 @@ func copyOneTemplate(client *api.RESTClient, errOut io.Writer, targetOrg, templa
 
 // waitForStableBranch polls until a freshly-templated branch's ref
 // propagates. Thin wrapper over the shared ghutil helper.
-func waitForStableBranch(client *api.RESTClient, owner, repo, branch string) error {
-	return ghutil.WaitForStableBranch(client, owner, repo, branch)
+func waitForStableBranch(client githubapi.Client, owner, repo, branch string) error {
+	return githubapi.WaitForStableBranch(client, owner, repo, branch)
 }
 
 // splitOwnerRepo splits a `<owner>/<repo>` full-name into its parts.

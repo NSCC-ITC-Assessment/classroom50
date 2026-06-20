@@ -6,9 +6,10 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/cli/go-gh/v2/pkg/api"
 	"github.com/foundation50/classroom50-cli-shared/ghutil"
 	"github.com/foundation50/classroom50-cli-shared/gittree"
+	"github.com/foundation50/gh-teacher/internal/cliutil"
+	"github.com/foundation50/gh-teacher/internal/githubapi"
 )
 
 // commitChange aliases gittree.Change: Upserts (path -> new content) are
@@ -33,7 +34,7 @@ type commitChange = gittree.Change
 // `var action string`). Reset such accumulators at the top of each build call
 // so a retry doesn't see stale state.
 func commitTree(
-	client *api.RESTClient,
+	client githubapi.Client,
 	owner, repo, branch, message string,
 	build func(parentSHA string) (map[string]string, error),
 ) (string, error) {
@@ -54,18 +55,18 @@ func commitTree(
 // Return shape matches commitTree. Reset any per-attempt accumulators at the
 // top of each build call so a retry doesn't see stale state.
 func commitTreeChange(
-	client *api.RESTClient,
+	client githubapi.Client,
 	owner, repo, branch, message string,
 	build func(parentSHA string) (commitChange, error),
 ) (string, error) {
-	return gittree.CommitWithRebase(client, owner, repo, branch, message, build, classifyWorkflowScope404)
+	return githubapi.CommitWithRebase(client, owner, repo, branch, message, build, classifyWorkflowScope404)
 }
 
 // readFileContents reads `path` at `ref` and decodes the contents
 // API's base64 envelope. (nil, false, nil) on missing path. For
 // payloads near or over the contents API's 1MB ceiling, use the
 // git-blobs API instead.
-func readFileContents(client *api.RESTClient, owner, repo, path, ref string) ([]byte, bool, error) {
+func readFileContents(client githubapi.Client, owner, repo, path, ref string) ([]byte, bool, error) {
 	segs := strings.Split(path, "/")
 	for i := range segs {
 		segs[i] = url.PathEscape(segs[i])
@@ -78,7 +79,7 @@ func readFileContents(client *api.RESTClient, owner, repo, path, ref string) ([]
 		Encoding string `json:"encoding"`
 	}
 	if err := client.Get(apiPath, &resp); err != nil {
-		if isHTTPStatus(err, http.StatusNotFound) {
+		if cliutil.IsHTTPStatus(err, http.StatusNotFound) {
 			return nil, false, nil
 		}
 		return nil, false, fmt.Errorf("GET %s: %w", apiPath, err)

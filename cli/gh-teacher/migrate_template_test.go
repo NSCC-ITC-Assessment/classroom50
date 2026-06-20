@@ -9,6 +9,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/foundation50/gh-teacher/internal/githubtest"
 )
 
 func TestTargetTemplateName(t *testing.T) {
@@ -79,7 +81,7 @@ func TestProbeTargetRepo(t *testing.T) {
 				_, _ = io.WriteString(w, tc.body)
 			}))
 			defer server.Close()
-			got, err := probeTargetRepo(newTestRESTClient(t, server), "o", "r")
+			got, err := probeTargetRepo(githubtest.NewTestClient(t, server), "o", "r")
 			if err != nil {
 				t.Fatalf("probeTargetRepo: %v", err)
 			}
@@ -111,7 +113,7 @@ func TestVerifySourceIsTemplate(t *testing.T) {
 				_, _ = io.WriteString(w, tc.body)
 			}))
 			defer server.Close()
-			got, err := verifySourceIsTemplate(newTestRESTClient(t, server), "o", "r")
+			got, err := verifySourceIsTemplate(githubtest.NewTestClient(t, server), "o", "r")
 			if tc.wantErr {
 				if err == nil {
 					t.Fatalf("expected error containing %q", tc.wantErrSub)
@@ -148,7 +150,7 @@ func TestGenerateFromTemplate(t *testing.T) {
 		}))
 		defer server.Close()
 
-		branch, err := generateFromTemplate(newTestRESTClient(t, server),
+		branch, err := generateFromTemplate(githubtest.NewTestClient(t, server),
 			"src-owner", "src-repo", "tgt-org", "tgt-repo", "desc", true)
 		if err != nil {
 			t.Fatalf("generateFromTemplate: %v", err)
@@ -173,7 +175,7 @@ func TestGenerateFromTemplate(t *testing.T) {
 			_, _ = io.WriteString(w, `{"message":"name already exists"}`)
 		}))
 		defer server.Close()
-		_, err := generateFromTemplate(newTestRESTClient(t, server),
+		_, err := generateFromTemplate(githubtest.NewTestClient(t, server),
 			"src", "src", "tgt", "tgt", "", false)
 		if err == nil {
 			t.Fatalf("expected error")
@@ -189,7 +191,7 @@ func TestGenerateFromTemplate(t *testing.T) {
 			_, _ = io.WriteString(w, `{}`)
 		}))
 		defer server.Close()
-		_, err := generateFromTemplate(newTestRESTClient(t, server),
+		_, err := generateFromTemplate(githubtest.NewTestClient(t, server),
 			"src", "src", "tgt", "tgt", "", false)
 		if err == nil || !strings.Contains(err.Error(), "default_branch") {
 			t.Errorf("expected default_branch error, got %v", err)
@@ -209,7 +211,7 @@ func TestMarkAsTemplate(t *testing.T) {
 			w.WriteHeader(http.StatusOK)
 		}))
 		defer server.Close()
-		if err := markAsTemplate(newTestRESTClient(t, server), "o", "r"); err != nil {
+		if err := markAsTemplate(githubtest.NewTestClient(t, server), "o", "r"); err != nil {
 			t.Fatalf("markAsTemplate: %v", err)
 		}
 		if gotBody["is_template"] != true {
@@ -222,7 +224,7 @@ func TestMarkAsTemplate(t *testing.T) {
 			w.WriteHeader(http.StatusForbidden)
 		}))
 		defer server.Close()
-		err := markAsTemplate(newTestRESTClient(t, server), "o", "r")
+		err := markAsTemplate(githubtest.NewTestClient(t, server), "o", "r")
 		if err == nil || !strings.Contains(err.Error(), "403") {
 			t.Errorf("expected 403 error, got %v", err)
 		}
@@ -239,7 +241,7 @@ func TestWaitForStableBranch_HappyPath(t *testing.T) {
 		_, _ = io.WriteString(w, `{"commit":{"sha":"abc"}}`)
 	}))
 	defer server.Close()
-	if err := waitForStableBranch(newTestRESTClient(t, server), "o", "r", "main"); err != nil {
+	if err := waitForStableBranch(githubtest.NewTestClient(t, server), "o", "r", "main"); err != nil {
 		t.Errorf("waitForStableBranch: %v", err)
 	}
 }
@@ -365,7 +367,7 @@ func TestCopyOneTemplate(t *testing.T) {
 		})
 		defer cleanup()
 		// a.Classroom.ID stays zero; the caller passes 95884.
-		_, err := copyOneTemplate(newTestRESTClient(t, server), io.Discard, "tgt", "", 95884, a("hello", "src/hello", false))
+		_, err := copyOneTemplate(githubtest.NewTestClient(t, server), io.Discard, "tgt", "", 95884, a("hello", "src/hello", false))
 		if err != nil {
 			t.Fatalf("copyOneTemplate: %v", err)
 		}
@@ -382,7 +384,7 @@ func TestCopyOneTemplate(t *testing.T) {
 		})
 		defer cleanup()
 		var errOut bytes.Buffer
-		got, err := copyOneTemplate(newTestRESTClient(t, server), &errOut, "tgt", "", 42, a("hello", "src/hello", false))
+		got, err := copyOneTemplate(githubtest.NewTestClient(t, server), &errOut, "tgt", "", 42, a("hello", "src/hello", false))
 		if err != nil {
 			t.Fatalf("copyOneTemplate: %v", err)
 		}
@@ -405,7 +407,7 @@ func TestCopyOneTemplate(t *testing.T) {
 		})
 		defer cleanup()
 		var errOut bytes.Buffer
-		got, err := copyOneTemplate(newTestRESTClient(t, server), &errOut, "tgt", "", 42, a("hello", "src/hello", false))
+		got, err := copyOneTemplate(githubtest.NewTestClient(t, server), &errOut, "tgt", "", 42, a("hello", "src/hello", false))
 		if err != nil {
 			t.Fatalf("copyOneTemplate: %v", err)
 		}
@@ -431,7 +433,7 @@ func TestCopyOneTemplate(t *testing.T) {
 		})
 		defer cleanup()
 		var errOut bytes.Buffer
-		got, err := copyOneTemplate(newTestRESTClient(t, server), &errOut, "tgt", "", 42, a("hello", "src/hello", false))
+		got, err := copyOneTemplate(githubtest.NewTestClient(t, server), &errOut, "tgt", "", 42, a("hello", "src/hello", false))
 		if err != nil {
 			t.Fatalf("copyOneTemplate: %v", err)
 		}
@@ -478,7 +480,7 @@ func TestCopyOneTemplate(t *testing.T) {
 		})
 		defer cleanup()
 		var errOut bytes.Buffer
-		got, err := copyOneTemplate(newTestRESTClient(t, server), &errOut, "tgt", "", 42, a("hello", "src/hello", true))
+		got, err := copyOneTemplate(githubtest.NewTestClient(t, server), &errOut, "tgt", "", 42, a("hello", "src/hello", true))
 		if err != nil {
 			t.Fatalf("copyOneTemplate: %v", err)
 		}
@@ -529,7 +531,7 @@ func TestCopyOneTemplate(t *testing.T) {
 		})
 		defer cleanup()
 		var errOut bytes.Buffer
-		got, err := copyOneTemplate(newTestRESTClient(t, server), &errOut, "tgt", "migrated", 42, a("hello", "src/hello", false))
+		got, err := copyOneTemplate(githubtest.NewTestClient(t, server), &errOut, "tgt", "migrated", 42, a("hello", "src/hello", false))
 		if err != nil {
 			t.Fatalf("copyOneTemplate: %v", err)
 		}

@@ -7,6 +7,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/foundation50/gh-teacher/internal/githubtest"
 )
 
 // orgLiveFromSettings builds a live org field map where every in-scope
@@ -30,7 +32,7 @@ func TestBuildAuditReport_AllEnforced(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(orgLiveFromSettings("team"))
 	}))
 	t.Cleanup(server.Close)
-	client := newTestRESTClient(t, server)
+	client := githubtest.NewTestClient(t, server)
 
 	report := buildAuditReport(client, "cs50-fall-2026", "team")
 
@@ -65,7 +67,7 @@ func TestBuildAuditReport_CriticalDriftFails(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(live)
 	}))
 	t.Cleanup(server.Close)
-	client := newTestRESTClient(t, server)
+	client := githubtest.NewTestClient(t, server)
 
 	report := buildAuditReport(client, "cs50-fall-2026", "team")
 
@@ -96,7 +98,7 @@ func TestBuildAuditReport_NonCriticalDriftStillComplete(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(live)
 	}))
 	t.Cleanup(server.Close)
-	client := newTestRESTClient(t, server)
+	client := githubtest.NewTestClient(t, server)
 
 	report := buildAuditReport(client, "cs50-fall-2026", "team")
 
@@ -126,7 +128,7 @@ func TestBuildAuditReport_ReadFailureIsInconclusive(t *testing.T) {
 		_, _ = w.Write([]byte(`{"message":"Forbidden"}`))
 	}))
 	t.Cleanup(server.Close)
-	client := newTestRESTClient(t, server)
+	client := githubtest.NewTestClient(t, server)
 
 	report := buildAuditReport(client, "cs50-fall-2026", "team")
 
@@ -152,7 +154,7 @@ func TestBuildAuditReport_PlanScopesEnterpriseFields(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(live)
 	}))
 	t.Cleanup(server.Close)
-	client := newTestRESTClient(t, server)
+	client := githubtest.NewTestClient(t, server)
 
 	report := buildAuditReport(client, "cs50-fall-2026", "team")
 

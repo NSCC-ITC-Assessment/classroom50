@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/foundation50/gh-teacher/internal/githubtest"
 )
 
 // TestCommitTreeChange_SendsDeletions verifies that deletes flow into
@@ -52,7 +54,7 @@ func TestCommitTreeChange_SendsDeletions(t *testing.T) {
 
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
-	client := newTestRESTClient(t, server)
+	client := githubtest.NewTestClient(t, server)
 
 	build := func(parentSHA string) (commitChange, error) {
 		if parentSHA != "parent-sha" {
@@ -110,7 +112,7 @@ func TestCommitTreeChange_EmptyIsNoOp(t *testing.T) {
 
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
-	client := newTestRESTClient(t, server)
+	client := githubtest.NewTestClient(t, server)
 
 	sha, err := commitTreeChange(client, "o", "r", "main", "noop", func(string) (commitChange, error) {
 		return commitChange{}, nil

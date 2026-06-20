@@ -3,8 +3,10 @@ package main
 import (
 	"errors"
 
-	"github.com/foundation50/classroom50-cli-shared/ghauth"
 	"github.com/spf13/cobra"
+
+	"github.com/foundation50/classroom50-cli-shared/ghauth"
+	"github.com/foundation50/gh-teacher/internal/githubapi"
 )
 
 func loginCmd() *cobra.Command {
@@ -30,7 +32,7 @@ func loginCmd() *cobra.Command {
 				return errors.New("gh teacher login requires an interactive terminal (it shells out to gh auth login, which opens a browser)")
 			}
 			return ghauth.RunLogin(cmd.OutOrStdout(), cmd.ErrOrStderr(),
-				ghauth.DefaultHost(), requiredScopes, scopes)
+				ghauth.DefaultHost(), githubapi.RequiredScopes(), scopes)
 		},
 	}
 

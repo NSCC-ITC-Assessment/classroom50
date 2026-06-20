@@ -1,4 +1,4 @@
-package main
+package githubapi
 
 import (
 	"encoding/json"
@@ -6,11 +6,10 @@ import (
 	"io"
 	"net/http"
 
-	"github.com/cli/go-gh/v2/pkg/api"
 	"github.com/foundation50/classroom50-cli-shared/ghutil"
 )
 
-// paginateAll walks a GitHub `page`/`per_page` list endpoint, returning
+// PaginateAll walks a GitHub `page`/`per_page` list endpoint, returning
 // every element across pages. It is the shared core for the teacher
 // CLI's capped list walks (org members/invitations/collaborators, the
 // GitHub Classroom imports, and the org-repos walk shared by
@@ -33,8 +32,8 @@ import (
 //     Link), or — without a Link header — a short page ends the walk.
 //     Hitting maxPages without termination is a safety-cap error: a
 //     partial list would silently under-report.
-func paginateAll[T any](
-	client *api.RESTClient,
+func PaginateAll[T any](
+	client Client,
 	perPage, maxPages int,
 	pageURL func(page int) string,
 	onErr func(path string, err error) error,
@@ -42,7 +41,7 @@ func paginateAll[T any](
 	var all []T
 	path := pageURL(1)
 	for page := 1; page <= maxPages; page++ {
-		batch, linkHeader, err := getPage[T](client, path)
+		batch, linkHeader, err := GetPage[T](client, path)
 		if err != nil {
 			if onErr != nil {
 				return nil, onErr(path, err)
@@ -70,7 +69,7 @@ func paginateAll[T any](
 		maxPages, maxPages*perPage)
 }
 
-// getPage issues one list request and returns the decoded batch plus the
+// GetPage issues one list request and returns the decoded batch plus the
 // raw Link response header. It uses Request (not Get) so the Link header
 // is available for next-page resolution — Get decodes the body but
 // discards the response, hiding the header pagination depends on.
@@ -81,7 +80,7 @@ func paginateAll[T any](
 // off-host next link cannot pivot the token. (On GHES a sibling subdomain
 // would retain the token; that residual is accepted, as the API host is
 // already the trust boundary.)
-func getPage[T any](client *api.RESTClient, path string) ([]T, string, error) {
+func GetPage[T any](client Client, path string) ([]T, string, error) {
 	resp, err := client.Request(http.MethodGet, path, nil)
 	if err != nil {
 		return nil, "", err
