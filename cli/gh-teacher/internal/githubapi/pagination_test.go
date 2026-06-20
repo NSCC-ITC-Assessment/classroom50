@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/foundation50/gh-teacher/internal/githubapi"
@@ -57,7 +58,7 @@ func TestPaginateAll_PropagatesTransportError(t *testing.T) {
 	}
 	_, err := githubapi.PaginateAll[item](fake, 2, 10,
 		func(int) string { return "things?per_page=2&page=1" }, nil)
-	if err == nil || err.Error() == "" {
-		t.Fatalf("err = %v, want a non-nil transport error", err)
+	if err == nil || !strings.Contains(err.Error(), "boom") {
+		t.Fatalf("err = %v, want the underlying transport cause %q to surface", err, "boom")
 	}
 }

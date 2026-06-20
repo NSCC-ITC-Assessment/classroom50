@@ -1,8 +1,9 @@
 package githubapi
 
 import (
-	"github.com/foundation50/classroom50-cli-shared/ghauth"
 	"github.com/spf13/cobra"
+
+	"github.com/foundation50/classroom50-cli-shared/ghauth"
 )
 
 // requiredScopes: extras on top of gh's defaults; one source of truth

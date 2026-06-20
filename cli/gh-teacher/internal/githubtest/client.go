@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/cli/go-gh/v2/pkg/api"
+
 	"github.com/foundation50/gh-teacher/internal/githubapi"
 )
 

@@ -2,6 +2,7 @@ package githubapi
 
 import (
 	"github.com/cli/go-gh/v2/pkg/api"
+
 	"github.com/foundation50/classroom50-cli-shared/ghutil"
 	"github.com/foundation50/classroom50-cli-shared/gittree"
 )

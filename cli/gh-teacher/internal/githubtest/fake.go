@@ -18,6 +18,16 @@ import (
 // Fake satisfies githubapi.Client. For tests that must exercise real
 // transport behavior (Link-header pagination, status decoding), use
 // NewTestClient with an httptest.Server instead.
+//
+// WARNING: Do NOT pass a Fake into the shared-module wrappers in
+// internal/githubapi (CommitWithRebase, CommitWithFreshRepoRetry,
+// UploadBlobs, SetCollaborator, WaitForStableBranch, CurrentUser) or any
+// domain function that reaches them (e.g. commitTree, the skeleton-commit
+// path, whoami). Those wrappers type-assert the Client back to the
+// concrete go-gh *api.RESTClient and PANIC on anything else. Test those
+// paths with NewTestClient (a real client over an httptest.Server); the
+// Fake is only for the transport-verb surface (Get/Post/Request and the
+// generic PaginateAll/GetPage built on them).
 type Fake struct {
 	GetFunc     func(path string, resp interface{}) error
 	PostFunc    func(path string, body io.Reader, resp interface{}) error

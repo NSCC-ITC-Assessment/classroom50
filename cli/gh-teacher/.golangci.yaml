@@ -10,3 +10,11 @@ formatters:
   enable:
     - gofmt
     - goimports
+  settings:
+    goimports:
+      # Group our own module imports (gh-teacher internal packages and the
+      # shared cli module) after third-party packages, so `golangci-lint fmt`
+      # actually enforces the three-group layout the README documents rather
+      # than leaving it to drift.
+      local-prefixes:
+        - github.com/foundation50
