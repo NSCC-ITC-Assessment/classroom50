@@ -83,7 +83,7 @@ func canonicalTeamSlugShortName(shortName string) bool {
 // rather than failing — matching the idempotent re-run style of the
 // rest of the CLI. The team is what grants rostered students read on
 // private, org-owned assignment templates so `gh student accept` can
-// generate their repo (see PRIVATE_ASSIGNMENTS_PLAN.md).
+// generate their repo.
 //
 // `members_can_create_teams: false` (set by init's lockdown) does not
 // block this — the teacher authenticates as an org owner.

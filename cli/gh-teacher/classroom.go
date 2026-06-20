@@ -133,7 +133,7 @@ func addClassroom(client *api.RESTClient, out, errOut io.Writer, org, shortName,
 	// Create (or adopt) the per-classroom GitHub team before scaffolding
 	// so its id/slug can be recorded in classroom.json. The team is what
 	// later lets rostered students read private, org-owned assignment
-	// templates (see PRIVATE_ASSIGNMENTS_PLAN.md).
+	// templates.
 	team, err := ensureClassroomTeam(client, org, shortName)
 	if err != nil {
 		return fmt.Errorf("create classroom team: %w", err)
@@ -559,8 +559,8 @@ type classroomJSON struct {
 	Term      string `json:"term"`
 	Org       string `json:"org"`
 	// Team is the per-classroom GitHub team that grants rostered
-	// students read on private, org-owned assignment templates (see
-	// PRIVATE_ASSIGNMENTS_PLAN.md). Populated by `classroom add`;
+	// students read on private, org-owned assignment templates.
+	// Populated by `classroom add`;
 	// omitted on classrooms created before this feature.
 	Team         *teamRef                  `json:"team,omitempty"`
 	MigratedFrom *classroomMigratedFromRef `json:"migrated_from,omitempty"`

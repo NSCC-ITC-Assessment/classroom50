@@ -397,8 +397,8 @@ func runAssignmentAdd(client *api.RESTClient, out, errOut io.Writer, org, classr
 		return err
 	}
 
-	// Private-template access matrix (see PRIVATE_ASSIGNMENTS_PLAN.md):
-	// a private template outside the org can't be shared with the
+	// Private-template access matrix: a private template outside the org
+	// can't be shared with the
 	// classroom team, so students could never generate from it — reject
 	// up front rather than letting every `gh student accept` 404 later.
 	inOrg := templateInOrg(resolved.Owner, org)
