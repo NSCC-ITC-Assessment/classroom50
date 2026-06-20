@@ -4,16 +4,15 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/spf13/cobra"
 
-	"github.com/foundation50/gh-teacher/internal/cliutil"
+	"github.com/foundation50/gh-teacher/internal/configrepo"
 	"github.com/foundation50/gh-teacher/internal/githubapi"
+	"github.com/foundation50/gh-teacher/internal/validate"
 )
 
 func rosterCmd() *cobra.Command {
@@ -76,11 +75,11 @@ func rosterAddCmd() *cobra.Command {
 			if org == "" || classroom == "" || username == "" {
 				return errors.New("org, classroom, and username must all be non-empty")
 			}
-			if err := validateShortName(classroom, "classroom"); err != nil {
+			if err := validate.ShortName(classroom, "classroom"); err != nil {
 				return err
 			}
 			emailVal := strings.TrimSpace(email)
-			if err := validateRosterEmail(emailVal); err != nil {
+			if err := configrepo.ValidateRosterEmail(emailVal); err != nil {
 				return err
 			}
 			client, err := githubapi.RequireAuthClient(cmd)
@@ -122,7 +121,7 @@ func rosterRemoveCmd() *cobra.Command {
 			if org == "" || classroom == "" || username == "" {
 				return errors.New("org, classroom, and username must all be non-empty")
 			}
-			if err := validateShortName(classroom, "classroom"); err != nil {
+			if err := validate.ShortName(classroom, "classroom"); err != nil {
 				return err
 			}
 			client, err := githubapi.RequireAuthClient(cmd)
@@ -161,7 +160,7 @@ func rosterImportCmd() *cobra.Command {
 			if org == "" || classroom == "" || path == "" {
 				return errors.New("org, classroom, and path must all be non-empty")
 			}
-			if err := validateShortName(classroom, "classroom"); err != nil {
+			if err := validate.ShortName(classroom, "classroom"); err != nil {
 				return err
 			}
 			client, err := githubapi.RequireAuthClient(cmd)
@@ -173,49 +172,6 @@ func rosterImportCmd() *cobra.Command {
 		},
 	}
 	return cmd
-}
-
-// rosterFilePath: on-repo path to a classroom's students.csv.
-func rosterFilePath(classroom string) string {
-	return classroom + "/students.csv"
-}
-
-// resolveConfigRepoBranch fetches <org>/classroom50's default
-// branch. 404 → "run `gh teacher init` first".
-func resolveConfigRepoBranch(client githubapi.Client, org string) (string, error) {
-	repoPath := fmt.Sprintf("repos/%s/%s", url.PathEscape(org), configRepoName)
-	var repo configRepo
-	if err := client.Get(repoPath, &repo); err != nil {
-		if cliutil.IsHTTPStatus(err, http.StatusNotFound) {
-			return "", fmt.Errorf("%s/%s not found — run `gh teacher init %s` first", org, configRepoName, org)
-		}
-		return "", fmt.Errorf("GET %s: %w", repoPath, err)
-	}
-	branch := repo.DefaultBranch
-	if branch == "" {
-		branch = "main"
-	}
-	return branch, nil
-}
-
-// loadRoster reads students.csv at a specific commit SHA so the
-// build callback's read stays consistent across rebase attempts.
-// Missing file → points the teacher at `gh teacher classroom add`.
-func loadRoster(client githubapi.Client, org, classroom, parentSHA string) ([]rosterRow, error) {
-	path := rosterFilePath(classroom)
-	data, ok, err := readFileContents(client, org, configRepoName, path, parentSHA)
-	if err != nil {
-		return nil, err
-	}
-	if !ok {
-		return nil, fmt.Errorf("%s/%s/%s not found — run `gh teacher classroom add %s %s` first, or restore the file if it was deleted",
-			org, configRepoName, path, org, classroom)
-	}
-	rows, err := parseRoster(data)
-	if err != nil {
-		return nil, fmt.Errorf("%s/%s/%s: %w", org, configRepoName, path, err)
-	}
-	return rows, nil
 }
 
 // inviteIfNotMember invites <username> when not already active or
@@ -248,7 +204,7 @@ func inviteIfNotMember(client githubapi.Client, org, username string, userID int
 // roster with no clean recovery. This order leaves the roster ahead
 // of org membership, which a re-run reconciles.
 func runRosterAdd(client githubapi.Client, out, errOut io.Writer, org, classroom, username, firstName, lastName, email, section string) error {
-	branch, err := resolveConfigRepoBranch(client, org)
+	branch, err := configrepo.ResolveConfigRepoBranch(client, org)
 	if err != nil {
 		return err
 	}
@@ -258,7 +214,7 @@ func runRosterAdd(client githubapi.Client, out, errOut io.Writer, org, classroom
 		return err
 	}
 
-	newRow := rosterRow{
+	newRow := configrepo.RosterRow{
 		Username:  login,
 		FirstName: firstName,
 		LastName:  lastName,
@@ -269,30 +225,30 @@ func runRosterAdd(client githubapi.Client, out, errOut io.Writer, org, classroom
 
 	var action string
 	build := func(parentSHA string) (map[string]string, error) {
-		rows, err := loadRoster(client, org, classroom, parentSHA)
+		rows, err := configrepo.LoadRoster(client, org, classroom, parentSHA)
 		if err != nil {
 			return nil, err
 		}
-		updated, replaced := upsertRosterRow(rows, newRow)
+		updated, replaced := configrepo.UpsertRosterRow(rows, newRow)
 		if replaced {
 			action = "updated"
 		} else {
 			action = "added"
 		}
-		data, err := encodeRoster(updated)
+		data, err := configrepo.EncodeRoster(updated)
 		if err != nil {
 			return nil, err
 		}
-		return map[string]string{rosterFilePath(classroom): string(data)}, nil
+		return map[string]string{configrepo.RosterFilePath(classroom): string(data)}, nil
 	}
 
 	message := fmt.Sprintf("roster: add %s to %s (gh teacher roster add)", login, classroom)
-	if _, err := commitTree(client, org, configRepoName, branch, message, build); err != nil {
+	if _, err := commitTree(client, org, configrepo.ConfigRepoName, branch, message, build); err != nil {
 		return err
 	}
 
 	_, _ = fmt.Fprintf(out, "%s/%s/%s: %s %s (github_id %d)\n",
-		org, configRepoName, rosterFilePath(classroom), action, login, userID)
+		org, configrepo.ConfigRepoName, configrepo.RosterFilePath(classroom), action, login, userID)
 
 	state, err := inviteIfNotMember(client, org, login, userID)
 	if err != nil {
@@ -314,7 +270,7 @@ func runRosterAdd(client githubapi.Client, out, errOut io.Writer, org, classroom
 	// not-yet-member (pending until they accept the org invite), so one
 	// call covers both states. Idempotent. The team slug is read from
 	// classroom.json (authoritative — never re-derived).
-	team, ok, err := resolveClassroomTeam(client, org, classroom, branch)
+	team, ok, err := configrepo.ResolveClassroomTeam(client, org, classroom, branch)
 	if err != nil {
 		return fmt.Errorf("roster row committed and org invite sent, but reading the classroom team failed: %w", err)
 	}
@@ -323,7 +279,7 @@ func runRosterAdd(client githubapi.Client, out, errOut io.Writer, org, classroom
 			org, classroom, login, org, classroom)
 		return nil
 	}
-	if err := addTeamMembership(client, org, team.Slug, login); err != nil {
+	if err := configrepo.AddTeamMembership(client, org, team.Slug, login); err != nil {
 		return fmt.Errorf("roster row committed and org invite sent, but adding %s to the classroom team failed: %w", login, err)
 	}
 	_, _ = fmt.Fprintf(out, "%s: added %s to classroom team %s\n", org, login, team.Slug)
@@ -331,62 +287,62 @@ func runRosterAdd(client githubapi.Client, out, errOut io.Writer, org, classroom
 }
 
 func runRosterRemove(client githubapi.Client, out io.Writer, org, classroom, username string) error {
-	branch, err := resolveConfigRepoBranch(client, org)
+	branch, err := configrepo.ResolveConfigRepoBranch(client, org)
 	if err != nil {
 		return err
 	}
 
 	var removed bool
 	build := func(parentSHA string) (map[string]string, error) {
-		rows, err := loadRoster(client, org, classroom, parentSHA)
+		rows, err := configrepo.LoadRoster(client, org, classroom, parentSHA)
 		if err != nil {
 			return nil, err
 		}
-		next, ok := removeRosterRow(rows, username)
+		next, ok := configrepo.RemoveRosterRow(rows, username)
 		removed = ok
 		if !ok {
 			// nil → commitTree skips the commit (no-op when the row
 			// was already absent).
 			return nil, nil
 		}
-		data, err := encodeRoster(next)
+		data, err := configrepo.EncodeRoster(next)
 		if err != nil {
 			return nil, err
 		}
-		return map[string]string{rosterFilePath(classroom): string(data)}, nil
+		return map[string]string{configrepo.RosterFilePath(classroom): string(data)}, nil
 	}
 
 	message := fmt.Sprintf("roster: remove %s from %s (gh teacher roster remove)", username, classroom)
-	if _, err := commitTree(client, org, configRepoName, branch, message, build); err != nil {
+	if _, err := commitTree(client, org, configrepo.ConfigRepoName, branch, message, build); err != nil {
 		return err
 	}
 
 	if removed {
 		_, _ = fmt.Fprintf(out, "%s/%s/%s: removed %s (org membership unchanged)\n",
-			org, configRepoName, rosterFilePath(classroom), username)
+			org, configrepo.ConfigRepoName, configrepo.RosterFilePath(classroom), username)
 		// Symmetric with roster add: drop the student from the
 		// classroom team so they lose template read. Idempotent (404 =
 		// not a member / team gone). Org membership is untouched. The
 		// slug is read from classroom.json (authoritative).
-		team, ok, err := resolveClassroomTeam(client, org, classroom, branch)
+		team, ok, err := configrepo.ResolveClassroomTeam(client, org, classroom, branch)
 		if err != nil {
 			return fmt.Errorf("roster row removed, but reading the classroom team failed: %w", err)
 		}
 		if ok {
-			if err := removeTeamMembership(client, org, team.Slug, username); err != nil {
+			if err := configrepo.RemoveTeamMembership(client, org, team.Slug, username); err != nil {
 				return fmt.Errorf("roster row removed, but removing %s from the classroom team failed: %w", username, err)
 			}
 			_, _ = fmt.Fprintf(out, "%s: removed %s from classroom team %s\n", org, username, team.Slug)
 		}
 	} else {
 		_, _ = fmt.Fprintf(out, "%s/%s/%s: %s not in roster, nothing to do\n",
-			org, configRepoName, rosterFilePath(classroom), username)
+			org, configrepo.ConfigRepoName, configrepo.RosterFilePath(classroom), username)
 	}
 	return nil
 }
 
 func runRosterImport(client githubapi.Client, out, errOut io.Writer, org, classroom, csvPath string) error {
-	branch, err := resolveConfigRepoBranch(client, org)
+	branch, err := configrepo.ResolveConfigRepoBranch(client, org)
 	if err != nil {
 		return err
 	}
@@ -399,7 +355,7 @@ func runRosterImport(client githubapi.Client, out, errOut io.Writer, org, classr
 	if err != nil {
 		return fmt.Errorf("read %s: %w", abs, err)
 	}
-	imported, err := parseImportCSV(data)
+	imported, err := configrepo.ParseImportCSV(data)
 	if err != nil {
 		return fmt.Errorf("%s: %w", abs, err)
 	}
@@ -410,14 +366,14 @@ func runRosterImport(client githubapi.Client, out, errOut io.Writer, org, classr
 	// Resolve every username up front so rebase retries don't repeat
 	// GitHub-API lookups — only the file write is retried. CSV line
 	// numbers are 1-based (header = line 1) to match parseImportCSV.
-	resolved := make([]rosterRow, 0, len(imported))
+	resolved := make([]configrepo.RosterRow, 0, len(imported))
 	for i, row := range imported {
 		line := i + 2
 		login, userID, err := lookupUser(client, row.Username)
 		if err != nil {
 			return fmt.Errorf("line %d (%s): %w", line, row.Username, err)
 		}
-		resolved = append(resolved, rosterRow{
+		resolved = append(resolved, configrepo.RosterRow{
 			Username:  login,
 			FirstName: row.FirstName,
 			LastName:  row.LastName,
@@ -428,14 +384,14 @@ func runRosterImport(client githubapi.Client, out, errOut io.Writer, org, classr
 	}
 	// Case-insensitive dedup within the batch; last occurrence wins
 	// (matching upsertRosterRow's semantics).
-	resolved = dedupeByUsername(resolved)
+	resolved = configrepo.DedupeByUsername(resolved)
 
 	var (
 		added   int
 		updated int
 	)
 	build := func(parentSHA string) (map[string]string, error) {
-		rows, err := loadRoster(client, org, classroom, parentSHA)
+		rows, err := configrepo.LoadRoster(client, org, classroom, parentSHA)
 		if err != nil {
 			return nil, err
 		}
@@ -444,32 +400,32 @@ func runRosterImport(client githubapi.Client, out, errOut io.Writer, org, classr
 		added, updated = 0, 0
 		for _, row := range resolved {
 			var replaced bool
-			rows, replaced = upsertRosterRow(rows, row)
+			rows, replaced = configrepo.UpsertRosterRow(rows, row)
 			if replaced {
 				updated++
 			} else {
 				added++
 			}
 		}
-		encoded, err := encodeRoster(rows)
+		encoded, err := configrepo.EncodeRoster(rows)
 		if err != nil {
 			return nil, err
 		}
-		return map[string]string{rosterFilePath(classroom): string(encoded)}, nil
+		return map[string]string{configrepo.RosterFilePath(classroom): string(encoded)}, nil
 	}
 
 	message := fmt.Sprintf("roster: import %d row(s) into %s (gh teacher roster import)", len(resolved), classroom)
-	if _, err := commitTree(client, org, configRepoName, branch, message, build); err != nil {
+	if _, err := commitTree(client, org, configrepo.ConfigRepoName, branch, message, build); err != nil {
 		return err
 	}
 
 	_, _ = fmt.Fprintf(out, "%s/%s/%s: imported %d row(s) (%d new, %d updated)\n",
-		org, configRepoName, rosterFilePath(classroom), len(resolved), added, updated)
+		org, configrepo.ConfigRepoName, configrepo.RosterFilePath(classroom), len(resolved), added, updated)
 
 	// Resolve the classroom team once (authoritative slug from
 	// classroom.json). A classroom with no team is a warn-and-skip for
 	// the membership step.
-	team, teamOK, err := resolveClassroomTeam(client, org, classroom, branch)
+	team, teamOK, err := configrepo.ResolveClassroomTeam(client, org, classroom, branch)
 	if err != nil {
 		return fmt.Errorf("roster rows committed, but reading the classroom team failed: %w", err)
 	}
@@ -501,7 +457,7 @@ func runRosterImport(client githubapi.Client, out, errOut io.Writer, org, classr
 		// Add each student to the classroom team (idempotent; covers
 		// both active and pending members).
 		if teamOK {
-			if err := addTeamMembership(client, org, team.Slug, row.Username); err != nil {
+			if err := configrepo.AddTeamMembership(client, org, team.Slug, row.Username); err != nil {
 				failures = append(failures, fmt.Sprintf("%s (team add: %v)", row.Username, err))
 				continue
 			}
@@ -521,23 +477,4 @@ func runRosterImport(client githubapi.Client, out, errOut io.Writer, org, classr
 		_, _ = fmt.Fprintf(errOut, "Newly-invited students should visit https://github.com/%s to accept their invitation.\n", org)
 	}
 	return nil
-}
-
-// dedupeByUsername collapses repeated usernames (last-wins, matching
-// upsertRosterRow). Preserves first-seen order; no input mutation.
-func dedupeByUsername(rows []rosterRow) []rosterRow {
-	latest := make(map[string]rosterRow, len(rows))
-	order := make([]string, 0, len(rows))
-	for _, row := range rows {
-		key := strings.ToLower(row.Username)
-		if _, seen := latest[key]; !seen {
-			order = append(order, key)
-		}
-		latest[key] = row
-	}
-	out := make([]rosterRow, 0, len(order))
-	for _, key := range order {
-		out = append(out, latest[key])
-	}
-	return out
 }

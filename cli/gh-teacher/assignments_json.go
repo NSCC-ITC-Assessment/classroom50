@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/foundation50/classroom50-cli-shared/contract"
+	"github.com/foundation50/gh-teacher/internal/validate"
 )
 
 // Assignment modes accepted at the parse/write layer. Both are
@@ -419,7 +420,7 @@ func validateAssignmentEntry(entry assignmentEntry) error {
 	if entry.Slug == "" {
 		return errors.New("slug must not be empty")
 	}
-	if err := validateShortName(entry.Slug, "slug"); err != nil {
+	if err := validate.ShortName(entry.Slug, "slug"); err != nil {
 		return err
 	}
 	if entry.Name == "" {
@@ -487,7 +488,7 @@ func validateExistingEntry(entry assignmentEntry) error {
 	if entry.Slug == "" {
 		return errors.New("entry has empty slug")
 	}
-	if err := validateShortName(entry.Slug, "slug"); err != nil {
+	if err := validate.ShortName(entry.Slug, "slug"); err != nil {
 		return fmt.Errorf("entry: %w", err)
 	}
 	if entry.Name == "" {
@@ -519,7 +520,7 @@ func validateExistingEntry(entry assignmentEntry) error {
 	if entry.Autograder == "" {
 		entry.Autograder = defaultAutograderName
 	}
-	if err := validateShortName(entry.Autograder, "autograder"); err != nil {
+	if err := validate.ShortName(entry.Autograder, "autograder"); err != nil {
 		return fmt.Errorf("entry %q: %w", entry.Slug, err)
 	}
 	if err := validateMaxGroupSize(entry.MaxGroupSize); err != nil {

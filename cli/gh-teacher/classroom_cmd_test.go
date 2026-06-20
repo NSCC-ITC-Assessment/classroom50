@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/foundation50/gh-teacher/internal/configrepo"
 	"github.com/foundation50/gh-teacher/internal/githubtest"
 )
 
@@ -141,13 +142,13 @@ func (m *configRepoMock) handler(t *testing.T) http.Handler {
 
 func classroomJSONContent(t *testing.T, org, shortName, name, term string) string {
 	t.Helper()
-	b, err := encodeJSONPretty(classroomJSON{
+	b, err := encodeJSONPretty(configrepo.ClassroomJSON{
 		Schema:    classroomSchemaV1,
 		Name:      name,
 		ShortName: shortName,
 		Term:      term,
 		Org:       org,
-		Team:      &teamRef{ID: 4242, Slug: "classroom50-" + shortName},
+		Team:      &configrepo.TeamRef{ID: 4242, Slug: "classroom50-" + shortName},
 	})
 	if err != nil {
 		t.Fatalf("encode classroom.json: %v", err)
@@ -265,13 +266,13 @@ func TestEditClassroom(t *testing.T) {
 	// classroom.json -- including the optional migrated_from
 	// provenance block -- has to round-trip unchanged.
 	t.Run("preserves migrated_from and other fields", func(t *testing.T) {
-		migrated, err := encodeJSONPretty(classroomJSON{
+		migrated, err := encodeJSONPretty(configrepo.ClassroomJSON{
 			Schema:    classroomSchemaV1,
 			Name:      "CS Principles",
 			ShortName: "cs-principles",
 			Term:      "Fall-2026",
 			Org:       "o",
-			MigratedFrom: &classroomMigratedFromRef{
+			MigratedFrom: &configrepo.MigratedFromRef{
 				Source:           "12345",
 				ClassroomID:      12345,
 				OriginalName:     "Old CS Principles",
@@ -297,7 +298,7 @@ func TestEditClassroom(t *testing.T) {
 		if len(mock.blobs) != 1 {
 			t.Fatalf("got %d blobs POSTed, want 1: %#v", len(mock.blobs), mock.blobs)
 		}
-		var got classroomJSON
+		var got configrepo.ClassroomJSON
 		if err := json.Unmarshal([]byte(mock.blobs[0]), &got); err != nil {
 			t.Fatalf("unmarshal re-encoded classroom.json: %v\n%s", err, mock.blobs[0])
 		}

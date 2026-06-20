@@ -11,6 +11,7 @@ import (
 
 	"github.com/foundation50/gh-teacher/internal/cliutil"
 	"github.com/foundation50/gh-teacher/internal/githubapi"
+	"github.com/foundation50/gh-teacher/internal/validate"
 )
 
 // templateAction classifies what the template-copy phase did for
@@ -206,7 +207,7 @@ func copyOneTemplate(client githubapi.Client, errOut io.Writer, targetOrg, templ
 	// any API writes — otherwise a bad slug or mode would generate
 	// a template repo and then drop the entry at commit time,
 	// orphaning the generated repo.
-	if err := validateShortName(a.Slug, "slug"); err != nil {
+	if err := validate.ShortName(a.Slug, "slug"); err != nil {
 		return skip(err.Error()), nil
 	}
 	if !isValidAssignmentMode(a.Type) {

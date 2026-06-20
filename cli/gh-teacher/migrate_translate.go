@@ -6,6 +6,9 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/foundation50/gh-teacher/internal/configrepo"
+	"github.com/foundation50/gh-teacher/internal/validate"
 )
 
 // migrateSourceGitHubClassroom is the only origin string written
@@ -31,16 +34,16 @@ func deriveShortName(raw string) (string, error) {
 	if len(slug) > 39 {
 		slug = strings.TrimRight(slug[:39], "-")
 	}
-	if !shortNamePattern.MatchString(slug) {
-		return "", fmt.Errorf("could not derive a valid short-name from %q (got %q after slugify, fails %s) — pass --short-name <name> explicitly", raw, slug, shortNamePatternDescription)
+	if !validate.ShortNamePattern.MatchString(slug) {
+		return "", fmt.Errorf("could not derive a valid short-name from %q (got %q after slugify, fails %s) — pass --short-name <name> explicitly", raw, slug, validate.ShortNamePatternDescription)
 	}
 	return slug, nil
 }
 
 // classroomMigratedFromFromDetail builds the classroom-level
 // migrated_from block from a source classroom and write timestamp.
-func classroomMigratedFromFromDetail(detail classroomDetail, migratedAt time.Time) *classroomMigratedFromRef {
-	return &classroomMigratedFromRef{
+func classroomMigratedFromFromDetail(detail classroomDetail, migratedAt time.Time) *configrepo.MigratedFromRef {
+	return &configrepo.MigratedFromRef{
 		Source:           migrateSourceGitHubClassroom,
 		ClassroomID:      detail.ID,
 		OriginalName:     detail.Name,
@@ -64,7 +67,7 @@ func assignmentToEntry(
 	if detail.Slug == "" {
 		return assignmentEntry{}, fmt.Errorf("source assignment %d has empty slug", detail.ID)
 	}
-	if err := validateShortName(detail.Slug, "slug"); err != nil {
+	if err := validate.ShortName(detail.Slug, "slug"); err != nil {
 		return assignmentEntry{}, fmt.Errorf("source assignment %d: %w", detail.ID, err)
 	}
 	if !isValidAssignmentMode(detail.Type) {

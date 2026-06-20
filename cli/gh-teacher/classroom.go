@@ -7,21 +7,15 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"regexp"
 	"strings"
 
 	"github.com/spf13/cobra"
 
 	"github.com/foundation50/classroom50-cli-shared/contract"
+	"github.com/foundation50/gh-teacher/internal/configrepo"
 	"github.com/foundation50/gh-teacher/internal/githubapi"
+	"github.com/foundation50/gh-teacher/internal/validate"
 )
-
-// shortNamePattern: classroom short-names and assignment slugs both
-// flow into student repo names (`<short-name>-<assignment>-<username>`)
-// and must stay within GitHub's repo-naming constraints. Callers
-// should use validateShortName (helpers.go) for the standard error
-// shape.
-var shortNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{1,38}$`)
 
 // Schema sentinels for the four scaffolded files. Schema-aware
 // readers MUST branch on this field first so newer files don't
@@ -34,8 +28,8 @@ const (
 	scoresSchemaV1      = "classroom50/scores/v1"
 )
 
-// studentsCSVHeader derives from rosterColumns so they can't drift.
-var studentsCSVHeader = strings.Join(rosterColumns, ",") + "\n"
+// studentsCSVHeader derives from configrepo.RosterColumns so they can't drift.
+var studentsCSVHeader = strings.Join(configrepo.RosterColumns, ",") + "\n"
 
 func classroomCmd() *cobra.Command {
 	cmd := &cobra.Command{
@@ -103,7 +97,7 @@ func classroomAddCmd() *cobra.Command {
 			if shortName == "" {
 				return errors.New("short-name must not be empty")
 			}
-			if err := validateShortName(shortName, "short-name"); err != nil {
+			if err := validate.ShortName(shortName, "short-name"); err != nil {
 				return err
 			}
 
@@ -126,7 +120,7 @@ func classroomAddCmd() *cobra.Command {
 // same-classroom race surfaces as "already exists" rather than
 // silently clobbering the winner.
 func addClassroom(client githubapi.Client, out, errOut io.Writer, org, shortName, name, term string) error {
-	branch, err := resolveConfigRepoBranch(client, org)
+	branch, err := configrepo.ResolveConfigRepoBranch(client, org)
 	if err != nil {
 		return err
 	}
@@ -135,7 +129,7 @@ func addClassroom(client githubapi.Client, out, errOut io.Writer, org, shortName
 	// so its id/slug can be recorded in classroom.json. The team is what
 	// later lets rostered students read private, org-owned assignment
 	// templates.
-	team, err := ensureClassroomTeam(client, org, shortName)
+	team, err := configrepo.EnsureClassroomTeam(client, org, shortName)
 	if err != nil {
 		return fmt.Errorf("create classroom team: %w", err)
 	}
@@ -149,64 +143,40 @@ func addClassroom(client githubapi.Client, out, errOut io.Writer, org, shortName
 		// contentsExists also catches partial-state classrooms (e.g.
 		// a teacher renamed classroom.json but left other files);
 		// the directory probe is 404 only when nothing exists there.
-		exists, err := contentsExists(client, org, configRepoName, shortName, parentSHA)
+		exists, err := configrepo.ContentsExists(client, org, configrepo.ConfigRepoName, shortName, parentSHA)
 		if err != nil {
 			return nil, err
 		}
 		if exists {
 			return nil, fmt.Errorf("classroom %q already exists in %s/%s — refusing to overwrite (inspect or edit at https://github.com/%s/%s/tree/%s/%s)",
-				shortName, org, configRepoName,
-				org, configRepoName, branch, shortName)
+				shortName, org, configrepo.ConfigRepoName,
+				org, configrepo.ConfigRepoName, branch, shortName)
 		}
 		return files, nil
 	}
 
 	message := fmt.Sprintf("Add %s classroom (gh teacher classroom add)", shortName)
-	if _, err := commitTree(client, org, configRepoName, branch, message, build); err != nil {
+	if _, err := commitTree(client, org, configrepo.ConfigRepoName, branch, message, build); err != nil {
 		return err
 	}
 
 	// stdout: one parseable confirmation line. stderr: advisory
 	// "View at" + "Next:" hints.
-	_, _ = fmt.Fprintf(out, "%s/%s: added classroom %s (%d files)\n", org, configRepoName, shortName, len(files))
+	_, _ = fmt.Fprintf(out, "%s/%s: added classroom %s (%d files)\n", org, configrepo.ConfigRepoName, shortName, len(files))
 	_, _ = fmt.Fprintf(out, "%s: classroom team %s ready\n", org, team.Slug)
-	_, _ = fmt.Fprintf(errOut, "View at https://github.com/%s/%s/tree/%s/%s\n", org, configRepoName, branch, shortName)
+	_, _ = fmt.Fprintf(errOut, "View at https://github.com/%s/%s/tree/%s/%s\n", org, configrepo.ConfigRepoName, branch, shortName)
 	_, _ = fmt.Fprintf(errOut, "Next: gh teacher roster add %s %s <username>\n", org, shortName)
 	return nil
-}
-
-// classroomFilePath: on-repo path to a classroom's classroom.json.
-func classroomFilePath(shortName string) string {
-	return shortName + "/classroom.json"
-}
-
-// loadClassroom reads + parses <short-name>/classroom.json at `ref`.
-// Missing file → (nil, false, nil) so callers shape their own
-// "not found" message.
-func loadClassroom(client githubapi.Client, org, shortName, ref string) (*classroomJSON, bool, error) {
-	path := classroomFilePath(shortName)
-	data, ok, err := readFileContents(client, org, configRepoName, path, ref)
-	if err != nil {
-		return nil, false, err
-	}
-	if !ok {
-		return nil, false, nil
-	}
-	var c classroomJSON
-	if err := json.Unmarshal(data, &c); err != nil {
-		return nil, false, fmt.Errorf("%s/%s/%s: %w", org, configRepoName, path, err)
-	}
-	return &c, true, nil
 }
 
 // classroomSummary is the per-classroom view emitted by
 // `classroom list --json`: the human-relevant subset of
 // classroom.json.
 type classroomSummary struct {
-	ShortName string   `json:"short_name"`
-	Name      string   `json:"name"`
-	Term      string   `json:"term"`
-	Team      *teamRef `json:"team,omitempty"`
+	ShortName string              `json:"short_name"`
+	Name      string              `json:"name"`
+	Term      string              `json:"term"`
+	Team      *configrepo.TeamRef `json:"team,omitempty"`
 }
 
 func classroomListCmd() *cobra.Command {
@@ -250,11 +220,11 @@ func classroomListCmd() *cobra.Command {
 // runClassroomList: one branch resolve, one root listing, then one
 // classroom.json read per directory to recover name/term. No commit.
 func runClassroomList(client githubapi.Client, out, errOut io.Writer, org string, asJSON, quiet bool) error {
-	branch, err := resolveConfigRepoBranch(client, org)
+	branch, err := configrepo.ResolveConfigRepoBranch(client, org)
 	if err != nil {
 		return err
 	}
-	entries, _, err := listDirContents(client, org, configRepoName, "", branch)
+	entries, _, err := configrepo.ListDirContents(client, org, configrepo.ConfigRepoName, "", branch)
 	if err != nil {
 		return err
 	}
@@ -264,7 +234,7 @@ func runClassroomList(client githubapi.Client, out, errOut io.Writer, org string
 		if e.Type != "dir" {
 			continue
 		}
-		c, ok, err := loadClassroom(client, org, e.Name, branch)
+		c, ok, err := configrepo.LoadClassroom(client, org, e.Name, branch)
 		if err != nil {
 			return err
 		}
@@ -303,7 +273,7 @@ func runClassroomList(client githubapi.Client, out, errOut io.Writer, org string
 // summarizeClassroomList: one-line stderr summary shaped
 // `<org>/<repo>: <message>` to match other list commands.
 func summarizeClassroomList(org string, count int) string {
-	path := fmt.Sprintf("%s/%s", org, configRepoName)
+	path := fmt.Sprintf("%s/%s", org, configrepo.ConfigRepoName)
 	switch count {
 	case 0:
 		return fmt.Sprintf("%s: no classrooms registered yet — use `gh teacher classroom add %s <short-name>` to create one", path, org)
@@ -343,7 +313,7 @@ func classroomEditCmd() *cobra.Command {
 			if shortName == "" {
 				return errors.New("short-name must not be empty")
 			}
-			if err := validateShortName(shortName, "short-name"); err != nil {
+			if err := validate.ShortName(shortName, "short-name"); err != nil {
 				return err
 			}
 			setName := cmd.Flags().Changed("name")
@@ -368,26 +338,26 @@ func classroomEditCmd() *cobra.Command {
 // fields, and re-commits. A proposed body identical to the on-disk
 // one short-circuits to a no-op.
 func editClassroom(client githubapi.Client, out, errOut io.Writer, org, shortName string, setName bool, name string, setTerm bool, term string) error {
-	branch, err := resolveConfigRepoBranch(client, org)
+	branch, err := configrepo.ResolveConfigRepoBranch(client, org)
 	if err != nil {
 		return err
 	}
 
 	noop := false
-	path := classroomFilePath(shortName)
+	path := configrepo.ClassroomFilePath(shortName)
 	build := func(parentSHA string) (map[string]string, error) {
 		noop = false
-		data, ok, err := readFileContents(client, org, configRepoName, path, parentSHA)
+		data, ok, err := configrepo.ReadFileContents(client, org, configrepo.ConfigRepoName, path, parentSHA)
 		if err != nil {
 			return nil, err
 		}
 		if !ok {
 			return nil, fmt.Errorf("classroom %q not found in %s/%s — run `gh teacher classroom add %s %s` first",
-				shortName, org, configRepoName, org, shortName)
+				shortName, org, configrepo.ConfigRepoName, org, shortName)
 		}
-		var c classroomJSON
+		var c configrepo.ClassroomJSON
 		if err := json.Unmarshal(data, &c); err != nil {
-			return nil, fmt.Errorf("%s/%s/%s: %w", org, configRepoName, path, err)
+			return nil, fmt.Errorf("%s/%s/%s: %w", org, configrepo.ConfigRepoName, path, err)
 		}
 		if setName {
 			c.Name = name
@@ -407,15 +377,15 @@ func editClassroom(client githubapi.Client, out, errOut io.Writer, org, shortNam
 	}
 
 	message := fmt.Sprintf("Edit %s classroom (gh teacher classroom edit)", shortName)
-	if _, err := commitTree(client, org, configRepoName, branch, message, build); err != nil {
+	if _, err := commitTree(client, org, configrepo.ConfigRepoName, branch, message, build); err != nil {
 		return err
 	}
 	if noop {
-		_, _ = fmt.Fprintf(out, "%s/%s: classroom %s already up to date (no changes)\n", org, configRepoName, shortName)
+		_, _ = fmt.Fprintf(out, "%s/%s: classroom %s already up to date (no changes)\n", org, configrepo.ConfigRepoName, shortName)
 		return nil
 	}
-	_, _ = fmt.Fprintf(out, "%s/%s: updated classroom %s\n", org, configRepoName, shortName)
-	_, _ = fmt.Fprintf(errOut, "View at https://github.com/%s/%s/tree/%s/%s\n", org, configRepoName, branch, shortName)
+	_, _ = fmt.Fprintf(out, "%s/%s: updated classroom %s\n", org, configrepo.ConfigRepoName, shortName)
+	_, _ = fmt.Fprintf(errOut, "View at https://github.com/%s/%s/tree/%s/%s\n", org, configrepo.ConfigRepoName, branch, shortName)
 	return nil
 }
 
@@ -445,7 +415,7 @@ func classroomRemoveCmd() *cobra.Command {
 			if shortName == "" {
 				return errors.New("short-name must not be empty")
 			}
-			if err := validateShortName(shortName, "short-name"); err != nil {
+			if err := validate.ShortName(shortName, "short-name"); err != nil {
 				return err
 			}
 			client, err := githubapi.RequireAuthClient(cmd)
@@ -464,19 +434,19 @@ func classroomRemoveCmd() *cobra.Command {
 // enumerated inside the build callback so the deletion set stays
 // consistent with the parent it commits against.
 func removeClassroom(client githubapi.Client, in io.Reader, out, errOut io.Writer, org, shortName string, skipConfirm bool) error {
-	branch, err := resolveConfigRepoBranch(client, org)
+	branch, err := configrepo.ResolveConfigRepoBranch(client, org)
 	if err != nil {
 		return err
 	}
 
 	// Preflight existence so a typo doesn't reach the confirmation
 	// prompt. The authoritative read happens inside build.
-	exists, err := contentsExists(client, org, configRepoName, shortName, branch)
+	exists, err := configrepo.ContentsExists(client, org, configrepo.ConfigRepoName, shortName, branch)
 	if err != nil {
 		return err
 	}
 	if !exists {
-		return fmt.Errorf("classroom %q not found in %s/%s — nothing to remove", shortName, org, configRepoName)
+		return fmt.Errorf("classroom %q not found in %s/%s — nothing to remove", shortName, org, configrepo.ConfigRepoName)
 	}
 
 	if !skipConfirm {
@@ -491,8 +461,8 @@ func removeClassroom(client githubapi.Client, in io.Reader, out, errOut io.Write
 	// and an unrelated team that merely occupies the slug is never
 	// touched. A classroom with no team block yields an empty ref
 	// (no-op delete).
-	var team teamRef
-	if t, ok, terr := resolveClassroomTeam(client, org, shortName, branch); terr != nil {
+	var team configrepo.TeamRef
+	if t, ok, terr := configrepo.ResolveClassroomTeam(client, org, shortName, branch); terr != nil {
 		return terr
 	} else if ok {
 		team = t
@@ -501,7 +471,7 @@ func removeClassroom(client githubapi.Client, in io.Reader, out, errOut io.Write
 	var deleted int
 	build := func(parentSHA string) (commitChange, error) {
 		deleted = 0
-		paths, err := listSubtreeBlobPaths(client, org, configRepoName, parentSHA, shortName)
+		paths, err := configrepo.ListSubtreeBlobPaths(client, org, configrepo.ConfigRepoName, parentSHA, shortName)
 		if err != nil {
 			return commitChange{}, err
 		}
@@ -510,21 +480,21 @@ func removeClassroom(client githubapi.Client, in io.Reader, out, errOut io.Write
 	}
 
 	message := fmt.Sprintf("Remove %s classroom (gh teacher classroom remove)", shortName)
-	sha, err := commitTreeChange(client, org, configRepoName, branch, message, build)
+	sha, err := commitTreeChange(client, org, configrepo.ConfigRepoName, branch, message, build)
 	if err != nil {
 		return err
 	}
 	if sha == "" {
-		_, _ = fmt.Fprintf(out, "%s/%s: classroom %s already gone (nothing to remove)\n", org, configRepoName, shortName)
+		_, _ = fmt.Fprintf(out, "%s/%s: classroom %s already gone (nothing to remove)\n", org, configrepo.ConfigRepoName, shortName)
 		return nil
 	}
-	_, _ = fmt.Fprintf(out, "%s/%s: removed classroom %s (%d files)\n", org, configRepoName, shortName, deleted)
+	_, _ = fmt.Fprintf(out, "%s/%s: removed classroom %s (%d files)\n", org, configrepo.ConfigRepoName, shortName, deleted)
 
 	// Delete the per-classroom team (idempotent; 404 = already gone).
 	// The team's repo grants + memberships go with it. A delete failure
 	// is surfaced but doesn't undo the config removal.
 	if team.Slug != "" {
-		if err := deleteClassroomTeam(client, org, team); err != nil {
+		if err := configrepo.DeleteClassroomTeam(client, org, team); err != nil {
 			_, _ = fmt.Fprintf(errOut, "Warning: %s: removed the classroom config but could not delete its team %q (%v); delete it by hand at https://github.com/orgs/%s/teams if it lingers.\n",
 				org, team.Slug, err, org)
 			return nil
@@ -550,35 +520,9 @@ func confirmClassroomRemove(in io.Reader, out io.Writer, shortName string) error
 	return nil
 }
 
-// classroomJSON / scoresJSON pin the on-disk scaffold shapes;
+// configrepo.ClassroomJSON / scoresJSON pin the on-disk scaffold shapes;
 // assignments.json's typed shape lives in assignments_json.go.
 // MigratedFrom omits cleanly when absent.
-type classroomJSON struct {
-	Schema    string `json:"schema"`
-	Name      string `json:"name"`
-	ShortName string `json:"short_name"`
-	Term      string `json:"term"`
-	Org       string `json:"org"`
-	// Team is the per-classroom GitHub team that grants rostered
-	// students read on private, org-owned assignment templates.
-	// Populated by `classroom add`;
-	// omitted on classrooms created before this feature.
-	Team         *teamRef                  `json:"team,omitempty"`
-	MigratedFrom *classroomMigratedFromRef `json:"migrated_from,omitempty"`
-}
-
-// classroomMigratedFromRef records where a classroom originated
-// when it was imported by `gh teacher classroom migrate`.
-// Hand-authored classrooms never carry this block.
-type classroomMigratedFromRef struct {
-	Source           string `json:"source"`
-	ClassroomID      int64  `json:"classroom_id"`
-	OriginalName     string `json:"original_name"`
-	OriginalOrgLogin string `json:"original_org_login"`
-	URL              string `json:"url,omitempty"`
-	MigratedAt       string `json:"migrated_at"`
-}
-
 // scoresJSON: the gradebook written by `collect-scores.yaml`'s
 // collect_scores.py. The root `assignments` map is keyed by assignment
 // slug; each value is an assignmentBucket (`{type, entries}`). The map is
@@ -605,8 +549,8 @@ type assignmentBucket struct {
 // through encodeAssignments (same normalization as
 // `gh teacher assignment add`); `migration` populates the optional
 // `migrated_from` block on classroom.json.
-func classroomScaffold(org, shortName, name, term string, entries []assignmentEntry, migration *classroomMigratedFromRef, team *teamRef) (map[string]string, error) {
-	classroom := classroomJSON{
+func classroomScaffold(org, shortName, name, term string, entries []assignmentEntry, migration *configrepo.MigratedFromRef, team *configrepo.TeamRef) (map[string]string, error) {
+	classroom := configrepo.ClassroomJSON{
 		Schema:       classroomSchemaV1,
 		Name:         name,
 		ShortName:    shortName,

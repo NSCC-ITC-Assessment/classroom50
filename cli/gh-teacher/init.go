@@ -9,15 +9,10 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/foundation50/classroom50-cli-shared/contract"
+	"github.com/foundation50/gh-teacher/internal/configrepo"
 	"github.com/foundation50/gh-teacher/internal/githubapi"
 	"github.com/foundation50/gh-teacher/internal/ui"
 )
-
-// configRepoName: per-org classroom config repo. Hardcoded across
-// student repos and the collect-scores workflow — part of the
-// public contract. Single-sourced in the shared contract package.
-const configRepoName = contract.ConfigRepoName
 
 func initCmd() *cobra.Command {
 	var (
@@ -257,11 +252,11 @@ func initCmd() *cobra.Command {
 				return err
 			}
 			if created {
-				_, _ = fmt.Fprintf(stepOut, "%s/%s: created %s\n", org, configRepoName, repo.HTMLURL)
+				_, _ = fmt.Fprintf(stepOut, "%s/%s: created %s\n", org, configrepo.ConfigRepoName, repo.HTMLURL)
 			} else {
-				_, _ = fmt.Fprintf(stepOut, "%s/%s: already exists, continuing setup\n", org, configRepoName)
+				_, _ = fmt.Fprintf(stepOut, "%s/%s: already exists, continuing setup\n", org, configrepo.ConfigRepoName)
 			}
-			summary.ConfigRepo = repoSummary{Name: configRepoName, URL: repo.HTMLURL, Created: created}
+			summary.ConfigRepo = repoSummary{Name: configrepo.ConfigRepoName, URL: repo.HTMLURL, Created: created}
 			branch := repo.DefaultBranch
 			if branch == "" {
 				branch = "main"
@@ -270,7 +265,7 @@ func initCmd() *cobra.Command {
 			// Re-enable repo-level Actions before the skeleton push
 			// so the workflows' first run isn't blocked.
 			step(initStepLabels[5])
-			if err := ensureRepoActionsEnabled(client, stepOut, stepErr, org, configRepoName); err != nil {
+			if err := ensureRepoActionsEnabled(client, stepOut, stepErr, org, configrepo.ConfigRepoName); err != nil {
 				prog.Abort()
 				return err
 			}
@@ -284,27 +279,27 @@ func initCmd() *cobra.Command {
 			if interactive {
 				prog.Abort()
 			}
-			if err := commitSkeleton(client, cmd.InOrStdin(), stepOut, errOut, org, configRepoName, branch, skipConfirm); err != nil {
+			if err := commitSkeleton(client, cmd.InOrStdin(), stepOut, errOut, org, configrepo.ConfigRepoName, branch, skipConfirm); err != nil {
 				prog.Abort()
 				return err
 			}
 			step(initStepLabels[7])
-			if err := enablePages(client, stepOut, stepErr, org, configRepoName); err != nil {
+			if err := enablePages(client, stepOut, stepErr, org, configrepo.ConfigRepoName); err != nil {
 				prog.Abort()
 				return err
 			}
 			step(initStepLabels[8])
-			if err := applyBranchProtection(client, stepOut, org, configRepoName, branch); err != nil {
+			if err := applyBranchProtection(client, stepOut, org, configrepo.ConfigRepoName, branch); err != nil {
 				prog.Abort()
 				return err
 			}
 			step(initStepLabels[9])
-			if err := setWorkflowPermissions(client, stepOut, org, configRepoName); err != nil {
+			if err := setWorkflowPermissions(client, stepOut, org, configrepo.ConfigRepoName); err != nil {
 				prog.Abort()
 				return err
 			}
 			step(initStepLabels[10])
-			if err := enableReusableWorkflowAccess(client, stepOut, stepErr, org, configRepoName); err != nil {
+			if err := enableReusableWorkflowAccess(client, stepOut, stepErr, org, configrepo.ConfigRepoName); err != nil {
 				prog.Abort()
 				return err
 			}
@@ -335,7 +330,7 @@ func initCmd() *cobra.Command {
 
 			// Pages takes a few seconds after the first publish-pages
 			// run before the URL serves.
-			summary.PagesURL = fmt.Sprintf("https://%s.github.io/%s/", org, configRepoName)
+			summary.PagesURL = fmt.Sprintf("https://%s.github.io/%s/", org, configrepo.ConfigRepoName)
 			summary.finalize()
 
 			// Render the canonical summary: JSON to stdout (the only

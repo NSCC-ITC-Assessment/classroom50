@@ -10,11 +10,13 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/foundation50/gh-teacher/internal/configrepo"
 	"github.com/foundation50/gh-teacher/internal/githubapi"
+	"github.com/foundation50/gh-teacher/internal/validate"
 )
 
 // rosterListEntry is the `--json` view of one students.csv row. Field
-// names mirror the CSV column headers (rosterColumns) so the JSON and
+// names mirror the CSV column headers (configrepo.RosterColumns) so the JSON and
 // the on-disk file speak the same vocabulary. github_id is always
 // present; it is 0 for an unresolved row (a 5-column hand-import row
 // before the CLI resolves the GitHub-authoritative id) -- consumers
@@ -63,7 +65,7 @@ func rosterListCmd() *cobra.Command {
 			if org == "" || classroom == "" {
 				return errors.New("org and classroom must both be non-empty")
 			}
-			if err := validateShortName(classroom, "classroom"); err != nil {
+			if err := validate.ShortName(classroom, "classroom"); err != nil {
 				return err
 			}
 			client, err := githubapi.RequireAuthClient(cmd)
@@ -82,11 +84,11 @@ func rosterListCmd() *cobra.Command {
 // and renders it as a table (default), a JSON array (--json), or
 // username-only lines (--quiet). Read-only; no commit.
 func runRosterList(client githubapi.Client, out, errOut io.Writer, org, classroom string, asJSON, quiet bool) error {
-	branch, err := resolveConfigRepoBranch(client, org)
+	branch, err := configrepo.ResolveConfigRepoBranch(client, org)
 	if err != nil {
 		return err
 	}
-	rows, err := loadRoster(client, org, classroom, branch)
+	rows, err := configrepo.LoadRoster(client, org, classroom, branch)
 	if err != nil {
 		return err
 	}
@@ -119,7 +121,7 @@ func runRosterList(client githubapi.Client, out, errOut io.Writer, org, classroo
 // writeRosterTable renders rows as a tab-aligned table with a header.
 // An empty roster prints just the header so the columns are still
 // discoverable; the "no students" signal is the stderr summary.
-func writeRosterTable(out io.Writer, rows []rosterRow) {
+func writeRosterTable(out io.Writer, rows []configrepo.RosterRow) {
 	tw := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
 	_, _ = fmt.Fprintln(tw, "USERNAME\tNAME\tEMAIL\tSECTION\tGITHUB_ID")
 	for _, r := range rows {
@@ -148,7 +150,7 @@ func dashIfEmpty(s string) string {
 // `<org>/<repo>/<classroom>/students.csv: <message>` to match the
 // other list commands.
 func summarizeRosterList(org, classroom string, count int) string {
-	path := fmt.Sprintf("%s/%s/%s", org, configRepoName, rosterFilePath(classroom))
+	path := fmt.Sprintf("%s/%s/%s", org, configrepo.ConfigRepoName, configrepo.RosterFilePath(classroom))
 	if count == 0 {
 		return fmt.Sprintf("%s: no students on the roster — add some with `gh teacher roster add %s %s <username>`", path, org, classroom)
 	}

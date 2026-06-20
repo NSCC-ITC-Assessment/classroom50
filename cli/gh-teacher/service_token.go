@@ -20,6 +20,7 @@ import (
 
 	"github.com/foundation50/classroom50-cli-shared/ghauth"
 	"github.com/foundation50/gh-teacher/internal/cliutil"
+	"github.com/foundation50/gh-teacher/internal/configrepo"
 	"github.com/foundation50/gh-teacher/internal/githubapi"
 )
 
@@ -131,15 +132,15 @@ func validateServiceToken(token []byte, org string) error {
 func validateServiceTokenWithClient(tokenClient githubapi.Client, org string) error {
 	// Reading the config repo's contents exercises Contents: read on an
 	// org repo — exactly what collect-scores does against student repos.
-	path := fmt.Sprintf("repos/%s/%s/contents/", url.PathEscape(org), url.PathEscape(configRepoName))
+	path := fmt.Sprintf("repos/%s/%s/contents/", url.PathEscape(org), url.PathEscape(configrepo.ConfigRepoName))
 	if err := tokenClient.Get(path, nil); err != nil {
 		switch {
 		case cliutil.IsHTTPStatus(err, http.StatusUnauthorized):
 			return fmt.Errorf("the supplied token is invalid, expired, or revoked (401). Create a fresh fine-grained PAT and try again")
 		case cliutil.IsHTTPStatus(err, http.StatusNotFound), cliutil.IsHTTPStatus(err, http.StatusForbidden):
-			return fmt.Errorf("the supplied token can't read %s/%s contents. Create a fine-grained PAT with Resource owner = %q, Repository access = All repositories, and Repository permissions -> Contents: Read-only. If your org requires PAT approval and you are not an org owner, an owner must approve it first (owners' tokens are auto-approved). Underlying error: %v", org, configRepoName, org, err)
+			return fmt.Errorf("the supplied token can't read %s/%s contents. Create a fine-grained PAT with Resource owner = %q, Repository access = All repositories, and Repository permissions -> Contents: Read-only. If your org requires PAT approval and you are not an org owner, an owner must approve it first (owners' tokens are auto-approved). Underlying error: %v", org, configrepo.ConfigRepoName, org, err)
 		default:
-			return fmt.Errorf("couldn't verify the token against %s/%s: %w", org, configRepoName, err)
+			return fmt.Errorf("couldn't verify the token against %s/%s: %w", org, configrepo.ConfigRepoName, err)
 		}
 	}
 	return nil
@@ -167,7 +168,7 @@ func provisionServiceToken(cmd *cobra.Command, client githubapi.Client, summary 
 		if err := validateServiceToken(token, org); err != nil {
 			return fmt.Errorf("the %s in your environment failed validation: %w", envServiceToken, err)
 		}
-		if err := provisionServiceSecret(client, io.Discard, org, configRepoName, token, "stored"); err != nil {
+		if err := provisionServiceSecret(client, io.Discard, org, configrepo.ConfigRepoName, token, "stored"); err != nil {
 			return err
 		}
 		summary.ServiceToken = "configured from " + envServiceToken
@@ -190,7 +191,7 @@ func provisionServiceToken(cmd *cobra.Command, client githubapi.Client, summary 
 	if err := validateServiceToken(token, org); err != nil {
 		return fmt.Errorf("service token validation failed: %w", err)
 	}
-	if err := provisionServiceSecret(client, io.Discard, org, configRepoName, token, "stored"); err != nil {
+	if err := provisionServiceSecret(client, io.Discard, org, configrepo.ConfigRepoName, token, "stored"); err != nil {
 		return err
 	}
 	summary.ServiceToken = "configured (prompted)"
@@ -294,10 +295,10 @@ func rotateServiceTokenCmd() *cobra.Command {
 
 			// Refuse to rotate on an org without classroom50 — the
 			// user probably mistyped.
-			repoPath := fmt.Sprintf("repos/%s/%s", url.PathEscape(org), configRepoName)
+			repoPath := fmt.Sprintf("repos/%s/%s", url.PathEscape(org), configrepo.ConfigRepoName)
 			if err := client.Get(repoPath, nil); err != nil {
 				if cliutil.IsHTTPStatus(err, http.StatusNotFound) {
-					return fmt.Errorf("%s/%s does not exist; run `gh teacher init %s` first", org, configRepoName, org)
+					return fmt.Errorf("%s/%s does not exist; run `gh teacher init %s` first", org, configrepo.ConfigRepoName, org)
 				}
 				return fmt.Errorf("GET %s: %w", repoPath, err)
 			}
@@ -311,7 +312,7 @@ func rotateServiceTokenCmd() *cobra.Command {
 			if err := validateServiceToken(token, org); err != nil {
 				return fmt.Errorf("service token validation failed: %w", err)
 			}
-			return provisionServiceSecret(client, out, org, configRepoName, token, "rotated")
+			return provisionServiceSecret(client, out, org, configrepo.ConfigRepoName, token, "rotated")
 		},
 	}
 	return cmd

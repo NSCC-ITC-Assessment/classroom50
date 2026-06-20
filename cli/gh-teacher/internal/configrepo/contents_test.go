@@ -1,4 +1,4 @@
-package main
+package configrepo
 
 import (
 	"encoding/json"
@@ -32,7 +32,7 @@ func TestListDirContents(t *testing.T) {
 	client := githubtest.NewTestClient(t, server)
 
 	t.Run("root listing decodes entries", func(t *testing.T) {
-		entries, ok, err := listDirContents(client, "o", "classroom50", "", "main")
+		entries, ok, err := ListDirContents(client, "o", "classroom50", "", "main")
 		if err != nil || !ok {
 			t.Fatalf("listDirContents: ok=%v err=%v", ok, err)
 		}
@@ -45,7 +45,7 @@ func TestListDirContents(t *testing.T) {
 	})
 
 	t.Run("404 returns ok=false without error", func(t *testing.T) {
-		entries, ok, err := listDirContents(client, "o", "classroom50", "missing", "main")
+		entries, ok, err := ListDirContents(client, "o", "classroom50", "missing", "main")
 		if err != nil {
 			t.Fatalf("listDirContents: %v", err)
 		}
@@ -82,7 +82,7 @@ func TestListSubtreeBlobPaths(t *testing.T) {
 	t.Cleanup(server.Close)
 	client := githubtest.NewTestClient(t, server)
 
-	paths, err := listSubtreeBlobPaths(client, "o", "classroom50", "parent-sha", "cs-principles")
+	paths, err := ListSubtreeBlobPaths(client, "o", "classroom50", "parent-sha", "cs-principles")
 	if err != nil {
 		t.Fatalf("listSubtreeBlobPaths: %v", err)
 	}
@@ -115,7 +115,7 @@ func TestListSubtreeBlobPaths_TruncatedErrors(t *testing.T) {
 	t.Cleanup(server.Close)
 	client := githubtest.NewTestClient(t, server)
 
-	if _, err := listSubtreeBlobPaths(client, "o", "classroom50", "parent-sha", "cs-principles"); err == nil {
+	if _, err := ListSubtreeBlobPaths(client, "o", "classroom50", "parent-sha", "cs-principles"); err == nil {
 		t.Fatal("expected error on truncated tree, got nil")
 	}
 }

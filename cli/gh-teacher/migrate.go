@@ -9,7 +9,9 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/foundation50/gh-teacher/internal/configrepo"
 	"github.com/foundation50/gh-teacher/internal/githubapi"
+	"github.com/foundation50/gh-teacher/internal/validate"
 )
 
 // classroomMigrateCmd implements `gh teacher classroom migrate`:
@@ -159,7 +161,7 @@ func discoverMigration(client githubapi.Client, errOut io.Writer, opts migrateOp
 			return migrationPlan{}, err
 		}
 	}
-	if err := validateShortName(shortNameVal, "short-name"); err != nil {
+	if err := validate.ShortName(shortNameVal, "short-name"); err != nil {
 		return migrationPlan{}, err
 	}
 	// A migrated classroom gets a GitHub team (classroom50-<short>);
@@ -168,7 +170,7 @@ func discoverMigration(client githubapi.Client, errOut io.Writer, opts migrateOp
 	// any repos — otherwise ensureClassroomTeam would hard-fail later
 	// and orphan the freshly-created templates. Auto-derived short-names
 	// are already canonical; this guards an explicit --short-name.
-	if !canonicalTeamSlugShortName(shortNameVal) {
+	if !configrepo.CanonicalTeamSlugShortName(shortNameVal) {
 		return migrationPlan{}, fmt.Errorf("short-name %q can't back a GitHub team — remove consecutive or trailing hyphens (GitHub would rewrite the team slug, breaking membership and template grants)", shortNameVal)
 	}
 
@@ -193,7 +195,7 @@ func discoverMigration(client githubapi.Client, errOut io.Writer, opts migrateOp
 // commit still lands with the successful entries, the non-zero
 // exit code signals partial completion.
 func performMigration(client githubapi.Client, out, errOut io.Writer, plan migrationPlan, templateSuffix string) error {
-	branch, err := resolveConfigRepoBranch(client, plan.TargetOrg)
+	branch, err := configrepo.ResolveConfigRepoBranch(client, plan.TargetOrg)
 	if err != nil {
 		return err
 	}
@@ -201,13 +203,13 @@ func performMigration(client githubapi.Client, out, errOut io.Writer, plan migra
 	// Fail fast on the common "already exists" case before any
 	// template repos get created. The commitTree build callback
 	// re-probes for race-safety against a concurrent writer.
-	exists, err := contentsExists(client, plan.TargetOrg, configRepoName, plan.ShortName, branch)
+	exists, err := configrepo.ContentsExists(client, plan.TargetOrg, configrepo.ConfigRepoName, plan.ShortName, branch)
 	if err != nil {
 		return err
 	}
 	if exists {
 		return fmt.Errorf("classroom %q already exists in %s/%s — pick a different --short-name or delete the dir",
-			plan.ShortName, plan.TargetOrg, configRepoName)
+			plan.ShortName, plan.TargetOrg, configrepo.ConfigRepoName)
 	}
 
 	resolved, err := runTemplateCopy(client, errOut, plan, templateSuffix)
@@ -220,26 +222,26 @@ func performMigration(client githubapi.Client, out, errOut io.Writer, plan migra
 
 	// Create (or adopt) the per-classroom team so its ref lands in
 	// classroom.json, same as `gh teacher classroom add`.
-	team, err := ensureClassroomTeam(client, plan.TargetOrg, plan.ShortName)
+	team, err := configrepo.EnsureClassroomTeam(client, plan.TargetOrg, plan.ShortName)
 	if err != nil {
 		return fmt.Errorf("create classroom team: %w", err)
 	}
 
 	build := func(parentSHA string) (map[string]string, error) {
-		exists, err := contentsExists(client, plan.TargetOrg, configRepoName, plan.ShortName, parentSHA)
+		exists, err := configrepo.ContentsExists(client, plan.TargetOrg, configrepo.ConfigRepoName, plan.ShortName, parentSHA)
 		if err != nil {
 			return nil, err
 		}
 		if exists {
 			return nil, fmt.Errorf("classroom %q appeared in %s/%s mid-commit (concurrent writer?)",
-				plan.ShortName, plan.TargetOrg, configRepoName)
+				plan.ShortName, plan.TargetOrg, configrepo.ConfigRepoName)
 		}
 		return classroomScaffold(plan.TargetOrg, plan.ShortName, plan.Classroom.Name, plan.Term, entries, migration, &team)
 	}
 
 	message := fmt.Sprintf("Migrate %s from GitHub Classroom %d (gh teacher classroom migrate)",
 		plan.ShortName, plan.Classroom.ID)
-	commitSHA, err := commitTree(client, plan.TargetOrg, configRepoName, branch, message, build)
+	commitSHA, err := commitTree(client, plan.TargetOrg, configrepo.ConfigRepoName, branch, message, build)
 	if err != nil {
 		return err
 	}
@@ -260,7 +262,7 @@ func performMigration(client githubapi.Client, out, errOut io.Writer, plan migra
 		if rt.Action == templateActionSkipped || !rt.TargetPrivate {
 			continue
 		}
-		granted, gerr := grantTeamRepoRead(client, plan.TargetOrg, team.Slug, rt.Template.Owner, rt.Template.Repo)
+		granted, gerr := configrepo.GrantTeamRepoRead(client, plan.TargetOrg, team.Slug, rt.Template.Owner, rt.Template.Repo)
 		if gerr != nil {
 			grantFailures++
 			_, _ = fmt.Fprintf(errOut, "Warning: %s: could not grant the classroom team read on private template %s/%s (%v); students will 404 on `gh student accept` until you grant it. Retry with `gh teacher assignment add` or grant the team manually.\n",
@@ -318,7 +320,7 @@ func printMigrationSummary(out, errOut io.Writer, plan migrationPlan, resolved [
 	}
 
 	_, _ = fmt.Fprintf(out, "%s/%s/%s: migrated from classroom %d (commit %s; %d generated, %d reused, %d skipped)\n",
-		plan.TargetOrg, configRepoName, plan.ShortName, plan.Classroom.ID, short, generated, reused, skipped)
+		plan.TargetOrg, configrepo.ConfigRepoName, plan.ShortName, plan.Classroom.ID, short, generated, reused, skipped)
 
 	_, _ = fmt.Fprintf(out, "  classroom.json     %q (migrated_from: github_classroom/%d)\n",
 		plan.Classroom.Name, plan.Classroom.ID)
@@ -328,7 +330,7 @@ func printMigrationSummary(out, errOut io.Writer, plan migrationPlan, resolved [
 	_, _ = fmt.Fprintln(out, "  scores.json        empty (not migrated)")
 
 	_, _ = fmt.Fprintf(errOut, "View at https://github.com/%s/%s/tree/%s/%s\n",
-		plan.TargetOrg, configRepoName, branch, plan.ShortName)
+		plan.TargetOrg, configrepo.ConfigRepoName, branch, plan.ShortName)
 	_, _ = fmt.Fprintln(errOut, "Next:")
 	_, _ = fmt.Fprintf(errOut, "  - Add students: gh teacher roster add %s %s <username>\n",
 		plan.TargetOrg, plan.ShortName)
@@ -349,7 +351,7 @@ func printMigrationPlan(out io.Writer, plan migrationPlan) error {
 	}
 
 	_, _ = fmt.Fprintf(out, "%s/%s/%s: planned migration from classroom %d (%d %s)\n",
-		plan.TargetOrg, configRepoName, plan.ShortName, plan.Classroom.ID, len(plan.Assignments), noun)
+		plan.TargetOrg, configrepo.ConfigRepoName, plan.ShortName, plan.Classroom.ID, len(plan.Assignments), noun)
 	_, _ = fmt.Fprintf(out, "  source:        %s (org: %s)\n",
 		plan.Classroom.Name, plan.Classroom.Organization.Login)
 	if plan.Classroom.Archived {

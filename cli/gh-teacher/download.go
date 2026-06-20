@@ -19,6 +19,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/foundation50/gh-teacher/internal/cliutil"
+	"github.com/foundation50/gh-teacher/internal/configrepo"
 	"github.com/foundation50/gh-teacher/internal/githubapi"
 )
 
@@ -155,12 +156,12 @@ func downloadCmd() *cobra.Command {
 // Roster entries without a repo on the org are reported as missing
 // — not a hard failure.
 func downloadByRoster(client githubapi.Client, out, errOut io.Writer, org, classroom, assignment, dir string, quiet bool) error {
-	branch, err := resolveConfigRepoBranch(client, org)
+	branch, err := configrepo.ResolveConfigRepoBranch(client, org)
 	if err != nil {
 		return err
 	}
 
-	roster, err := loadRoster(client, org, classroom, branch)
+	roster, err := configrepo.LoadRoster(client, org, classroom, branch)
 	if err != nil {
 		return err
 	}
@@ -171,7 +172,7 @@ func downloadByRoster(client githubapi.Client, out, errOut io.Writer, org, class
 	}
 	if !assignmentRegistered(assignments, assignment) {
 		return fmt.Errorf("assignment %q is not registered in %s/%s/%s — run `gh teacher assignment add %s %s %s --name <name> --template <owner>/<repo>` first, or pass --by-pattern to skip the roster lookup",
-			assignment, org, configRepoName, assignmentsFilePath(classroom), org, classroom, assignment)
+			assignment, org, configrepo.ConfigRepoName, assignmentsFilePath(classroom), org, classroom, assignment)
 	}
 
 	isGroup := assignmentIsGroup(assignments, assignment)
@@ -482,7 +483,7 @@ func repoExistsOnOrg(client githubapi.Client, org, repo string) (bool, error) {
 // roster-shaped scores.csv with every row blank.
 func loadScores(client githubapi.Client, org, classroom, ref string) (scoresJSON, error) {
 	path := scoresFilePath(classroom)
-	data, ok, err := readFileContents(client, org, configRepoName, path, ref)
+	data, ok, err := configrepo.ReadFileContents(client, org, configrepo.ConfigRepoName, path, ref)
 	if err != nil {
 		return scoresJSON{}, err
 	}
@@ -491,7 +492,7 @@ func loadScores(client githubapi.Client, org, classroom, ref string) (scoresJSON
 	}
 	scores, err := parseScores(data)
 	if err != nil {
-		return scoresJSON{}, fmt.Errorf("%s/%s/%s: %w", org, configRepoName, path, err)
+		return scoresJSON{}, fmt.Errorf("%s/%s/%s: %w", org, configrepo.ConfigRepoName, path, err)
 	}
 	return scores, nil
 }
@@ -568,7 +569,7 @@ func decodeAssignments(raw json.RawMessage) (map[string]assignmentBucket, error)
 // blank line so teachers see the whole class at a glance. Per-test
 // breakdowns are intentionally omitted — that detail lives in the
 // per-repo result.json / results.json.
-func writeScoresCSV(path string, scores scoresJSON, assignment string, roster []rosterRow) error {
+func writeScoresCSV(path string, scores scoresJSON, assignment string, roster []configrepo.RosterRow) error {
 	entries := entriesForAssignment(scores, assignment)
 	// Map each credited student (lowercased) -> their gradebook entry.
 	// Group entries credit every member in member_usernames; individual

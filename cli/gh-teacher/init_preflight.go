@@ -11,8 +11,10 @@ import (
 
 	"github.com/foundation50/classroom50-cli-shared/ghauth"
 	"github.com/foundation50/gh-teacher/internal/cliutil"
+	"github.com/foundation50/gh-teacher/internal/configrepo"
 	"github.com/foundation50/gh-teacher/internal/githubapi"
 	"github.com/foundation50/gh-teacher/internal/ui"
+	"github.com/foundation50/gh-teacher/internal/validate"
 )
 
 // preflightStatus is the outcome of a single read-only preflight check.
@@ -86,7 +88,7 @@ func runPreflight(client githubapi.Client, org string, tok tokenSource) prefligh
 	// TTY) isn't falsely blocked. A repo-not-found / error here means
 	// first-time setup, so a token is required. The result is carried on
 	// the preflight so the provisioning step doesn't re-fetch it.
-	res.SecretExists, _ = serviceSecretExists(client, org, configRepoName)
+	res.SecretExists, _ = serviceSecretExists(client, org, configrepo.ConfigRepoName)
 	res.Checks = append(res.Checks, checkTokenAvailability(tok, res.SecretExists))
 
 	for _, c := range res.Checks {
@@ -126,7 +128,7 @@ func checkScopes(client githubapi.Client) (check preflightCheck, scopes, login s
 	}
 	var missing []string
 	for _, want := range githubapi.RequiredScopes() {
-		if !scopeListContains(scopes, want) {
+		if !validate.ScopeListContains(scopes, want) {
 			missing = append(missing, want)
 		}
 	}

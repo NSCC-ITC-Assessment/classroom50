@@ -8,7 +8,9 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/foundation50/gh-teacher/internal/configrepo"
 	"github.com/foundation50/gh-teacher/internal/githubapi"
+	"github.com/foundation50/gh-teacher/internal/validate"
 )
 
 // assignmentTestCmd is the `gh teacher assignment test` command group:
@@ -87,10 +89,10 @@ func assignmentTestAddCmd() *cobra.Command {
 			if org == "" || classroom == "" || slug == "" {
 				return errors.New("org, classroom, and slug must all be non-empty")
 			}
-			if err := validateShortName(classroom, "classroom"); err != nil {
+			if err := validate.ShortName(classroom, "classroom"); err != nil {
 				return err
 			}
-			if err := validateShortName(slug, "slug"); err != nil {
+			if err := validate.ShortName(slug, "slug"); err != nil {
 				return err
 			}
 
@@ -146,7 +148,7 @@ func assignmentTestAddCmd() *cobra.Command {
 // rebase cleanly. validateAssignmentEntry re-runs in the closure to
 // enforce the count cap + name uniqueness against the merged array.
 func runAssignmentTestAdd(client githubapi.Client, out io.Writer, org, classroom, slug string, spec testSpec) error {
-	branch, err := resolveConfigRepoBranch(client, org)
+	branch, err := configrepo.ResolveConfigRepoBranch(client, org)
 	if err != nil {
 		return err
 	}
@@ -166,7 +168,7 @@ func runAssignmentTestAdd(client githubapi.Client, out io.Writer, org, classroom
 		idx, ok := findAssignment(file.Assignments, slug)
 		if !ok {
 			return nil, fmt.Errorf("assignment %q is not registered in %s/%s/%s — run `gh teacher assignment add %s %s %s ...` first",
-				slug, org, configRepoName, assignmentsFilePath(classroom), org, classroom, slug)
+				slug, org, configrepo.ConfigRepoName, assignmentsFilePath(classroom), org, classroom, slug)
 		}
 		entry := file.Assignments[idx]
 		updated, replaced := upsertTest(entry.Tests, spec)
@@ -188,11 +190,11 @@ func runAssignmentTestAdd(client githubapi.Client, out io.Writer, org, classroom
 	}
 
 	message := fmt.Sprintf("assignment: set test %q on %s/%s (gh teacher assignment test add)", spec.Name, classroom, slug)
-	if _, err := commitTree(client, org, configRepoName, branch, message, build); err != nil {
+	if _, err := commitTree(client, org, configrepo.ConfigRepoName, branch, message, build); err != nil {
 		return err
 	}
 	_, _ = fmt.Fprintf(out, "%s/%s/%s: %s test %q on %s (type %s, %d pts)\n",
-		org, configRepoName, assignmentsFilePath(classroom), action, spec.Name, slug, spec.Type, spec.Points)
+		org, configrepo.ConfigRepoName, assignmentsFilePath(classroom), action, spec.Name, slug, spec.Type, spec.Points)
 	return nil
 }
 
@@ -219,10 +221,10 @@ func assignmentTestListCmd() *cobra.Command {
 			if org == "" || classroom == "" || slug == "" {
 				return errors.New("org, classroom, and slug must all be non-empty")
 			}
-			if err := validateShortName(classroom, "classroom"); err != nil {
+			if err := validate.ShortName(classroom, "classroom"); err != nil {
 				return err
 			}
-			if err := validateShortName(slug, "slug"); err != nil {
+			if err := validate.ShortName(slug, "slug"); err != nil {
 				return err
 			}
 			client, err := githubapi.RequireAuthClient(cmd)
@@ -238,7 +240,7 @@ func assignmentTestListCmd() *cobra.Command {
 }
 
 func runAssignmentTestList(client githubapi.Client, out, errOut io.Writer, org, classroom, slug string, asJSON, quiet bool) error {
-	branch, err := resolveConfigRepoBranch(client, org)
+	branch, err := configrepo.ResolveConfigRepoBranch(client, org)
 	if err != nil {
 		return err
 	}
@@ -249,7 +251,7 @@ func runAssignmentTestList(client githubapi.Client, out, errOut io.Writer, org, 
 	idx, ok := findAssignment(file.Assignments, slug)
 	if !ok {
 		return fmt.Errorf("assignment %q is not registered in %s/%s/%s",
-			slug, org, configRepoName, assignmentsFilePath(classroom))
+			slug, org, configrepo.ConfigRepoName, assignmentsFilePath(classroom))
 	}
 	tests := file.Assignments[idx].Tests
 
@@ -269,7 +271,7 @@ func runAssignmentTestList(client githubapi.Client, out, errOut io.Writer, org, 
 	}
 
 	if !quiet {
-		path := fmt.Sprintf("%s/%s/%s [%s]", org, configRepoName, assignmentsFilePath(classroom), slug)
+		path := fmt.Sprintf("%s/%s/%s [%s]", org, configrepo.ConfigRepoName, assignmentsFilePath(classroom), slug)
 		switch len(tests) {
 		case 0:
 			_, _ = fmt.Fprintf(errOut, "%s: no declarative tests — add one with `gh teacher assignment test add %s %s %s ...`\n", path, org, classroom, slug)
@@ -301,10 +303,10 @@ func assignmentTestRemoveCmd() *cobra.Command {
 			if org == "" || classroom == "" || slug == "" || testName == "" {
 				return errors.New("org, classroom, slug, and test-name must all be non-empty")
 			}
-			if err := validateShortName(classroom, "classroom"); err != nil {
+			if err := validate.ShortName(classroom, "classroom"); err != nil {
 				return err
 			}
-			if err := validateShortName(slug, "slug"); err != nil {
+			if err := validate.ShortName(slug, "slug"); err != nil {
 				return err
 			}
 			client, err := githubapi.RequireAuthClient(cmd)
@@ -318,7 +320,7 @@ func assignmentTestRemoveCmd() *cobra.Command {
 }
 
 func runAssignmentTestRemove(client githubapi.Client, out io.Writer, org, classroom, slug, testName string) error {
-	branch, err := resolveConfigRepoBranch(client, org)
+	branch, err := configrepo.ResolveConfigRepoBranch(client, org)
 	if err != nil {
 		return err
 	}
@@ -336,7 +338,7 @@ func runAssignmentTestRemove(client githubapi.Client, out io.Writer, org, classr
 		idx, ok := findAssignment(file.Assignments, slug)
 		if !ok {
 			return nil, fmt.Errorf("assignment %q is not registered in %s/%s/%s",
-				slug, org, configRepoName, assignmentsFilePath(classroom))
+				slug, org, configrepo.ConfigRepoName, assignmentsFilePath(classroom))
 		}
 		entry := file.Assignments[idx]
 		next, ok := removeTest(entry.Tests, testName)
@@ -357,11 +359,11 @@ func runAssignmentTestRemove(client githubapi.Client, out io.Writer, org, classr
 	}
 
 	message := fmt.Sprintf("assignment: remove test %q from %s/%s (gh teacher assignment test remove)", testName, classroom, slug)
-	if _, err := commitTree(client, org, configRepoName, branch, message, build); err != nil {
+	if _, err := commitTree(client, org, configrepo.ConfigRepoName, branch, message, build); err != nil {
 		return err
 	}
 
-	path := fmt.Sprintf("%s/%s/%s", org, configRepoName, assignmentsFilePath(classroom))
+	path := fmt.Sprintf("%s/%s/%s", org, configrepo.ConfigRepoName, assignmentsFilePath(classroom))
 	if removed {
 		_, _ = fmt.Fprintf(out, "%s: removed test %q from %s\n", path, testName, slug)
 	} else {
@@ -380,13 +382,13 @@ const materializeScriptPath = ".github/scripts/materialize_tests.py"
 // bundle, and every submission would silently fall back (classroom
 // default or vacuous pass) while looking graded.
 func ensureDeclarativeTestsSupported(client githubapi.Client, org, ref string) error {
-	exists, err := contentsExists(client, org, configRepoName, materializeScriptPath, ref)
+	exists, err := configrepo.ContentsExists(client, org, configrepo.ConfigRepoName, materializeScriptPath, ref)
 	if err != nil {
-		return fmt.Errorf("check %s/%s/%s: %w", org, configRepoName, materializeScriptPath, err)
+		return fmt.Errorf("check %s/%s/%s: %w", org, configrepo.ConfigRepoName, materializeScriptPath, err)
 	}
 	if !exists {
 		return fmt.Errorf("%s/%s is missing %s, so declarative tests would never run — re-run `gh teacher init %s` to update the skeleton, then retry",
-			org, configRepoName, materializeScriptPath, org)
+			org, configrepo.ConfigRepoName, materializeScriptPath, org)
 	}
 	return nil
 }
@@ -398,13 +400,13 @@ func ensureDeclarativeTestsSupported(client githubapi.Client, org, ref string) e
 // closure sees the same parent state as the rest of its read.
 func ensureNoPerAssignmentAutograder(client githubapi.Client, org, classroom, slug, ref string) error {
 	path := perAssignmentAutograderPath(classroom, slug)
-	exists, err := contentsExists(client, org, configRepoName, path, ref)
+	exists, err := configrepo.ContentsExists(client, org, configrepo.ConfigRepoName, path, ref)
 	if err != nil {
-		return fmt.Errorf("check %s/%s/%s: %w", org, configRepoName, path, err)
+		return fmt.Errorf("check %s/%s/%s: %w", org, configrepo.ConfigRepoName, path, err)
 	}
 	if exists {
 		return fmt.Errorf("assignment %q has a per-assignment autograder at %s/%s/%s — declarative tests and a hand-written autograder.py are mutually exclusive (the runner prefers autograder.py); remove it before adding tests",
-			slug, org, configRepoName, path)
+			slug, org, configrepo.ConfigRepoName, path)
 	}
 	return nil
 }

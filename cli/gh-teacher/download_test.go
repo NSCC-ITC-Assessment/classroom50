@@ -12,6 +12,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/foundation50/gh-teacher/internal/configrepo"
 	"github.com/foundation50/gh-teacher/internal/githubtest"
 )
 
@@ -337,7 +338,7 @@ func TestStringifyOverride(t *testing.T) {
 }
 
 func TestWriteScoresCSV(t *testing.T) {
-	roster := []rosterRow{
+	roster := []configrepo.RosterRow{
 		{Username: "alice"},
 		{Username: "Bob"}, // mixed case to verify lookup is case-insensitive
 		{Username: "carol"},
@@ -436,7 +437,7 @@ func TestWriteScoresCSV_GroupFanOut(t *testing.T) {
 	// A group submission is one multi-username row. writeScoresCSV must
 	// credit every member with the group's submissions, including a
 	// teammate who owns no derived repo.
-	roster := []rosterRow{
+	roster := []configrepo.RosterRow{
 		{Username: "alice"}, // owner
 		{Username: "bob"},   // joined alice's repo
 		{Username: "carol"}, // joined alice's repo
@@ -563,7 +564,7 @@ func TestWriteScoresCSV_NeutralizesFormulaInjection(t *testing.T) {
 	}
 	dir := t.TempDir()
 	path := filepath.Join(dir, "scores.csv")
-	if err := writeScoresCSV(path, scores, "hello", []rosterRow{{Username: "alice"}}); err != nil {
+	if err := writeScoresCSV(path, scores, "hello", []configrepo.RosterRow{{Username: "alice"}}); err != nil {
 		t.Fatalf("writeScoresCSV: %v", err)
 	}
 	got, err := os.ReadFile(path)

@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/foundation50/gh-teacher/internal/cliutil"
+	"github.com/foundation50/gh-teacher/internal/configrepo"
 	"github.com/foundation50/gh-teacher/internal/githubapi"
 )
 
@@ -723,40 +724,34 @@ func ensureRepoActionsEnabled(client githubapi.Client, out, errOut io.Writer, ow
 // (checkOrgAccess + planCheck) and its advisory surfaced there, so init
 // no longer makes a second GET /orgs/{org} for the same warning.
 
-type configRepo struct {
-	ID            int64  `json:"id"`
-	HTMLURL       string `json:"html_url"`
-	DefaultBranch string `json:"default_branch"`
-}
-
 // ensureConfigRepo returns the classroom50 repo for <org>, creating
 // it if absent. 422 → name is taken; fall back to GET so init
 // re-runs succeed. default_branch flows through so an org policy
 // rename doesn't break the bootstrap.
-func ensureConfigRepo(client githubapi.Client, org string) (repo configRepo, created bool, err error) {
+func ensureConfigRepo(client githubapi.Client, org string) (repo configrepo.ConfigRepo, created bool, err error) {
 	body, err := json.Marshal(struct {
 		Name     string `json:"name"`
 		Private  bool   `json:"private"`
 		AutoInit bool   `json:"auto_init"`
 	}{
-		Name:     configRepoName,
+		Name:     configrepo.ConfigRepoName,
 		Private:  true,
 		AutoInit: true,
 	})
 	if err != nil {
-		return configRepo{}, false, fmt.Errorf("encode body: %w", err)
+		return configrepo.ConfigRepo{}, false, fmt.Errorf("encode body: %w", err)
 	}
 
 	createPath := fmt.Sprintf("orgs/%s/repos", url.PathEscape(org))
 	if err := client.Post(createPath, bytes.NewReader(body), &repo); err != nil {
 		if cliutil.IsHTTPStatus(err, http.StatusUnprocessableEntity) {
-			getPath := fmt.Sprintf("repos/%s/%s", url.PathEscape(org), configRepoName)
+			getPath := fmt.Sprintf("repos/%s/%s", url.PathEscape(org), configrepo.ConfigRepoName)
 			if getErr := client.Get(getPath, &repo); getErr != nil {
-				return configRepo{}, false, fmt.Errorf("GET %s: %w", getPath, getErr)
+				return configrepo.ConfigRepo{}, false, fmt.Errorf("GET %s: %w", getPath, getErr)
 			}
 			return repo, false, nil
 		}
-		return configRepo{}, false, fmt.Errorf("POST %s: %w", createPath, err)
+		return configrepo.ConfigRepo{}, false, fmt.Errorf("POST %s: %w", createPath, err)
 	}
 	return repo, true, nil
 }

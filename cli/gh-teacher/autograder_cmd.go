@@ -14,7 +14,9 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/foundation50/gh-teacher/internal/cliutil"
+	"github.com/foundation50/gh-teacher/internal/configrepo"
 	"github.com/foundation50/gh-teacher/internal/githubapi"
+	"github.com/foundation50/gh-teacher/internal/validate"
 )
 
 // classroomAutograderFilename: file name written under <classroom>/.
@@ -98,7 +100,7 @@ func autograderSetDefaultCmd() *cobra.Command {
 			"      --from examples/autograders/cs50/autograder.py",
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			org, classroom, err := parseOrgClassroom(args)
+			org, classroom, err := validate.OrgClassroom(args)
 			if err != nil {
 				return err
 			}
@@ -153,7 +155,7 @@ func readAutograderSource(path string, stdin io.Reader) (content []byte, label s
 // writing — prevents typos creating phantom-classroom files. Skips
 // the commit when the existing file is already byte-for-byte equal.
 func setClassroomDefaultAutograder(client githubapi.Client, out, errOut io.Writer, org, classroom, label string, content []byte) error {
-	branch, err := resolveConfigRepoBranch(client, org)
+	branch, err := configrepo.ResolveConfigRepoBranch(client, org)
 	if err != nil {
 		return err
 	}
@@ -168,7 +170,7 @@ func setClassroomDefaultAutograder(client githubapi.Client, out, errOut io.Write
 
 	repoPath := classroom + "/" + classroomAutograderFilename
 	build := func(parentSHA string) (map[string]string, error) {
-		existing, err := fetchFileContent(client, org, configRepoName, repoPath, parentSHA)
+		existing, err := fetchFileContent(client, org, configrepo.ConfigRepoName, repoPath, parentSHA)
 		if err != nil {
 			return nil, err
 		}
@@ -179,17 +181,17 @@ func setClassroomDefaultAutograder(client githubapi.Client, out, errOut io.Write
 	}
 
 	message := fmt.Sprintf("Set %s default autograder.py from %s (gh teacher autograder set-default)", classroom, label)
-	commitSHA, err := commitTree(client, org, configRepoName, branch, message, build)
+	commitSHA, err := commitTree(client, org, configrepo.ConfigRepoName, branch, message, build)
 	if err != nil {
 		return err
 	}
 	if commitSHA == "" {
-		_, _ = fmt.Fprintf(out, "%s/%s: %s already matches —\u00a0no commit\n", org, configRepoName, repoPath)
+		_, _ = fmt.Fprintf(out, "%s/%s: %s already matches —\u00a0no commit\n", org, configrepo.ConfigRepoName, repoPath)
 		return nil
 	}
 
-	_, _ = fmt.Fprintf(out, "%s/%s: updated %s (commit %s)\n", org, configRepoName, repoPath, commitSHA[:8])
-	_, _ = fmt.Fprintf(errOut, "View at https://github.com/%s/%s/blob/%s/%s\n", org, configRepoName, branch, repoPath)
+	_, _ = fmt.Fprintf(out, "%s/%s: updated %s (commit %s)\n", org, configrepo.ConfigRepoName, repoPath, commitSHA[:8])
+	_, _ = fmt.Fprintf(errOut, "View at https://github.com/%s/%s/blob/%s/%s\n", org, configrepo.ConfigRepoName, branch, repoPath)
 	_, _ = fmt.Fprintf(errOut, "Next: wait ~30s for publish-pages.yaml to redeploy, then push a submission to test\n")
 	return nil
 }

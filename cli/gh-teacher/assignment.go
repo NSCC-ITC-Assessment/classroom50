@@ -13,7 +13,9 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/foundation50/gh-teacher/internal/cliutil"
+	"github.com/foundation50/gh-teacher/internal/configrepo"
 	"github.com/foundation50/gh-teacher/internal/githubapi"
+	"github.com/foundation50/gh-teacher/internal/validate"
 )
 
 func assignmentCmd() *cobra.Command {
@@ -124,10 +126,10 @@ func assignmentAddCmd() *cobra.Command {
 			if org == "" || classroom == "" || slug == "" {
 				return errors.New("org, classroom, and slug must all be non-empty")
 			}
-			if err := validateShortName(classroom, "classroom"); err != nil {
+			if err := validate.ShortName(classroom, "classroom"); err != nil {
 				return err
 			}
-			if err := validateShortName(slug, "slug"); err != nil {
+			if err := validate.ShortName(slug, "slug"); err != nil {
 				return err
 			}
 
@@ -214,10 +216,10 @@ func assignmentRemoveCmd() *cobra.Command {
 			if org == "" || classroom == "" || slug == "" {
 				return errors.New("org, classroom, and slug must all be non-empty")
 			}
-			if err := validateShortName(classroom, "classroom"); err != nil {
+			if err := validate.ShortName(classroom, "classroom"); err != nil {
 				return err
 			}
-			if err := validateShortName(slug, "slug"); err != nil {
+			if err := validate.ShortName(slug, "slug"); err != nil {
 				return err
 			}
 			client, err := githubapi.RequireAuthClient(cmd)
@@ -266,7 +268,7 @@ func assignmentListCmd() *cobra.Command {
 			if org == "" || classroom == "" {
 				return errors.New("org and classroom must both be non-empty")
 			}
-			if err := validateShortName(classroom, "classroom"); err != nil {
+			if err := validate.ShortName(classroom, "classroom"); err != nil {
 				return err
 			}
 			client, err := githubapi.RequireAuthClient(cmd)
@@ -287,7 +289,7 @@ func assignmentListCmd() *cobra.Command {
 // Missing assignments.json points the teacher at
 // `gh teacher classroom add`.
 func runAssignmentList(client githubapi.Client, out, errOut io.Writer, org, classroom string, asJSON, quiet bool) error {
-	branch, err := resolveConfigRepoBranch(client, org)
+	branch, err := configrepo.ResolveConfigRepoBranch(client, org)
 	if err != nil {
 		return err
 	}
@@ -334,7 +336,7 @@ func formatAssignmentListJSON(entries []assignmentEntry) ([]byte, error) {
 // summarizeAssignmentList: one-line stderr summary shaped
 // `<org>/<repo>/<path>: <message>` to match other CLI commands.
 func summarizeAssignmentList(org, classroom string, count int) string {
-	path := fmt.Sprintf("%s/%s/%s", org, configRepoName, assignmentsFilePath(classroom))
+	path := fmt.Sprintf("%s/%s/%s", org, configrepo.ConfigRepoName, assignmentsFilePath(classroom))
 	switch count {
 	case 0:
 		return fmt.Sprintf("%s: no assignments registered yet — use `gh teacher assignment add %s %s <slug>` to create one", path, org, classroom)
@@ -389,7 +391,7 @@ func validateModeAndSizeFlags(mode string, maxGroupSize int, sizeProvided bool) 
 }
 
 func runAssignmentAdd(client githubapi.Client, out, errOut io.Writer, org, classroom, slug, name, description string, tmpl templateArg, due string, dueMetaVal *dueMeta, mode string, maxGroupSize int, autograder string, runtime *runtimeRef, tests []testSpec, feedbackPR bool) error {
-	branch, err := resolveConfigRepoBranch(client, org)
+	branch, err := configrepo.ResolveConfigRepoBranch(client, org)
 	if err != nil {
 		return err
 	}
@@ -440,14 +442,14 @@ func runAssignmentAdd(client githubapi.Client, out, errOut io.Writer, org, class
 		// default autograder is embedded in gh-student and has no
 		// on-disk counterpart, so skip the probe in that case.
 		if entry.Autograder != defaultAutograderName {
-			exists, err := autograderExists(client, org, configRepoName, classroom, entry.Autograder, parentSHA)
+			exists, err := autograderExists(client, org, configrepo.ConfigRepoName, classroom, entry.Autograder, parentSHA)
 			if err != nil {
 				return nil, fmt.Errorf("check autograder %s/%s/%s: %w",
-					org, configRepoName, autograderFilePath(classroom, entry.Autograder), err)
+					org, configrepo.ConfigRepoName, autograderFilePath(classroom, entry.Autograder), err)
 			}
 			if !exists {
 				return nil, fmt.Errorf("autograder %q does not exist at %s/%s/%s — create it (or pass --autograder default) before registering this assignment",
-					entry.Autograder, org, configRepoName, autograderFilePath(classroom, entry.Autograder))
+					entry.Autograder, org, configrepo.ConfigRepoName, autograderFilePath(classroom, entry.Autograder))
 			}
 		}
 
@@ -496,12 +498,12 @@ func runAssignmentAdd(client githubapi.Client, out, errOut io.Writer, org, class
 	}
 
 	message := fmt.Sprintf("assignment: add %s to %s (gh teacher assignment add)", slug, classroom)
-	if _, err := commitTree(client, org, configRepoName, branch, message, build); err != nil {
+	if _, err := commitTree(client, org, configrepo.ConfigRepoName, branch, message, build); err != nil {
 		return err
 	}
 
 	_, _ = fmt.Fprintf(out, "%s/%s/%s: %s %s (template %s/%s@%s, autograder %s)\n",
-		org, configRepoName, assignmentsFilePath(classroom), action, slug,
+		org, configrepo.ConfigRepoName, assignmentsFilePath(classroom), action, slug,
 		resolved.Owner, resolved.Repo, resolved.Branch, entry.Autograder)
 
 	// In-org private template: grant the classroom team read so rostered
@@ -512,7 +514,7 @@ func runAssignmentAdd(client githubapi.Client, out, errOut io.Writer, org, class
 	// (pre-feature) gets an actionable message rather than a 404 against
 	// a guessed slug.
 	if templatePrivate && inOrg {
-		team, ok, err := resolveClassroomTeam(client, org, classroom, branch)
+		team, ok, err := configrepo.ResolveClassroomTeam(client, org, classroom, branch)
 		if err != nil {
 			return fmt.Errorf("assignment committed, but reading the classroom team failed: %w", err)
 		}
@@ -520,7 +522,7 @@ func runAssignmentAdd(client githubapi.Client, out, errOut io.Writer, org, class
 			return fmt.Errorf("assignment %q committed, but classroom %q has no team to grant read on the private template %s/%s — run `gh teacher classroom add %s %s` to create the team, then re-run `gh teacher assignment add` (students can't accept until the team can read the template)",
 				slug, classroom, resolved.Owner, resolved.Repo, org, classroom)
 		}
-		granted, err := grantTeamRepoRead(client, org, team.Slug, resolved.Owner, resolved.Repo)
+		granted, err := configrepo.GrantTeamRepoRead(client, org, team.Slug, resolved.Owner, resolved.Repo)
 		if err != nil {
 			return fmt.Errorf("assignment committed, but granting the classroom team read on the private template %s/%s failed: %w", resolved.Owner, resolved.Repo, err)
 		}
@@ -542,14 +544,14 @@ func runAssignmentAdd(client githubapi.Client, out, errOut io.Writer, org, class
 	if lastEncodedSize > largeAssignmentsWarnBytes {
 		_, _ = fmt.Fprintf(errOut,
 			"Warning: %s/%s/%s is %d bytes — approaching GitHub's ~1 MiB contents-API ceiling. Past that, the API returns encoding:\"none\" and future `gh teacher assignment add/remove` calls will fail to read the file. Consider splitting the classroom or shrinking per-entry fields.\n",
-			org, configRepoName, assignmentsFilePath(classroom), lastEncodedSize)
+			org, configrepo.ConfigRepoName, assignmentsFilePath(classroom), lastEncodedSize)
 	}
 	_, _ = fmt.Fprintf(errOut, "Students can now run: gh student accept %s %s %s\n", org, classroom, slug)
 	return nil
 }
 
 func runAssignmentRemove(client githubapi.Client, out io.Writer, org, classroom, slug string) error {
-	branch, err := resolveConfigRepoBranch(client, org)
+	branch, err := configrepo.ResolveConfigRepoBranch(client, org)
 	if err != nil {
 		return err
 	}
@@ -576,16 +578,16 @@ func runAssignmentRemove(client githubapi.Client, out io.Writer, org, classroom,
 	}
 
 	message := fmt.Sprintf("assignment: remove %s from %s (gh teacher assignment remove)", slug, classroom)
-	if _, err := commitTree(client, org, configRepoName, branch, message, build); err != nil {
+	if _, err := commitTree(client, org, configrepo.ConfigRepoName, branch, message, build); err != nil {
 		return err
 	}
 
 	if removed {
 		_, _ = fmt.Fprintf(out, "%s/%s/%s: removed %s (existing student repos untouched)\n",
-			org, configRepoName, assignmentsFilePath(classroom), slug)
+			org, configrepo.ConfigRepoName, assignmentsFilePath(classroom), slug)
 	} else {
 		_, _ = fmt.Fprintf(out, "%s/%s/%s: %s not in assignments.json, nothing to do\n",
-			org, configRepoName, assignmentsFilePath(classroom), slug)
+			org, configrepo.ConfigRepoName, assignmentsFilePath(classroom), slug)
 	}
 	return nil
 }
@@ -596,17 +598,17 @@ func runAssignmentRemove(client githubapi.Client, out io.Writer, org, classroom,
 // file → points the teacher at `gh teacher classroom add`.
 func loadAssignments(client githubapi.Client, org, classroom, ref string) (assignmentsJSON, error) {
 	path := assignmentsFilePath(classroom)
-	data, ok, err := readFileContents(client, org, configRepoName, path, ref)
+	data, ok, err := configrepo.ReadFileContents(client, org, configrepo.ConfigRepoName, path, ref)
 	if err != nil {
 		return assignmentsJSON{}, err
 	}
 	if !ok {
 		return assignmentsJSON{}, fmt.Errorf("%s/%s/%s not found — run `gh teacher classroom add %s %s` first, or restore the file if it was deleted",
-			org, configRepoName, path, org, classroom)
+			org, configrepo.ConfigRepoName, path, org, classroom)
 	}
 	file, err := parseAssignments(data)
 	if err != nil {
-		return assignmentsJSON{}, fmt.Errorf("%s/%s/%s: %w", org, configRepoName, path, err)
+		return assignmentsJSON{}, fmt.Errorf("%s/%s/%s: %w", org, configrepo.ConfigRepoName, path, err)
 	}
 	return file, nil
 }

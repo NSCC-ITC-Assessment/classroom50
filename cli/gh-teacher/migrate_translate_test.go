@@ -5,6 +5,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/foundation50/gh-teacher/internal/configrepo"
+	"github.com/foundation50/gh-teacher/internal/validate"
 )
 
 func TestDeriveShortName(t *testing.T) {
@@ -50,7 +53,7 @@ func TestDeriveShortName(t *testing.T) {
 			}
 			// Every successful output must pass shortNamePattern so
 			// downstream callers don't reject what migrate produces.
-			if !shortNamePattern.MatchString(got) {
+			if !validate.ShortNamePattern.MatchString(got) {
 				t.Errorf("deriveShortName(%q) = %q, fails shortNamePattern", tc.in, got)
 			}
 		})
@@ -291,7 +294,7 @@ func TestClassroomMigratedFromFromDetail(t *testing.T) {
 		t.Fatalf("classroomMigratedFromFromDetail returned nil")
 		return
 	}
-	want := classroomMigratedFromRef{
+	want := configrepo.MigratedFromRef{
 		Source:           migrateSourceGitHubClassroom,
 		ClassroomID:      95884,
 		OriginalName:     "classroom50test",

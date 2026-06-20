@@ -4,6 +4,9 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/foundation50/gh-teacher/internal/configrepo"
+	"github.com/foundation50/gh-teacher/internal/validate"
 )
 
 func TestValidateShortName(t *testing.T) {
@@ -29,12 +32,12 @@ func TestValidateShortName(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.in, func(t *testing.T) {
-			err := validateShortName(tc.in, "classroom")
+			err := validate.ShortName(tc.in, "classroom")
 			if tc.wantOK && err != nil {
-				t.Fatalf("validateShortName(%q) = %v, want nil", tc.in, err)
+				t.Fatalf("validate.ShortName(%q) = %v, want nil", tc.in, err)
 			}
 			if !tc.wantOK && err == nil {
-				t.Fatalf("validateShortName(%q) = nil, want error", tc.in)
+				t.Fatalf("validate.ShortName(%q) = nil, want error", tc.in)
 			}
 		})
 	}
@@ -71,8 +74,8 @@ func TestShortNamePattern(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.in, func(t *testing.T) {
-			if got := shortNamePattern.MatchString(tc.in); got != tc.want {
-				t.Fatalf("shortNamePattern.MatchString(%q) = %v, want %v", tc.in, got, tc.want)
+			if got := validate.ShortNamePattern.MatchString(tc.in); got != tc.want {
+				t.Fatalf("validate.ShortNamePattern.MatchString(%q) = %v, want %v", tc.in, got, tc.want)
 			}
 		})
 	}
@@ -117,7 +120,7 @@ func TestClassroomScaffold(t *testing.T) {
 		}
 	}
 
-	var classroom classroomJSON
+	var classroom configrepo.ClassroomJSON
 	if err := json.Unmarshal([]byte(files["cs-principles/classroom.json"]), &classroom); err != nil {
 		t.Fatalf("classroom.json invalid: %v\ncontent:\n%s", err, files["cs-principles/classroom.json"])
 	}
@@ -189,7 +192,7 @@ func TestClassroomScaffold_EmptyOptionalFlags(t *testing.T) {
 	if err != nil {
 		t.Fatalf("classroomScaffold: %v", err)
 	}
-	var classroom classroomJSON
+	var classroom configrepo.ClassroomJSON
 	if err := json.Unmarshal([]byte(files["intro-java/classroom.json"]), &classroom); err != nil {
 		t.Fatalf("classroom.json invalid: %v", err)
 	}

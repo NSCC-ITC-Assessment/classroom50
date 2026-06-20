@@ -12,7 +12,9 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/foundation50/gh-teacher/internal/configrepo"
 	"github.com/foundation50/gh-teacher/internal/githubapi"
+	"github.com/foundation50/gh-teacher/internal/validate"
 )
 
 // requireClassroomExists errors unless <classroom>/classroom.json is
@@ -22,13 +24,13 @@ import (
 // directory. Mirrors set-default's original inline guard.
 func requireClassroomExists(client githubapi.Client, org, classroom, branch string) error {
 	marker := classroom + "/classroom.json"
-	exists, err := contentsExists(client, org, configRepoName, marker, branch)
+	exists, err := configrepo.ContentsExists(client, org, configrepo.ConfigRepoName, marker, branch)
 	if err != nil {
 		return err
 	}
 	if !exists {
 		return fmt.Errorf("classroom %q not found in %s/%s (no %s) -- run `gh teacher classroom add %s %s` first",
-			classroom, org, configRepoName, marker, org, classroom)
+			classroom, org, configrepo.ConfigRepoName, marker, org, classroom)
 	}
 	return nil
 }
@@ -84,7 +86,7 @@ func autograderShowCmd() *cobra.Command {
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cmd.SilenceUsage = true
-			org, classroom, err := parseOrgClassroom(args)
+			org, classroom, err := validate.OrgClassroom(args)
 			if err != nil {
 				return err
 			}
@@ -104,7 +106,7 @@ func autograderShowCmd() *cobra.Command {
 // either the raw body (default) or a metadata object (--json). A
 // missing file is a clean exit-0 "none" state, not an error.
 func runAutograderShow(client githubapi.Client, out, errOut io.Writer, org, classroom string, asJSON, quiet bool) error {
-	branch, err := resolveConfigRepoBranch(client, org)
+	branch, err := configrepo.ResolveConfigRepoBranch(client, org)
 	if err != nil {
 		return err
 	}
@@ -113,7 +115,7 @@ func runAutograderShow(client githubapi.Client, out, errOut io.Writer, org, clas
 	}
 
 	repoPath := classroom + "/" + classroomAutograderFilename
-	content, ok, err := readFileContents(client, org, configRepoName, repoPath, branch)
+	content, ok, err := configrepo.ReadFileContents(client, org, configrepo.ConfigRepoName, repoPath, branch)
 	if err != nil {
 		return err
 	}
@@ -136,7 +138,7 @@ func runAutograderShow(client githubapi.Client, out, errOut io.Writer, org, clas
 	if !ok {
 		if !quiet {
 			_, _ = fmt.Fprintf(errOut, "%s/%s/%s: no default autograder set — use `gh teacher autograder set-default %s %s` to install one\n",
-				org, configRepoName, repoPath, org, classroom)
+				org, configrepo.ConfigRepoName, repoPath, org, classroom)
 		}
 		return nil
 	}
@@ -147,7 +149,7 @@ func runAutograderShow(client githubapi.Client, out, errOut io.Writer, org, clas
 		if isStub {
 			kind = "diagnostic stub"
 		}
-		_, _ = fmt.Fprintf(errOut, "%s/%s/%s: %s (%d bytes)\n", org, configRepoName, repoPath, kind, len(content))
+		_, _ = fmt.Fprintf(errOut, "%s/%s/%s: %s (%d bytes)\n", org, configrepo.ConfigRepoName, repoPath, kind, len(content))
 	}
 	return nil
 }
@@ -204,7 +206,7 @@ func autograderListCmd() *cobra.Command {
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cmd.SilenceUsage = true
-			org, classroom, err := parseOrgClassroom(args)
+			org, classroom, err := validate.OrgClassroom(args)
 			if err != nil {
 				return err
 			}
@@ -224,7 +226,7 @@ func autograderListCmd() *cobra.Command {
 // <classroom>/autograders/ in one contents-API call. A missing
 // autograders/ directory (404) is a clean empty listing, not an error.
 func runAutograderList(client githubapi.Client, out, errOut io.Writer, org, classroom string, asJSON, quiet bool) error {
-	branch, err := resolveConfigRepoBranch(client, org)
+	branch, err := configrepo.ResolveConfigRepoBranch(client, org)
 	if err != nil {
 		return err
 	}
@@ -233,7 +235,7 @@ func runAutograderList(client githubapi.Client, out, errOut io.Writer, org, clas
 	}
 
 	dirPath := classroom + "/autograders"
-	rawEntries, ok, err := listDirContents(client, org, configRepoName, dirPath, branch)
+	rawEntries, ok, err := configrepo.ListDirContents(client, org, configrepo.ConfigRepoName, dirPath, branch)
 	if err != nil {
 		return err
 	}
@@ -289,7 +291,7 @@ func runAutograderList(client githubapi.Client, out, errOut io.Writer, org, clas
 // summarizeAutograderList: one-line stderr summary shaped
 // `<org>/<repo>/<classroom>/autograders: <message>`.
 func summarizeAutograderList(org, classroom string, entries []autograderListEntry) string {
-	path := fmt.Sprintf("%s/%s/%s/autograders", org, configRepoName, classroom)
+	path := fmt.Sprintf("%s/%s/%s/autograders", org, configrepo.ConfigRepoName, classroom)
 	if len(entries) == 0 {
 		return fmt.Sprintf("%s: no named or per-assignment autograders — the classroom default (autograder.py) covers every assignment", path)
 	}
@@ -329,7 +331,7 @@ func autograderRemoveCmd() *cobra.Command {
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cmd.SilenceUsage = true
-			org, classroom, err := parseOrgClassroom(args)
+			org, classroom, err := validate.OrgClassroom(args)
 			if err != nil {
 				return err
 			}
@@ -348,7 +350,7 @@ func autograderRemoveCmd() *cobra.Command {
 // commitTreeChange. Existence is re-probed inside the build callback so
 // a concurrent delete collapses to a clean no-op rather than an error.
 func removeClassroomDefaultAutograder(client githubapi.Client, in io.Reader, out, errOut io.Writer, org, classroom string, skipConfirm bool) error {
-	branch, err := resolveConfigRepoBranch(client, org)
+	branch, err := configrepo.ResolveConfigRepoBranch(client, org)
 	if err != nil {
 		return err
 	}
@@ -360,12 +362,12 @@ func removeClassroomDefaultAutograder(client githubapi.Client, in io.Reader, out
 
 	// Preflight so a no-default classroom short-circuits before the
 	// confirmation prompt. The authoritative check happens in build.
-	exists, err := contentsExists(client, org, configRepoName, repoPath, branch)
+	exists, err := configrepo.ContentsExists(client, org, configrepo.ConfigRepoName, repoPath, branch)
 	if err != nil {
 		return err
 	}
 	if !exists {
-		_, _ = fmt.Fprintf(out, "%s/%s/%s: no default autograder set (nothing to remove)\n", org, configRepoName, repoPath)
+		_, _ = fmt.Fprintf(out, "%s/%s/%s: no default autograder set (nothing to remove)\n", org, configrepo.ConfigRepoName, repoPath)
 		return nil
 	}
 
@@ -380,7 +382,7 @@ func removeClassroomDefaultAutograder(client githubapi.Client, in io.Reader, out
 	}
 
 	build := func(parentSHA string) (commitChange, error) {
-		stillThere, err := contentsExists(client, org, configRepoName, repoPath, parentSHA)
+		stillThere, err := configrepo.ContentsExists(client, org, configrepo.ConfigRepoName, repoPath, parentSHA)
 		if err != nil {
 			return commitChange{}, err
 		}
@@ -391,15 +393,15 @@ func removeClassroomDefaultAutograder(client githubapi.Client, in io.Reader, out
 	}
 
 	message := fmt.Sprintf("Remove %s default autograder.py (gh teacher autograder remove)", classroom)
-	sha, err := commitTreeChange(client, org, configRepoName, branch, message, build)
+	sha, err := commitTreeChange(client, org, configrepo.ConfigRepoName, branch, message, build)
 	if err != nil {
 		return err
 	}
 	if sha == "" {
-		_, _ = fmt.Fprintf(out, "%s/%s/%s: already gone (nothing to remove)\n", org, configRepoName, repoPath)
+		_, _ = fmt.Fprintf(out, "%s/%s/%s: already gone (nothing to remove)\n", org, configrepo.ConfigRepoName, repoPath)
 		return nil
 	}
-	_, _ = fmt.Fprintf(out, "%s/%s/%s: removed default autograder\n", org, configRepoName, repoPath)
+	_, _ = fmt.Fprintf(out, "%s/%s/%s: removed default autograder\n", org, configrepo.ConfigRepoName, repoPath)
 	_, _ = fmt.Fprintf(errOut, "Assignments without a per-assignment autograder now grade as a vacuous pass until you run `gh teacher autograder set-default %s %s`\n", org, classroom)
 	return nil
 }

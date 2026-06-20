@@ -14,6 +14,7 @@ import (
 
 	"github.com/foundation50/gh-teacher/internal/cliutil"
 	"github.com/foundation50/gh-teacher/internal/githubapi"
+	"github.com/foundation50/gh-teacher/internal/validate"
 )
 
 var repoPermissions = []string{"pull", "triage", "push", "maintain", "admin"}
@@ -245,7 +246,7 @@ var errMissingOrgAdminScope = errors.New("missing admin:org OAuth scope; run `gh
 
 // hasOrgAdminScope: X-OAuth-Scopes contains admin:org.
 func hasOrgAdminScope(scopes string) bool {
-	return scopeListContains(scopes, "admin:org")
+	return validate.ScopeListContains(scopes, "admin:org")
 }
 
 // getMembershipState returns the org membership state ("active" or

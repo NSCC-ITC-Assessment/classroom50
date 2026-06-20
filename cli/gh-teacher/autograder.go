@@ -4,7 +4,9 @@ import (
 	"fmt"
 
 	"github.com/foundation50/classroom50-cli-shared/contract"
+	"github.com/foundation50/gh-teacher/internal/configrepo"
 	"github.com/foundation50/gh-teacher/internal/githubapi"
+	"github.com/foundation50/gh-teacher/internal/validate"
 )
 
 // defaultAutograderName is a sentinel meaning "use the universal
@@ -32,7 +34,7 @@ func validateAutograderName(name string) error {
 	if name == "" {
 		return fmt.Errorf("--autograder must not be empty (default is %q)", defaultAutograderName)
 	}
-	return validateShortName(name, "autograder")
+	return validate.ShortName(name, "autograder")
 }
 
 // autograderExists probes the contents API for the named autograder
@@ -44,5 +46,5 @@ func validateAutograderName(name string) error {
 // — the default shim is embedded in gh-student and has no on-disk
 // counterpart in the config repo.
 func autograderExists(client githubapi.Client, owner, repo, classroom, name, ref string) (bool, error) {
-	return contentsExists(client, owner, repo, autograderFilePath(classroom, name), ref)
+	return configrepo.ContentsExists(client, owner, repo, autograderFilePath(classroom, name), ref)
 }

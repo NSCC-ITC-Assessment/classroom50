@@ -11,6 +11,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/foundation50/gh-teacher/internal/configrepo"
 	"github.com/foundation50/gh-teacher/internal/githubtest"
 )
 
@@ -230,7 +231,7 @@ func TestRunMigrate_NonDryRun_HappyPath(t *testing.T) {
 	}
 
 	// classroom.json carries its own provenance block.
-	var classroom classroomJSON
+	var classroom configrepo.ClassroomJSON
 	if err := json.Unmarshal([]byte(state.uploadedFiles["classroom50test/classroom.json"]), &classroom); err != nil {
 		t.Fatalf("decode classroom.json: %v", err)
 	}

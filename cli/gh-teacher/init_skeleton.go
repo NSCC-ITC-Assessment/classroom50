@@ -8,13 +8,14 @@ import (
 	"io"
 	"io/fs"
 	"net/http"
-	"net/url"
 	"sort"
 	"strings"
 
 	"github.com/foundation50/classroom50-cli-shared/gittree"
 	"github.com/foundation50/gh-teacher/internal/cliutil"
+	"github.com/foundation50/gh-teacher/internal/configrepo"
 	"github.com/foundation50/gh-teacher/internal/githubapi"
+	"github.com/foundation50/gh-teacher/internal/validate"
 )
 
 // skeletonFS holds the files committed by `gh teacher init`. The
@@ -101,7 +102,7 @@ func commitSkeleton(client githubapi.Client, in io.Reader, out, errOut io.Writer
 		return err
 	}
 
-	probe, err := contentsExists(client, owner, repo, skeletonProbePath, defaultBranch)
+	probe, err := configrepo.ContentsExists(client, owner, repo, skeletonProbePath, defaultBranch)
 	if err != nil {
 		return err
 	}
@@ -199,7 +200,7 @@ func refreshSkeleton(client githubapi.Client, in io.Reader, out, errOut io.Write
 func diffSkeleton(client githubapi.Client, owner, repo, ref string, files map[string]string) ([]string, error) {
 	var stale []string
 	for path, want := range files {
-		got, exists, err := readFileContents(client, owner, repo, path, ref)
+		got, exists, err := configrepo.ReadFileContents(client, owner, repo, path, ref)
 		if err != nil {
 			return nil, fmt.Errorf("read %s/%s/%s: %w", owner, repo, path, err)
 		}
@@ -266,25 +267,7 @@ func tokenLacksWorkflowScope(err error) bool {
 	if scopes == "" {
 		return false
 	}
-	return !scopeListContains(scopes, "workflow")
-}
-
-// contentsExists: 404 → false, 200 → true, else error.
-func contentsExists(client githubapi.Client, owner, repo, path, ref string) (bool, error) {
-	segs := strings.Split(path, "/")
-	for i := range segs {
-		segs[i] = url.PathEscape(segs[i])
-	}
-	apiPath := fmt.Sprintf("repos/%s/%s/contents/%s?ref=%s",
-		url.PathEscape(owner), url.PathEscape(repo),
-		strings.Join(segs, "/"), url.PathEscape(ref))
-	if err := client.Get(apiPath, nil); err != nil {
-		if cliutil.IsHTTPStatus(err, http.StatusNotFound) {
-			return false, nil
-		}
-		return false, fmt.Errorf("GET %s: %w", apiPath, err)
-	}
-	return true, nil
+	return !validate.ScopeListContains(scopes, "workflow")
 }
 
 // classifyWorkflowScope404 maps a Tree-write 404 to errMissingWorkflowScope

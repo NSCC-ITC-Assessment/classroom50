@@ -1,4 +1,4 @@
-package main
+package configrepo
 
 import (
 	"reflect"
@@ -12,11 +12,11 @@ func TestParseRoster_Canonical(t *testing.T) {
 		"bob,Bob,Baker,,,67890\n" +
 		"carol,,,carol@example.edu,section-2,11111\n")
 
-	rows, err := parseRoster(in)
+	rows, err := ParseRoster(in)
 	if err != nil {
-		t.Fatalf("parseRoster: %v", err)
+		t.Fatalf("ParseRoster: %v", err)
 	}
-	want := []rosterRow{
+	want := []RosterRow{
 		{Username: "alice", FirstName: "Alice", LastName: "Andersson", Email: "alice@example.edu", Section: "section-1", GitHubID: 12345},
 		{Username: "bob", FirstName: "Bob", LastName: "Baker", Email: "", Section: "", GitHubID: 67890},
 		{Username: "carol", FirstName: "", LastName: "", Email: "carol@example.edu", Section: "section-2", GitHubID: 11111},
@@ -28,9 +28,9 @@ func TestParseRoster_Canonical(t *testing.T) {
 
 func TestParseRoster_HeaderOnly(t *testing.T) {
 	in := []byte("username,first_name,last_name,email,section,github_id\n")
-	rows, err := parseRoster(in)
+	rows, err := ParseRoster(in)
 	if err != nil {
-		t.Fatalf("parseRoster: %v", err)
+		t.Fatalf("ParseRoster: %v", err)
 	}
 	if len(rows) != 0 {
 		t.Fatalf("expected 0 rows for header-only input, got %d: %#v", len(rows), rows)
@@ -53,7 +53,7 @@ func TestParseRoster_RejectsBadInputs(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := parseRoster([]byte(tc.in))
+			_, err := ParseRoster([]byte(tc.in))
 			if err == nil {
 				t.Fatalf("expected error containing %q, got nil", tc.wantErrPart)
 			}
@@ -67,9 +67,9 @@ func TestParseRoster_RejectsBadInputs(t *testing.T) {
 func TestParseImportCSV_BothHeaderShapes(t *testing.T) {
 	t.Run("5-column header (recommended hand-authored shape)", func(t *testing.T) {
 		in := []byte("username,first_name,last_name,email,section\nalice,Alice,A,alice@x,s-1\nbob,Bob,B,,\n")
-		rows, err := parseImportCSV(in)
+		rows, err := ParseImportCSV(in)
 		if err != nil {
-			t.Fatalf("parseImportCSV: %v", err)
+			t.Fatalf("ParseImportCSV: %v", err)
 		}
 		if len(rows) != 2 {
 			t.Fatalf("got %d rows, want 2", len(rows))
@@ -87,14 +87,14 @@ func TestParseImportCSV_BothHeaderShapes(t *testing.T) {
 
 	t.Run("6-column header ignores github_id", func(t *testing.T) {
 		in := []byte("username,first_name,last_name,email,section,github_id\nalice,Alice,A,a@x,s,99999\n")
-		rows, err := parseImportCSV(in)
+		rows, err := ParseImportCSV(in)
 		if err != nil {
-			t.Fatalf("parseImportCSV: %v", err)
+			t.Fatalf("ParseImportCSV: %v", err)
 		}
 		if len(rows) != 1 {
 			t.Fatalf("got %d rows, want 1", len(rows))
 		}
-		// parseImportCSV ignores any incoming github_id; the CLI
+		// ParseImportCSV ignores any incoming github_id; the CLI
 		// re-resolves from GitHub at import time.
 		if rows[0].GitHubID != 0 {
 			t.Errorf("import should ignore github_id column, got %d", rows[0].GitHubID)
@@ -118,7 +118,7 @@ func TestParseImportCSV_Rejects(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := parseImportCSV([]byte(tc.in))
+			_, err := ParseImportCSV([]byte(tc.in))
 			if err == nil {
 				t.Fatalf("expected error containing %q, got nil", tc.wantErrPart)
 			}
@@ -130,14 +130,14 @@ func TestParseImportCSV_Rejects(t *testing.T) {
 }
 
 func TestEncodeRoster_RoundTrip(t *testing.T) {
-	original := []rosterRow{
+	original := []RosterRow{
 		{Username: "alice", FirstName: "Alice", LastName: "Andersson", Email: "alice@example.edu", Section: "section-1", GitHubID: 12345},
 		{Username: "bob", FirstName: "Bob, Jr.", LastName: `"Baker"`, Email: "bob+tag@example.org", Section: "section, 2", GitHubID: 67890},
 		{Username: "carol", FirstName: "", LastName: "", Email: "", Section: "", GitHubID: 11111},
 	}
-	encoded, err := encodeRoster(original)
+	encoded, err := EncodeRoster(original)
 	if err != nil {
-		t.Fatalf("encodeRoster: %v", err)
+		t.Fatalf("EncodeRoster: %v", err)
 	}
 
 	// Canonical column order, no quoting on the header row.
@@ -147,7 +147,7 @@ func TestEncodeRoster_RoundTrip(t *testing.T) {
 	}
 
 	// Re-parse must yield the same rows — RFC 4180 round-trip.
-	round, err := parseRoster(encoded)
+	round, err := ParseRoster(encoded)
 	if err != nil {
 		t.Fatalf("re-parse of encoded output failed: %v\nencoded:\n%s", err, encoded)
 	}
@@ -157,13 +157,13 @@ func TestEncodeRoster_RoundTrip(t *testing.T) {
 }
 
 func TestEncodeRoster_EmptyGitHubID(t *testing.T) {
-	rows := []rosterRow{{Username: "alice", FirstName: "A", LastName: "A", Email: "a@x", Section: "s", GitHubID: 0}}
-	encoded, err := encodeRoster(rows)
+	rows := []RosterRow{{Username: "alice", FirstName: "A", LastName: "A", Email: "a@x", Section: "s", GitHubID: 0}}
+	encoded, err := EncodeRoster(rows)
 	if err != nil {
-		t.Fatalf("encodeRoster: %v", err)
+		t.Fatalf("EncodeRoster: %v", err)
 	}
 	// GitHubID == 0 must serialize as an empty github_id column,
-	// not "0". parseRoster reads "" as 0 but treats "0" as a valid
+	// not "0". ParseRoster reads "" as 0 but treats "0" as a valid
 	// numeric ID, so the encoded shape matters.
 	if !strings.Contains(string(encoded), "alice,A,A,a@x,s,\n") {
 		t.Errorf("GitHubID == 0 should encode as empty column, got:\n%s", encoded)
@@ -171,13 +171,13 @@ func TestEncodeRoster_EmptyGitHubID(t *testing.T) {
 }
 
 func TestUpsertRosterRow_AppendAndReplace(t *testing.T) {
-	rows := []rosterRow{
+	rows := []RosterRow{
 		{Username: "alice", GitHubID: 1},
 		{Username: "bob", GitHubID: 2},
 	}
 
 	// Append new.
-	rows, replaced := upsertRosterRow(rows, rosterRow{Username: "carol", GitHubID: 3})
+	rows, replaced := UpsertRosterRow(rows, RosterRow{Username: "carol", GitHubID: 3})
 	if replaced {
 		t.Errorf("appending carol should not report replace")
 	}
@@ -186,7 +186,7 @@ func TestUpsertRosterRow_AppendAndReplace(t *testing.T) {
 	}
 
 	// Replace existing — preserves position.
-	rows, replaced = upsertRosterRow(rows, rosterRow{Username: "alice", FirstName: "A-new", Email: "new@x", GitHubID: 1})
+	rows, replaced = UpsertRosterRow(rows, RosterRow{Username: "alice", FirstName: "A-new", Email: "new@x", GitHubID: 1})
 	if !replaced {
 		t.Errorf("replacing alice should report replace")
 	}
@@ -196,8 +196,8 @@ func TestUpsertRosterRow_AppendAndReplace(t *testing.T) {
 }
 
 func TestUpsertRosterRow_CaseInsensitive(t *testing.T) {
-	rows := []rosterRow{{Username: "Alice", GitHubID: 1}}
-	rows, replaced := upsertRosterRow(rows, rosterRow{Username: "ALICE", FirstName: "case-test", GitHubID: 1})
+	rows := []RosterRow{{Username: "Alice", GitHubID: 1}}
+	rows, replaced := UpsertRosterRow(rows, RosterRow{Username: "ALICE", FirstName: "case-test", GitHubID: 1})
 	if !replaced {
 		t.Fatalf("case-insensitive upsert should match Alice/ALICE as the same row")
 	}
@@ -207,13 +207,13 @@ func TestUpsertRosterRow_CaseInsensitive(t *testing.T) {
 }
 
 func TestRemoveRosterRow(t *testing.T) {
-	rows := []rosterRow{
+	rows := []RosterRow{
 		{Username: "alice", GitHubID: 1},
 		{Username: "bob", GitHubID: 2},
 		{Username: "carol", GitHubID: 3},
 	}
 
-	rows, removed := removeRosterRow(rows, "BOB") // case-insensitive
+	rows, removed := RemoveRosterRow(rows, "BOB") // case-insensitive
 	if !removed {
 		t.Errorf("expected BOB to be removed")
 	}
@@ -221,7 +221,7 @@ func TestRemoveRosterRow(t *testing.T) {
 		t.Errorf("expected [alice, carol] after remove, got %#v", rows)
 	}
 
-	_, removed = removeRosterRow(rows, "dave")
+	_, removed = RemoveRosterRow(rows, "dave")
 	if removed {
 		t.Errorf("removing absent username should report not removed")
 	}
@@ -263,12 +263,12 @@ func TestValidateRosterEmail(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.in, func(t *testing.T) {
-			err := validateRosterEmail(tc.in)
+			err := ValidateRosterEmail(tc.in)
 			if tc.wantErr && err == nil {
-				t.Fatalf("validateRosterEmail(%q) = nil, want error", tc.in)
+				t.Fatalf("ValidateRosterEmail(%q) = nil, want error", tc.in)
 			}
 			if !tc.wantErr && err != nil {
-				t.Fatalf("validateRosterEmail(%q) = %v, want nil", tc.in, err)
+				t.Fatalf("ValidateRosterEmail(%q) = %v, want nil", tc.in, err)
 			}
 		})
 	}
@@ -280,9 +280,9 @@ func TestParseRoster_StripsUTF8BOM(t *testing.T) {
 	// field would be `\ufeffusername` — equalSlices would reject
 	// the file with a misleading "unexpected header" error.
 	in := append([]byte{0xEF, 0xBB, 0xBF}, []byte("username,first_name,last_name,email,section,github_id\nalice,Alice,A,,s,1\n")...)
-	rows, err := parseRoster(in)
+	rows, err := ParseRoster(in)
 	if err != nil {
-		t.Fatalf("parseRoster with BOM: %v", err)
+		t.Fatalf("ParseRoster with BOM: %v", err)
 	}
 	if len(rows) != 1 || rows[0].Username != "alice" {
 		t.Fatalf("expected one alice row, got %#v", rows)
@@ -291,9 +291,9 @@ func TestParseRoster_StripsUTF8BOM(t *testing.T) {
 
 func TestParseImportCSV_StripsUTF8BOM(t *testing.T) {
 	in := append([]byte{0xEF, 0xBB, 0xBF}, []byte("username,first_name,last_name,email,section\nalice,A,A,,s\n")...)
-	rows, err := parseImportCSV(in)
+	rows, err := ParseImportCSV(in)
 	if err != nil {
-		t.Fatalf("parseImportCSV with BOM: %v", err)
+		t.Fatalf("ParseImportCSV with BOM: %v", err)
 	}
 	if len(rows) != 1 || rows[0].Username != "alice" {
 		t.Fatalf("expected one alice row, got %#v", rows)
@@ -307,7 +307,7 @@ func TestParseImportCSV_RejectsOversizedField(t *testing.T) {
 	// encoding:"none" response.
 	bigName := strings.Repeat("x", maxFieldBytes+1)
 	in := []byte("username,first_name,last_name,email,section\nalice," + bigName + ",A,,s\n")
-	_, err := parseImportCSV(in)
+	_, err := ParseImportCSV(in)
 	if err == nil {
 		t.Fatalf("expected oversized first_name to be rejected, got nil error")
 	}
@@ -322,9 +322,9 @@ func TestParseImportCSV_TrimsEmailWhitespace(t *testing.T) {
 	// validation. `username` is also trimmed; other columns stay
 	// verbatim.
 	in := []byte("username,first_name,last_name,email,section\nalice,A,A,  alice@example.edu  ,s\n")
-	rows, err := parseImportCSV(in)
+	rows, err := ParseImportCSV(in)
 	if err != nil {
-		t.Fatalf("parseImportCSV: %v", err)
+		t.Fatalf("ParseImportCSV: %v", err)
 	}
 	if rows[0].Email != "alice@example.edu" {
 		t.Errorf("email should be trimmed, got %q", rows[0].Email)
@@ -334,15 +334,15 @@ func TestParseImportCSV_TrimsEmailWhitespace(t *testing.T) {
 func TestEncodeRoster_DefangsFormulaCells(t *testing.T) {
 	// Cells starting with =/+/-/@/\t/\r get a leading apostrophe so
 	// Excel/LibreOffice render them as literal text instead of
-	// evaluating them. parseRoster strips the apostrophe so the
-	// in-memory rosterRow always sees the original value.
-	original := []rosterRow{
+	// evaluating them. ParseRoster strips the apostrophe so the
+	// in-memory RosterRow always sees the original value.
+	original := []RosterRow{
 		{Username: "alice", FirstName: "=HYPERLINK(\"http://attacker\",\"click\")", LastName: "A", Email: "alice@example.edu", Section: "+cmd", GitHubID: 1},
 		{Username: "bob", FirstName: "-Director", LastName: "@admin", Email: "bob@example.edu", Section: "\tindent", GitHubID: 2},
 	}
-	encoded, err := encodeRoster(original)
+	encoded, err := EncodeRoster(original)
 	if err != nil {
-		t.Fatalf("encodeRoster: %v", err)
+		t.Fatalf("EncodeRoster: %v", err)
 	}
 	// Every dangerous-leading cell should be apostrophe-prefixed.
 	str := string(encoded)
@@ -359,9 +359,9 @@ func TestEncodeRoster_DefangsFormulaCells(t *testing.T) {
 		t.Errorf("at-prefix cell should be defanged, got:\n%s", str)
 	}
 
-	// parseRoster strips the defang on read; in-memory rows match
+	// ParseRoster strips the defang on read; in-memory rows match
 	// the original input.
-	roundTripped, err := parseRoster(encoded)
+	roundTripped, err := ParseRoster(encoded)
 	if err != nil {
 		t.Fatalf("re-parse defanged output: %v", err)
 	}
@@ -371,12 +371,12 @@ func TestEncodeRoster_DefangsFormulaCells(t *testing.T) {
 }
 
 func TestEncodeRoster_LeavesSafeCellsAlone(t *testing.T) {
-	rows := []rosterRow{
+	rows := []RosterRow{
 		{Username: "alice", FirstName: "Alice", LastName: "Andersson", Email: "alice@example.edu", Section: "section-1", GitHubID: 1},
 	}
-	encoded, err := encodeRoster(rows)
+	encoded, err := EncodeRoster(rows)
 	if err != nil {
-		t.Fatalf("encodeRoster: %v", err)
+		t.Fatalf("EncodeRoster: %v", err)
 	}
 	if strings.Contains(string(encoded), "'Alice") {
 		t.Errorf("normal cells should not be defanged, got:\n%s", encoded)
@@ -384,12 +384,12 @@ func TestEncodeRoster_LeavesSafeCellsAlone(t *testing.T) {
 }
 
 func TestDedupeByUsername_LastWins(t *testing.T) {
-	rows := []rosterRow{
+	rows := []RosterRow{
 		{Username: "Alice", FirstName: "first-A"},
 		{Username: "bob", FirstName: "B"},
 		{Username: "ALICE", FirstName: "second-A"}, // case-insensitive dup
 	}
-	out := dedupeByUsername(rows)
+	out := DedupeByUsername(rows)
 	if len(out) != 2 {
 		t.Fatalf("expected 2 rows after dedupe, got %d: %#v", len(out), out)
 	}

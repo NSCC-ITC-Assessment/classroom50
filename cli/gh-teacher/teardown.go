@@ -12,6 +12,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/foundation50/gh-teacher/internal/cliutil"
+	"github.com/foundation50/gh-teacher/internal/configrepo"
 	"github.com/foundation50/gh-teacher/internal/githubapi"
 )
 
@@ -106,7 +107,7 @@ func runTeardown(client githubapi.Client, in io.Reader, out, errOut io.Writer, o
 		// Preserve the marker repo when any earlier delete
 		// failed — re-running teardown still passes
 		// requireConfigRepo and can retry the survivors.
-		if name == configRepoName && failed > 0 {
+		if name == configrepo.ConfigRepoName && failed > 0 {
 			markerPreserved = true
 			_, _ = fmt.Fprintf(errOut, "  skipped: %s/%s preserved so a re-run can retry the failed deletions above\n", org, name)
 			continue
@@ -135,11 +136,11 @@ func runTeardown(client githubapi.Client, in io.Reader, out, errOut io.Writer, o
 // "not a Classroom 50 org" guard — teardown refuses to touch orgs
 // that don't carry the marker. Other errors propagate.
 func requireConfigRepo(client githubapi.Client, org string) error {
-	path := fmt.Sprintf("repos/%s/%s", url.PathEscape(org), configRepoName)
+	path := fmt.Sprintf("repos/%s/%s", url.PathEscape(org), configrepo.ConfigRepoName)
 	if err := client.Get(path, nil); err != nil {
 		if cliutil.IsHTTPStatus(err, http.StatusNotFound) {
 			return fmt.Errorf("%s/%s not found — refusing teardown on an org without the Classroom 50 marker repo. Run `gh teacher init %s` first if this is intended, or delete repos manually via the web UI",
-				org, configRepoName, org)
+				org, configrepo.ConfigRepoName, org)
 		}
 		return fmt.Errorf("GET %s: %w", path, err)
 	}
@@ -155,14 +156,14 @@ func orderRepoDeletions(repos []string) []string {
 	out := make([]string, 0, len(repos))
 	var hasMarker bool
 	for _, r := range repos {
-		if r == configRepoName {
+		if r == configrepo.ConfigRepoName {
 			hasMarker = true
 			continue
 		}
 		out = append(out, r)
 	}
 	if hasMarker {
-		out = append(out, configRepoName)
+		out = append(out, configrepo.ConfigRepoName)
 	}
 	return out
 }
