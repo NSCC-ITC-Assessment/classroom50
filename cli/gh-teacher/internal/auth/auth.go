@@ -1,4 +1,6 @@
-package main
+// Package auth implements the gh-teacher authentication commands:
+// whoami, login, and logout.
+package auth
 
 import (
 	"github.com/foundation50/classroom50-cli-shared/ghauth"

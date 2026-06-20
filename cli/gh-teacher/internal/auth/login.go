@@ -1,4 +1,4 @@
-package main
+package auth
 
 import (
 	"errors"
@@ -9,7 +9,7 @@ import (
 	"github.com/foundation50/gh-teacher/internal/githubapi"
 )
 
-func loginCmd() *cobra.Command {
+func NewLoginCmd() *cobra.Command {
 	var scopes []string
 
 	cmd := &cobra.Command{

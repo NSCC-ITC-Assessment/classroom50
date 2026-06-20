@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/foundation50/gh-teacher/internal/ui"
 )
 
 func TestInitSummary_JSONShape(t *testing.T) {
@@ -110,7 +112,7 @@ func TestInitSummary_RenderHuman_ListsKeyFacts(t *testing.T) {
 	s.finalize()
 
 	var buf bytes.Buffer
-	s.renderHuman(newUIForced(&buf, false))
+	s.renderHuman(ui.NewForced(&buf, false))
 	out := buf.String()
 	for _, want := range []string{
 		"cs50: init complete",
@@ -145,7 +147,7 @@ func TestInitSummary_RenderHuman_IncompleteListsActions(t *testing.T) {
 	s.finalize()
 
 	var buf bytes.Buffer
-	s.renderHuman(newUIForced(&buf, false))
+	s.renderHuman(ui.NewForced(&buf, false))
 	out := buf.String()
 	if !strings.Contains(out, "INCOMPLETE") {
 		t.Errorf("incomplete run should banner INCOMPLETE:\n%s", out)

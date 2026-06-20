@@ -11,6 +11,7 @@ import (
 
 	"github.com/foundation50/classroom50-cli-shared/contract"
 	"github.com/foundation50/gh-teacher/internal/githubapi"
+	"github.com/foundation50/gh-teacher/internal/ui"
 )
 
 // configRepoName: per-org classroom config repo. Hardcoded across
@@ -96,7 +97,7 @@ func initCmd() *cobra.Command {
 			if asJSON {
 				quiet = true
 			}
-			u := newUI(errOut)
+			u := ui.New(errOut)
 
 			// Preflight: read-only checks before any mutation. A hard
 			// failure (missing scope, org not found, not an owner, no
@@ -131,8 +132,8 @@ func initCmd() *cobra.Command {
 			summary.Preflight = pre.Checks
 
 			total := len(initStepLabels)
-			prog := u.newProgress(total)
-			interactive := prog.active()
+			prog := u.NewProgress(total)
+			interactive := prog.Active()
 
 			// On an interactive terminal, fold the per-step output into one
 			// self-rewriting progress line ([1/12] → [12/12] Done): route
@@ -155,9 +156,9 @@ func initCmd() *cobra.Command {
 				case asJSON:
 					// no progress output
 				case interactive:
-					prog.update(stepNum, label)
+					prog.Update(stepNum, label)
 				case !quiet:
-					u.step(stepNum, total, label)
+					u.Step(stepNum, total, label)
 				}
 			}
 			// flushStepWarnings replays any warnings the helpers buffered
@@ -178,7 +179,7 @@ func initCmd() *cobra.Command {
 			step(initStepLabels[0])
 			lockdownComplete, unenforced, err := applyOrgMemberDefaults(client, stepOut, stepErr, org, pre.Plan)
 			if err != nil {
-				prog.abort()
+				prog.Abort()
 				return err
 			}
 			summary.LockdownComplete = lockdownComplete
@@ -219,7 +220,7 @@ func initCmd() *cobra.Command {
 			// the classroom workflows all depend on it.
 			step(initStepLabels[1])
 			if err := ensureOrgActionsEnabled(client, stepOut, stepErr, org); err != nil {
-				prog.abort()
+				prog.Abort()
 				return err
 			}
 
@@ -231,7 +232,7 @@ func initCmd() *cobra.Command {
 			step(initStepLabels[2])
 			prCreateReady, err := ensureOrgCanCreatePRs(client, stepOut, stepErr, org)
 			if err != nil {
-				prog.abort()
+				prog.Abort()
 				return err
 			}
 
@@ -243,7 +244,7 @@ func initCmd() *cobra.Command {
 			step(initStepLabels[3])
 			rulesetsReady, err := ensureClassroomRulesets(client, stepOut, stepErr, org)
 			if err != nil {
-				prog.abort()
+				prog.Abort()
 				return err
 			}
 
@@ -252,7 +253,7 @@ func initCmd() *cobra.Command {
 			step(initStepLabels[4])
 			repo, created, err := ensureConfigRepo(client, org)
 			if err != nil {
-				prog.abort()
+				prog.Abort()
 				return err
 			}
 			if created {
@@ -270,7 +271,7 @@ func initCmd() *cobra.Command {
 			// so the workflows' first run isn't blocked.
 			step(initStepLabels[5])
 			if err := ensureRepoActionsEnabled(client, stepOut, stepErr, org, configRepoName); err != nil {
-				prog.abort()
+				prog.Abort()
 				return err
 			}
 
@@ -281,30 +282,30 @@ func initCmd() *cobra.Command {
 			// first and give it the REAL stderr (its rare warnings show
 			// too); its success chatter still goes to the discarded stepOut.
 			if interactive {
-				prog.abort()
+				prog.Abort()
 			}
 			if err := commitSkeleton(client, cmd.InOrStdin(), stepOut, errOut, org, configRepoName, branch, skipConfirm); err != nil {
-				prog.abort()
+				prog.Abort()
 				return err
 			}
 			step(initStepLabels[7])
 			if err := enablePages(client, stepOut, stepErr, org, configRepoName); err != nil {
-				prog.abort()
+				prog.Abort()
 				return err
 			}
 			step(initStepLabels[8])
 			if err := applyBranchProtection(client, stepOut, org, configRepoName, branch); err != nil {
-				prog.abort()
+				prog.Abort()
 				return err
 			}
 			step(initStepLabels[9])
 			if err := setWorkflowPermissions(client, stepOut, org, configRepoName); err != nil {
-				prog.abort()
+				prog.Abort()
 				return err
 			}
 			step(initStepLabels[10])
 			if err := enableReusableWorkflowAccess(client, stepOut, stepErr, org, configRepoName); err != nil {
-				prog.abort()
+				prog.Abort()
 				return err
 			}
 
@@ -312,7 +313,7 @@ func initCmd() *cobra.Command {
 			// The service-token prompt (when needed) must not be hidden
 			// behind the progress line: finalize progress and flush any
 			// buffered warnings before any prompt/notice.
-			prog.done()
+			prog.Done()
 			flushStepWarnings()
 			if err := provisionServiceToken(cmd, client, summary, org, pre.SecretExists); err != nil {
 				return err

@@ -13,6 +13,9 @@ import (
 	_ "time/tzdata"
 
 	"github.com/spf13/cobra"
+
+	"github.com/foundation50/gh-teacher/internal/auth"
+	"github.com/foundation50/gh-teacher/internal/remove"
 )
 
 var (
@@ -31,9 +34,9 @@ func main() {
 	root.SetErrPrefix("gh-teacher:")
 	root.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "Show operational details (per-step API/git output)")
 
-	root.AddCommand(whoamiCmd())
-	root.AddCommand(loginCmd())
-	root.AddCommand(logoutCmd())
+	root.AddCommand(auth.NewWhoamiCmd())
+	root.AddCommand(auth.NewLoginCmd())
+	root.AddCommand(auth.NewLogoutCmd())
 	root.AddCommand(initCmd())
 	root.AddCommand(auditCmd())
 	root.AddCommand(rotateServiceTokenCmd())
@@ -42,7 +45,7 @@ func main() {
 	root.AddCommand(assignmentCmd())
 	root.AddCommand(autograderCmd())
 	root.AddCommand(inviteCmd())
-	root.AddCommand(removeCmd())
+	root.AddCommand(remove.NewCmd())
 	root.AddCommand(memberCmd())
 	root.AddCommand(downloadCmd())
 	root.AddCommand(teardownCmd())

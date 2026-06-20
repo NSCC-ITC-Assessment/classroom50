@@ -1,4 +1,6 @@
-package main
+// Package remove implements the `gh teacher remove` command: removing a
+// user from an organization or a specific repository.
+package remove
 
 import (
 	"errors"
@@ -14,7 +16,7 @@ import (
 	"github.com/foundation50/gh-teacher/internal/githubapi"
 )
 
-func removeCmd() *cobra.Command {
+func NewCmd() *cobra.Command {
 	var quiet bool
 
 	cmd := &cobra.Command{

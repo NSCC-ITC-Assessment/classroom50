@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/foundation50/gh-teacher/internal/githubtest"
+	"github.com/foundation50/gh-teacher/internal/ui"
 )
 
 // orgLiveFromSettings builds a live org field map where every in-scope
@@ -187,7 +188,7 @@ func TestAuditReport_RenderHumanShowsAllThreeSections(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	report.renderHuman(newUIForced(&buf, false))
+	report.renderHuman(ui.NewForced(&buf, false))
 	got := buf.String()
 	for _, want := range []string{
 		"cs50: member-privilege lockdown INCOMPLETE",

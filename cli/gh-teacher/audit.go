@@ -11,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/foundation50/gh-teacher/internal/githubapi"
+	"github.com/foundation50/gh-teacher/internal/ui"
 )
 
 // auditCmd implements `gh teacher audit <org>`: a read-only audit of the
@@ -91,7 +92,7 @@ func auditCmd() *cobra.Command {
 					return err
 				}
 			} else {
-				report.renderHuman(newUI(cmd.ErrOrStderr()))
+				report.renderHuman(ui.New(cmd.ErrOrStderr()))
 			}
 			if !report.LockdownComplete {
 				return errors.New("org member-privilege lockdown INCOMPLETE — see the report above")
@@ -208,45 +209,45 @@ func (r *auditReport) renderJSON(w io.Writer) error {
 // "Action required" checklist for any unenforced API-readable settings,
 // and a separate "Confirm by hand" list for the web-UI-only settings
 // audit can't read.
-func (r *auditReport) renderHuman(u *ui) {
-	u.blank()
+func (r *auditReport) renderHuman(u *ui.UI) {
+	u.Blank()
 
 	if !r.ReadOK {
-		u.result(preflightFail, "%s: couldn't read the org to audit the lockdown", r.Org)
-		u.detail("Check your network and that your token can read %s, then retry.", r.SettingsURL)
+		u.Result(preflightFail, "%s: couldn't read the org to audit the lockdown", r.Org)
+		u.Detail("Check your network and that your token can read %s, then retry.", r.SettingsURL)
 		return
 	}
 
 	switch {
 	case r.LockdownComplete && len(r.Unenforced) == 0:
-		u.result(preflightOK, "%s: member-privilege lockdown verified", r.Org)
+		u.Result(preflightOK, "%s: member-privilege lockdown verified", r.Org)
 	case r.LockdownComplete:
-		u.result(preflightWarn, "%s: lockdown OK, but some non-critical settings drifted", r.Org)
+		u.Result(preflightWarn, "%s: lockdown OK, but some non-critical settings drifted", r.Org)
 	default:
-		u.result(preflightFail, "%s: member-privilege lockdown INCOMPLETE", r.Org)
+		u.Result(preflightFail, "%s: member-privilege lockdown INCOMPLETE", r.Org)
 	}
 
 	if len(r.Enforced) > 0 {
-		u.heading("Verified (read from the API)")
+		u.Heading("Verified (read from the API)")
 		for _, s := range r.Enforced {
-			u.okItem("%s", s.Desc)
+			u.OkItem("%s", s.Desc)
 		}
 	}
 
 	if len(r.Unenforced) > 0 {
-		u.heading("Action required — these are NOT locked down")
+		u.Heading("Action required — these are NOT locked down")
 		for _, s := range r.Unenforced {
 			label := s.Fix
 			if label == "" {
 				label = s.Desc
 			}
 			if s.Critical {
-				u.checkbox("%s", label)
+				u.Checkbox("%s", label)
 			} else {
-				u.checkbox("(non-critical) %s", label)
+				u.Checkbox("(non-critical) %s", label)
 			}
 		}
-		u.detail("at %s", r.SettingsURL)
+		u.Detail("at %s", r.SettingsURL)
 	}
 
 	// The four web-UI-only settings can't be read back, so audit can
@@ -255,10 +256,10 @@ func (r *auditReport) renderHuman(u *ui) {
 	// lead with "open the page and confirm", then a numbered list of the
 	// items to eyeball.
 	if len(r.ManualUnreadable) > 0 {
-		u.heading("Confirm by hand (GitHub exposes no API to read these)")
-		u.detail("Open %s and confirm each setting below:", r.ManualUnreadable[0].URL)
+		u.Heading("Confirm by hand (GitHub exposes no API to read these)")
+		u.Detail("Open %s and confirm each setting below:", r.ManualUnreadable[0].URL)
 		for i, m := range r.ManualUnreadable {
-			u.numbered(i+1, "%s", m.Setting)
+			u.Numbered(i+1, "%s", m.Setting)
 		}
 	}
 }

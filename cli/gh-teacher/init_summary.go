@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+
+	"github.com/foundation50/gh-teacher/internal/ui"
 )
 
 // initSummary is the canonical record of what `gh teacher init` did. It
@@ -135,46 +137,46 @@ func (s *initSummary) renderJSON(w io.Writer) error {
 // plus any lockdown settings the plan/policy wouldn't let init apply),
 // and a prominent next command. No box — long URLs and instructions
 // would overflow it; a flat checklist is easier to scan and act on.
-func (s *initSummary) renderHuman(u *ui) {
+func (s *initSummary) renderHuman(u *ui.UI) {
 	// 1. Outcome banner. A leading blank line separates the report from
 	// the progress line / step output above it (we don't hard-clear the
 	// terminal — that would wipe the teacher's scrollback).
-	u.blank()
+	u.Blank()
 	switch {
 	case s.Ready:
-		u.result(preflightOK, "%s: init complete", s.Org)
+		u.Result(preflightOK, "%s: init complete", s.Org)
 	case s.LockdownComplete:
-		u.result(preflightWarn, "%s: init finished with warnings", s.Org)
+		u.Result(preflightWarn, "%s: init finished with warnings", s.Org)
 	default:
-		u.result(preflightFail, "%s: init INCOMPLETE — action needed", s.Org)
+		u.Result(preflightFail, "%s: init INCOMPLETE — action needed", s.Org)
 	}
 
 	// 2. Terse setup summary.
-	u.heading("Setup")
+	u.Heading("Setup")
 	if s.ConfigRepo.URL != "" {
 		verb := "reused"
 		if s.ConfigRepo.Created {
 			verb = "created"
 		}
-		u.item("config repo (%s): %s", verb, s.ConfigRepo.URL)
+		u.Item("config repo (%s): %s", verb, s.ConfigRepo.URL)
 	}
 	if s.PagesURL != "" {
-		u.item("pages (after first publish-pages run): %s", s.PagesURL)
+		u.Item("pages (after first publish-pages run): %s", s.PagesURL)
 	}
 	if s.ServiceToken != "" {
-		u.item("service token: %s", s.ServiceToken)
+		u.Item("service token: %s", s.ServiceToken)
 	}
 	if s.FeedbackPRReady {
-		u.item("feedback PR prerequisites: ready")
+		u.Item("feedback PR prerequisites: ready")
 	} else {
-		u.item("feedback PR prerequisites: incomplete — assignments using --feedback-pr may not open PRs")
+		u.Item("feedback PR prerequisites: incomplete — assignments using --feedback-pr may not open PRs")
 	}
 
 	// 2b. Informational notes (plan/policy caveats that aren't actions).
 	if len(s.Notes) > 0 {
-		u.heading("Notes")
+		u.Heading("Notes")
 		for _, n := range s.Notes {
-			u.item("%s", n)
+			u.Item("%s", n)
 		}
 	}
 
@@ -186,23 +188,23 @@ func (s *initSummary) renderHuman(u *ui) {
 	settingsURL := manualSettingsURL(s)
 	manual := s.manualActions()
 	if len(manual) > 0 {
-		u.heading("Action required — set these by hand (org owner)")
+		u.Heading("Action required — set these by hand (org owner)")
 		// When the lockdown is incomplete, lead with the plan-aware
 		// reason so the teacher understands why init couldn't do it.
 		if !s.LockdownComplete {
-			u.detail("%s", unenforcedCause(s.Plan))
+			u.Detail("%s", unenforcedCause(s.Plan))
 		}
 		for _, m := range manual {
-			u.checkbox("%s", m)
+			u.Checkbox("%s", m)
 		}
 		if settingsURL != "" {
-			u.detail("at %s", settingsURL)
+			u.Detail("at %s", settingsURL)
 		}
-		u.detail("then run `gh teacher audit %s` to confirm the API-readable settings landed", s.Org)
+		u.Detail("then run `gh teacher audit %s` to confirm the API-readable settings landed", s.Org)
 	}
 
 	// 4. Prominent next step.
-	u.next(fmt.Sprintf("gh teacher classroom add %s <short-name>", s.Org))
+	u.Next(fmt.Sprintf("gh teacher classroom add %s <short-name>", s.Org))
 }
 
 // manualActions merges the unenforced lockdown steps (only present when

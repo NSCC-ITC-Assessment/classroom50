@@ -1,4 +1,4 @@
-package main
+package ui
 
 import (
 	"bytes"
@@ -8,14 +8,14 @@ import (
 
 func TestUI_Progress_TTYRewritesInPlace(t *testing.T) {
 	var buf bytes.Buffer
-	u := newUIForced(&buf, true) // forced color => tty true
-	p := u.newProgress(3)
-	if !p.active() {
+	u := NewForced(&buf, true) // forced color => tty true
+	p := u.NewProgress(3)
+	if !p.Active() {
 		t.Fatal("forced-color ui should have an active progress line")
 	}
-	p.update(1, "First")
-	p.update(2, "Second")
-	p.done()
+	p.Update(1, "First")
+	p.Update(2, "Second")
+	p.Done()
 
 	out := buf.String()
 	// In-place updates use carriage return + clear-to-EOL.
@@ -32,13 +32,13 @@ func TestUI_Progress_TTYRewritesInPlace(t *testing.T) {
 
 func TestUI_Progress_NonTTYIsSilent(t *testing.T) {
 	var buf bytes.Buffer
-	u := newUIForced(&buf, false) // plain => tty false
-	p := u.newProgress(3)
-	if p.active() {
+	u := NewForced(&buf, false) // plain => tty false
+	p := u.NewProgress(3)
+	if p.Active() {
 		t.Error("a non-TTY ui must not have an active progress line")
 	}
-	p.update(1, "First")
-	p.done()
+	p.Update(1, "First")
+	p.Done()
 	if buf.Len() != 0 {
 		t.Errorf("progress must emit nothing on a non-TTY:\n%q", buf.String())
 	}
@@ -46,10 +46,10 @@ func TestUI_Progress_NonTTYIsSilent(t *testing.T) {
 
 func TestUI_PlainMode_ASCIIFallbacks(t *testing.T) {
 	var buf bytes.Buffer
-	u := newUIForced(&buf, false)
-	u.ok("config repo created")
-	u.step(3, 7, "Config repo")
-	u.warn("something is off")
+	u := NewForced(&buf, false)
+	u.Ok("config repo created")
+	u.Step(3, 7, "Config repo")
+	u.Warn("something is off")
 
 	got := buf.String()
 	for _, want := range []string{
@@ -74,9 +74,9 @@ func TestUI_PlainMode_ASCIIFallbacks(t *testing.T) {
 
 func TestUI_ColorMode_WrapsWithANSIAndSymbols(t *testing.T) {
 	var buf bytes.Buffer
-	u := newUIForced(&buf, true)
-	u.ok("done")
-	u.warn("heads up")
+	u := NewForced(&buf, true)
+	u.Ok("done")
+	u.Warn("heads up")
 
 	got := buf.String()
 	if !strings.Contains(got, "\x1b[") {
@@ -98,7 +98,7 @@ func TestUI_ColorMode_WrapsWithANSIAndSymbols(t *testing.T) {
 func TestUI_Warn_AlwaysContainsWarningPrefix(t *testing.T) {
 	for _, color := range []bool{false, true} {
 		var buf bytes.Buffer
-		newUIForced(&buf, color).warn("the org is enterprise-pinned")
+		NewForced(&buf, color).Warn("the org is enterprise-pinned")
 		if !strings.Contains(buf.String(), "Warning:") {
 			t.Errorf("warn(color=%v) must contain \"Warning:\": %q", color, buf.String())
 		}
@@ -108,12 +108,12 @@ func TestUI_Warn_AlwaysContainsWarningPrefix(t *testing.T) {
 func TestUI_ReportHelpers_PlainAndColor(t *testing.T) {
 	// Plain mode: ASCII tags, no box-drawing, no ANSI.
 	var plain bytes.Buffer
-	up := newUIForced(&plain, false)
-	up.result(preflightFail, "cs50: init INCOMPLETE")
-	up.heading("Action required")
-	up.checkbox(`uncheck "Allow members to delete or transfer repositories"`)
-	up.detail("at https://github.com/organizations/cs50/settings/member_privileges")
-	up.next("gh teacher classroom add cs50 <short-name>")
+	up := NewForced(&plain, false)
+	up.Result(StatusFail, "cs50: init INCOMPLETE")
+	up.Heading("Action required")
+	up.Checkbox(`uncheck "Allow members to delete or transfer repositories"`)
+	up.Detail("at https://github.com/organizations/cs50/settings/member_privileges")
+	up.Next("gh teacher classroom add cs50 <short-name>")
 	ps := plain.String()
 	for _, want := range []string{
 		"[x] cs50: init INCOMPLETE",
@@ -135,10 +135,10 @@ func TestUI_ReportHelpers_PlainAndColor(t *testing.T) {
 
 	// Color mode: checkbox + Next still carry the literal content.
 	var color bytes.Buffer
-	uc := newUIForced(&color, true)
-	uc.result(preflightOK, "cs50: init complete")
-	uc.checkbox("do a thing")
-	uc.next("gh teacher classroom add cs50 <short-name>")
+	uc := NewForced(&color, true)
+	uc.Result(StatusOK, "cs50: init complete")
+	uc.Checkbox("do a thing")
+	uc.Next("gh teacher classroom add cs50 <short-name>")
 	cs := color.String()
 	if !strings.Contains(cs, "\x1b[") {
 		t.Errorf("color report should contain ANSI escapes:\n%q", cs)

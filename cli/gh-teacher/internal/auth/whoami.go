@@ -1,4 +1,4 @@
-package main
+package auth
 
 import (
 	"fmt"
@@ -8,7 +8,7 @@ import (
 	"github.com/foundation50/gh-teacher/internal/githubapi"
 )
 
-func whoamiCmd() *cobra.Command {
+func NewWhoamiCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "whoami",
 		Short: "Print the authenticated GitHub user",

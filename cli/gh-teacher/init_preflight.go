@@ -12,15 +12,19 @@ import (
 	"github.com/foundation50/classroom50-cli-shared/ghauth"
 	"github.com/foundation50/gh-teacher/internal/cliutil"
 	"github.com/foundation50/gh-teacher/internal/githubapi"
+	"github.com/foundation50/gh-teacher/internal/ui"
 )
 
 // preflightStatus is the outcome of a single read-only preflight check.
-type preflightStatus string
+// Aliased to ui.Status so the renderer owns the canonical type (and its
+// glyph mapping) while init keeps reading naturally; the string values
+// ("ok"/"warn"/"fail") are unchanged, preserving the --json contract.
+type preflightStatus = ui.Status
 
 const (
-	preflightOK   preflightStatus = "ok"
-	preflightWarn preflightStatus = "warn"
-	preflightFail preflightStatus = "fail"
+	preflightOK   = ui.StatusOK
+	preflightWarn = ui.StatusWarn
+	preflightFail = ui.StatusFail
 )
 
 // preflightCheck is one read-only check run before init mutates the org.
@@ -263,20 +267,20 @@ func currentTokenSource() tokenSource {
 // renderPreflight prints the preflight section to the human channel via
 // the ui helper. Quiet suppresses the per-check lines but always prints
 // a failure summary (the teacher must see why init refused to start).
-func renderPreflight(u *ui, res preflightResult, quiet bool) {
+func renderPreflight(u *ui.UI, res preflightResult, quiet bool) {
 	if !quiet {
-		u.section("Preflight checks")
+		u.Section("Preflight checks")
 	}
 	for _, c := range res.Checks {
 		switch c.Status {
 		case preflightOK:
 			if !quiet {
-				u.ok("%s: %s", c.Name, c.Detail)
+				u.Ok("%s: %s", c.Name, c.Detail)
 			}
 		case preflightWarn, preflightFail:
 			// Both warn and fail show as a warning line; a fail
 			// additionally aborts the run (see preflightFailError).
-			u.warn("%s: %s", c.Name, c.Detail)
+			u.Warn("%s: %s", c.Name, c.Detail)
 		}
 	}
 }
