@@ -1,6 +1,7 @@
 // Package cliutil holds the cross-cutting CLI helpers that every domain
 // of gh-teacher reaches for but that are not themselves domain logic:
-// the authenticated-client constructor and the HTTP-status predicate.
+// the HTTP-status predicate. (The authenticated-client constructor lives
+// in internal/githubapi since it builds a client.)
 //
 // It exists so the per-domain files can depend on a small, named seam
 // instead of sharing one flat package main namespace. It deliberately

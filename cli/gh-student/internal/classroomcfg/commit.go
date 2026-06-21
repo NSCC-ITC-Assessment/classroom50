@@ -22,8 +22,8 @@ var errRefNotReady = errors.New("branch ref not fully propagated")
 // CommitFiles lands `files` (path → UTF-8 content) on `branch` as one Tree
 // commit, retrying the read+build while a freshly-templated repo's git-data
 // APIs lag. No rebase loop: this writes to the student's own just-accepted repo,
-// which has no concurrent writers (the teacher-side commitTree handles the
-// contended config repo).
+// which has no concurrent writers (the teacher-side configwrite.CommitTree
+// handles the contended config repo).
 func CommitFiles(client githubapi.Client, owner, repo, branch, message string, files map[string]string) error {
 	if len(files) == 0 {
 		return nil

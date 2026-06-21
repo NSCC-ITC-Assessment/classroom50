@@ -465,9 +465,9 @@ func assignmentIsGroup(assignments assignment.AssignmentsJSON, slug string) bool
 
 // assignmentRepoName: canonical lowercased
 // <classroom>-<assignment>-<username> repo name. Cross-binary
-// contract — mirrors the identically-named function in
-// cli/gh-student/accept.go. The two modules don't share symbols
-// (separate go.mod); the formula's shape IS the contract.
+// contract — mirrors reponame.Name in cli/gh-student/internal/reponame.
+// The two modules don't share symbols (separate go.mod); the formula's
+// shape IS the contract.
 func assignmentRepoName(classroom, assignment, username string) string {
 	return fmt.Sprintf("%s-%s-%s",
 		strings.ToLower(classroom),

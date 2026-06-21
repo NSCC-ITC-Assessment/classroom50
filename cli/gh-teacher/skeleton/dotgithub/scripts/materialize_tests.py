@@ -28,9 +28,9 @@ ASSIGNMENTS_SCHEMA_V1 = "classroom50/assignments/v1"
 TESTS_SCHEMA_V1 = "classroom50/tests/v1"
 TESTS_FILENAME = "tests.json"
 
-# Mirror shortNamePattern in cli/gh-teacher/classroom.go. The slug becomes
-# a directory path here, so a hand-edited manifest with a traversal-style
-# slug must be rejected before it reaches mkdir.
+# Mirror validate.ShortNamePattern in cli/gh-teacher/internal/validate/validate.go.
+# The slug becomes a directory path here, so a hand-edited manifest with a
+# traversal-style slug must be rejected before it reaches mkdir.
 SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{1,38}$")
 
 

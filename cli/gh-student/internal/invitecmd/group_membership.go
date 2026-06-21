@@ -54,7 +54,7 @@ func listGroupMemberLogins(ctx context.Context, client githubapi.Client, org, re
 		decodeErr := json.NewDecoder(resp.Body).Decode(&batch)
 		linkHeader := resp.Header.Get("Link")
 		// Drain before close so the connection can be pooled for the next
-		// page — matches getPage in the teacher CLI's paginateAll.
+		// page — matches GetPage in the teacher CLI's githubapi.PaginateAll.
 		_, _ = io.Copy(io.Discard, resp.Body)
 		_ = resp.Body.Close()
 		if decodeErr != nil {
@@ -70,7 +70,7 @@ func listGroupMemberLogins(ctx context.Context, client githubapi.Client, org, re
 			logins = append(logins, c.Login)
 		}
 		// Shared termination decision (ghutil.NextPage) — identical to
-		// the teacher CLI's paginateAll: follow GitHub's authoritative
+		// the teacher CLI's githubapi.PaginateAll: follow GitHub's authoritative
 		// `Link: rel="next"`, stop on a no-next Link / short no-Link page,
 		// else synthesize the next page.
 		next, stop := ghutil.NextPage(linkHeader, len(batch), perPage)

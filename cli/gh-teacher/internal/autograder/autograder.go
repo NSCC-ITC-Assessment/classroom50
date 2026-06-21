@@ -38,7 +38,7 @@ func FilePath(classroom, name string) string {
 	return classroom + "/autograders/" + name + ".yaml"
 }
 
-// ValidateName enforces `shortNamePattern` on the value that becomes
+// ValidateName enforces validate.ShortNamePattern on the value that becomes
 // `<classroom>/autograders/<name>.yaml` — same regex as classroom
 // short-names and slugs, blocking traversal-style inputs from reaching
 // the contents API or the Pages URL.

@@ -3,8 +3,9 @@
 // tests[] and runtime{} sub-objects. It is pure data/validation logic with
 // no GitHub I/O and no commit plumbing — it depends only on internal/output,
 // internal/validate, the shared contract package, and stdlib. The assignment
-// commands, commitTree, and the autograder hub helpers stay in package main
-// and call into this package through its exported API.
+// commands (internal/assignmentcmd), the config-repo write loop
+// (configwrite.CommitTree), and the autograder-shim helpers (internal/autograder)
+// all consume this package through its exported API.
 //
 // Security invariant: assignments.json is untrusted, hand-editable input, so
 // the runtime/container blocks are validated on the parse path
