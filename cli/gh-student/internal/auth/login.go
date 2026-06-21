@@ -1,4 +1,4 @@
-package main
+package auth
 
 import (
 	"errors"
@@ -8,7 +8,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func loginCmd() *cobra.Command {
+func NewLoginCmd() *cobra.Command {
 	var scopes []string
 
 	cmd := &cobra.Command{

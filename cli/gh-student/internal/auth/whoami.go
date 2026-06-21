@@ -1,4 +1,4 @@
-package main
+package auth
 
 import (
 	"fmt"
@@ -7,14 +7,14 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func whoamiCmd() *cobra.Command {
+func NewWhoamiCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "whoami",
 		Short: "Print the authenticated GitHub user",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cmd.SilenceUsage = true
-			client, err := requireAuthClient(cmd)
+			client, err := githubapi.RequireAuthClient(cmd)
 			if err != nil {
 				return err
 			}

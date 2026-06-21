@@ -6,6 +6,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/foundation50/gh-student/internal/auth"
 	"github.com/spf13/cobra"
 )
 
@@ -25,9 +26,9 @@ func main() {
 	root.SetErrPrefix("gh-student:")
 	root.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "Show operational details (per-step API/git output)")
 
-	root.AddCommand(whoamiCmd())
-	root.AddCommand(loginCmd())
-	root.AddCommand(logoutCmd())
+	root.AddCommand(auth.NewWhoamiCmd())
+	root.AddCommand(auth.NewLoginCmd())
+	root.AddCommand(auth.NewLogoutCmd())
 	root.AddCommand(acceptCmd())
 	root.AddCommand(inviteCmd())
 	root.AddCommand(submitCmd())
