@@ -19,6 +19,7 @@ import (
 	"github.com/foundation50/gh-teacher/internal/member"
 	"github.com/foundation50/gh-teacher/internal/remove"
 	"github.com/foundation50/gh-teacher/internal/roster"
+	"github.com/foundation50/gh-teacher/internal/teardown"
 )
 
 var (
@@ -51,7 +52,7 @@ func main() {
 	root.AddCommand(remove.NewCmd())
 	root.AddCommand(member.NewCmd())
 	root.AddCommand(downloadCmd())
-	root.AddCommand(teardownCmd())
+	root.AddCommand(teardown.NewCmd())
 
 	// Signal-aware root context: subcommands see cmd.Context()
 	// cancel on Ctrl-C / SIGTERM so in-flight HTTP unwinds.

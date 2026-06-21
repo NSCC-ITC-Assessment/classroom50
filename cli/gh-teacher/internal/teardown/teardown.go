@@ -1,4 +1,14 @@
-package main
+// Package teardown implements the `gh teacher teardown` command:
+// deleting every repository in a Classroom 50 org once the org is
+// confirmed to carry the <org>/classroom50 marker repo, for resetting a
+// development org between iterations. It is an extracted command package
+// (mirrors internal/auth, internal/remove, internal/roster,
+// internal/member, and internal/invite): only NewCmd is exported; the
+// run* orchestration, the typed-confirmation prompt, and the
+// delete/order helpers are package-private. It depends only on the
+// internal/* substrate seams (cliutil, configrepo, githubapi, orgrepos),
+// never on package main.
+package teardown
 
 import (
 	"bufio"
@@ -17,11 +27,11 @@ import (
 	"github.com/foundation50/gh-teacher/internal/orgrepos"
 )
 
-// teardownCmd implements `gh teacher teardown <org>`: deletes every
+// NewCmd implements `gh teacher teardown <org>`: deletes every
 // repo in an org once the org is confirmed to be a Classroom 50
 // setup. Intended for development scenarios where a clean reset is
 // useful between runs.
-func teardownCmd() *cobra.Command {
+func NewCmd() *cobra.Command {
 	var skipConfirm bool
 
 	cmd := &cobra.Command{

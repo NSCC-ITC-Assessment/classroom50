@@ -509,7 +509,7 @@ func removeClassroom(client githubapi.Client, in io.Reader, out, errOut io.Write
 // confirmClassroomRemove prompts on `out` and reads one line from
 // `in`. Returns nil iff the trimmed line equals the short-name; any
 // other input (mismatch, EOF, read error) aborts. Single read — no
-// retry (mirrors confirmTeardown).
+// retry (mirrors internal/teardown's confirmTeardown).
 func confirmClassroomRemove(in io.Reader, out io.Writer, shortName string) error {
 	_, _ = fmt.Fprintf(out, "This will delete classroom %q and all its files. Type the short-name (%s) to confirm: ", shortName, shortName)
 	line, err := bufio.NewReader(in).ReadString('\n')
