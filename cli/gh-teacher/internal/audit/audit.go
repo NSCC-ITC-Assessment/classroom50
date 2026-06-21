@@ -1,4 +1,14 @@
-package main
+// Package audit implements the `gh teacher audit` command: a read-only
+// audit of an org's member-privilege lockdown. It re-reads the org and
+// reports, per setting, whether the least-privilege value `gh teacher
+// init` applies is actually in effect — the standalone confirmation
+// surface for the lockdown model. It is an extracted command package
+// (mirrors internal/teardown, internal/download, internal/invite): only
+// NewCmd is exported; the report type, classification, and the two
+// renderers are package-private. It depends on the internal/* substrate
+// seams (githubapi for the org reads, orgpolicy for the shared lockdown
+// model, ui for rendering), never on package main.
+package audit
 
 import (
 	"encoding/json"
@@ -15,7 +25,7 @@ import (
 	"github.com/foundation50/gh-teacher/internal/ui"
 )
 
-// auditCmd implements `gh teacher audit <org>`: a read-only audit of the
+// NewCmd implements `gh teacher audit <org>`: a read-only audit of the
 // org member-privilege lockdown. It re-reads the org and reports, per
 // setting, whether the least-privilege value `gh teacher init` applies is
 // actually in effect — the same authoritative read-back init uses,
@@ -37,7 +47,7 @@ import (
 // (`gh teacher audit org && deploy`). The unreadable manual items do NOT
 // fail the command (they can't be read either way); they're always
 // surfaced as a reminder.
-func auditCmd() *cobra.Command {
+func NewCmd() *cobra.Command {
 	var asJSON bool
 
 	cmd := &cobra.Command{
@@ -77,7 +87,11 @@ func auditCmd() *cobra.Command {
 
 			// Plan drives which fields are in scope (Team/Free don't expose
 			// the enterprise-only toggles, so they're not part of the audit).
-			_, plan := checkOrgAccess(client, org)
+			// A failed plan lookup is non-fatal here: it yields an empty plan
+			// (audit then scopes to the non-enterprise set), and the
+			// authoritative org read in buildAuditReport is what sets ReadOK /
+			// the scriptable exit status if the org is truly unreadable.
+			plan, _ := githubapi.OrgPlan(client, org)
 
 			report := buildAuditReport(client, org, plan)
 
@@ -214,18 +228,18 @@ func (r *auditReport) renderHuman(u *ui.UI) {
 	u.Blank()
 
 	if !r.ReadOK {
-		u.Result(preflightFail, "%s: couldn't read the org to audit the lockdown", r.Org)
+		u.Result(ui.StatusFail, "%s: couldn't read the org to audit the lockdown", r.Org)
 		u.Detail("Check your network and that your token can read %s, then retry.", r.SettingsURL)
 		return
 	}
 
 	switch {
 	case r.LockdownComplete && len(r.Unenforced) == 0:
-		u.Result(preflightOK, "%s: member-privilege lockdown verified", r.Org)
+		u.Result(ui.StatusOK, "%s: member-privilege lockdown verified", r.Org)
 	case r.LockdownComplete:
-		u.Result(preflightWarn, "%s: lockdown OK, but some non-critical settings drifted", r.Org)
+		u.Result(ui.StatusWarn, "%s: lockdown OK, but some non-critical settings drifted", r.Org)
 	default:
-		u.Result(preflightFail, "%s: member-privilege lockdown INCOMPLETE", r.Org)
+		u.Result(ui.StatusFail, "%s: member-privilege lockdown INCOMPLETE", r.Org)
 	}
 
 	if len(r.Enforced) > 0 {

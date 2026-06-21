@@ -146,17 +146,13 @@ func checkScopes(client githubapi.Client) (check preflightCheck, scopes, login s
 // checkOrgAccess confirms GET /orgs/{org} succeeds and returns the plan
 // name (empty when the caller lacks billing visibility). A 404 is a
 // hard fail (org missing or invisible to this token); any other error
-// is also a fail since every later step needs org access.
+// is also a fail since every later step needs org access. The org read
+// itself lives in githubapi.OrgPlan; this wrapper adds init's preflight
+// framing and the actionable 404 message.
 func checkOrgAccess(client githubapi.Client, org string) (preflightCheck, string) {
 	c := preflightCheck{Name: "org access"}
-	path := fmt.Sprintf("orgs/%s", url.PathEscape(org))
-	var resp struct {
-		Login string `json:"login"`
-		Plan  struct {
-			Name string `json:"name"`
-		} `json:"plan"`
-	}
-	if err := client.Get(path, &resp); err != nil {
+	plan, err := githubapi.OrgPlan(client, org)
+	if err != nil {
 		c.Status = preflightFail
 		if cliutil.IsHTTPStatus(err, http.StatusNotFound) {
 			c.Detail = fmt.Sprintf("organization %q not found, or your token can't see it — check the name and that you're a member", org)
@@ -167,7 +163,7 @@ func checkOrgAccess(client githubapi.Client, org string) (preflightCheck, string
 	}
 	c.Status = preflightOK
 	c.Detail = fmt.Sprintf("organization %q is reachable", org)
-	return c, resp.Plan.Name
+	return c, plan
 }
 
 // planCheck applies the Pages-from-private-repo advisory: a

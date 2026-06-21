@@ -1,6 +1,9 @@
 package githubapi
 
 import (
+	"fmt"
+	"net/url"
+
 	"github.com/cli/go-gh/v2/pkg/api"
 
 	"github.com/foundation50/classroom50-cli-shared/ghutil"
@@ -24,6 +27,28 @@ func rest(c Client) *api.RESTClient {
 // CurrentUser returns the authenticated user's login and id.
 func CurrentUser(c Client) (login string, id int64, err error) {
 	return ghutil.CurrentUser(rest(c))
+}
+
+// OrgPlan reads GET /orgs/{org} and returns the org's billing plan name
+// (e.g. "free"/"team"/"enterprise"). The plan name is empty when the
+// caller's token lacks billing visibility even on a successful read.
+// This is the plan lookup both init's preflight (checkOrgAccess) and the
+// audit command need to decide which member-privilege fields are in
+// scope; it lives here, with the other org reads, so the pure
+// internal/orgpolicy model seam stays stdlib-only. The error is returned
+// raw so callers can classify it (e.g. 404 → "org not found") with
+// cliutil.IsHTTPStatus.
+func OrgPlan(c Client, org string) (string, error) {
+	path := fmt.Sprintf("orgs/%s", url.PathEscape(org))
+	var resp struct {
+		Plan struct {
+			Name string `json:"name"`
+		} `json:"plan"`
+	}
+	if err := c.Get(path, &resp); err != nil {
+		return "", err
+	}
+	return resp.Plan.Name, nil
 }
 
 // SetCollaborator adds username to owner/repo at the given permission,

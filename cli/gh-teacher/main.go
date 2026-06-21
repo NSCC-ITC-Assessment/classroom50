@@ -14,6 +14,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/foundation50/gh-teacher/internal/audit"
 	"github.com/foundation50/gh-teacher/internal/auth"
 	"github.com/foundation50/gh-teacher/internal/classroom"
 	"github.com/foundation50/gh-teacher/internal/download"
@@ -45,7 +46,7 @@ func main() {
 	root.AddCommand(auth.NewLoginCmd())
 	root.AddCommand(auth.NewLogoutCmd())
 	root.AddCommand(initCmd())
-	root.AddCommand(auditCmd())
+	root.AddCommand(audit.NewCmd())
 	root.AddCommand(servicetoken.NewRotateCmd())
 	root.AddCommand(classroom.NewCmd())
 	root.AddCommand(roster.NewCmd())
