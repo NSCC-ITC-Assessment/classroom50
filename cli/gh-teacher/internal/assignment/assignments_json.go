@@ -304,6 +304,13 @@ type ContainerCreds struct {
 	Password string `json:"password"`
 }
 
+// AssignmentsFilePath is the config-repo-relative path to a classroom's
+// assignments.json manifest. Single-sourced here so the read helpers
+// (configrepo.LoadAssignments) and the command write paths agree.
+func AssignmentsFilePath(classroom string) string {
+	return classroom + "/assignments.json"
+}
+
 // ParseAssignments decodes assignments.json with a two-pass scheme:
 // a lenient first pass reads only the schema sentinel so a future v2
 // file surfaces "this CLI handles only v1" instead of
@@ -313,13 +320,6 @@ type ContainerCreds struct {
 // bar so a hand-edited or web-UI-inserted entry can't re-bless
 // itself on the next CLI write.
 //
-// AssignmentsFilePath is the config-repo-relative path to a classroom's
-// assignments.json manifest. Single-sourced here so the read helpers
-// (configrepo.LoadAssignments) and the command write paths agree.
-func AssignmentsFilePath(classroom string) string {
-	return classroom + "/assignments.json"
-}
-
 // No hard size cap is enforced — per-assignment tests live as files
 // in the config repo rather than being inlined, so realistic
 // manifests stay well under the ~1 MiB contents-API threshold.
