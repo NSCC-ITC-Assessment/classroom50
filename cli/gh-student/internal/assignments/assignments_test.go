@@ -1,4 +1,4 @@
-package main
+package assignments
 
 import (
 	"context"
@@ -34,13 +34,13 @@ func TestAssignmentEntryResolveAutograder(t *testing.T) {
 	// Empty Autograder resolves to "default"; explicit values
 	// round-trip verbatim.
 	cases := []struct {
-		in   assignmentEntry
+		in   Entry
 		want string
 	}{
-		{assignmentEntry{}, "default"},
-		{assignmentEntry{Autograder: ""}, "default"},
-		{assignmentEntry{Autograder: "io-suite"}, "io-suite"},
-		{assignmentEntry{Autograder: "python-pytest"}, "python-pytest"},
+		{Entry{}, "default"},
+		{Entry{Autograder: ""}, "default"},
+		{Entry{Autograder: "io-suite"}, "io-suite"},
+		{Entry{Autograder: "python-pytest"}, "python-pytest"},
 	}
 	for _, tc := range cases {
 		if got := tc.in.ResolveAutograder(); got != tc.want {
@@ -179,7 +179,7 @@ func TestFetchAssignmentEntry_RejectsWrongSchema(t *testing.T) {
 	server, cleanup := newPagesServer(t, body, http.StatusOK)
 	defer cleanup()
 
-	_, err := fetchAssignmentEntryFromURL(context.Background(), server.URL+"/cs-principles/assignments.json", "hello")
+	_, err := fetchEntryFromURL(context.Background(), server.URL+"/cs-principles/assignments.json", "hello")
 	if err == nil {
 		t.Fatalf("expected error for v2 schema, got nil")
 	}
@@ -198,17 +198,17 @@ func TestFetchAssignmentEntry_ReturnsTypedNotFound(t *testing.T) {
 	server, cleanup := newPagesServer(t, body, http.StatusOK)
 	defer cleanup()
 
-	_, err := fetchAssignmentEntryFromURL(context.Background(), server.URL+"/cs-principles/assignments.json", "missing")
+	_, err := fetchEntryFromURL(context.Background(), server.URL+"/cs-principles/assignments.json", "missing")
 	if err == nil {
 		t.Fatalf("expected error for missing slug, got nil")
 	}
-	if !IsAssignmentNotFound(err) {
-		t.Errorf("expected assignmentNotFoundError (so callers can branch via errors.As); got %T: %v", err, err)
+	if !IsNotFound(err) {
+		t.Errorf("expected NotFoundError (so callers can branch via errors.As); got %T: %v", err, err)
 	}
 	// Should survive %w-chained wrapping at the call site.
 	wrapped := errors.New("wrapped: " + err.Error())
-	if IsAssignmentNotFound(wrapped) {
-		t.Errorf("IsAssignmentNotFound should not match a string-wrapped error (lost typing)")
+	if IsNotFound(wrapped) {
+		t.Errorf("IsNotFound should not match a string-wrapped error (lost typing)")
 	}
 }
 
@@ -218,7 +218,7 @@ func TestFetchAssignmentEntry_404Surfaces_PagesGuidance(t *testing.T) {
 	server, cleanup := newPagesServer(t, "not found", http.StatusNotFound)
 	defer cleanup()
 
-	_, err := fetchAssignmentEntryFromURL(context.Background(), server.URL+"/cs-principles/assignments.json", "hello")
+	_, err := fetchEntryFromURL(context.Background(), server.URL+"/cs-principles/assignments.json", "hello")
 	if err == nil {
 		t.Fatalf("expected error on 404, got nil")
 	}
@@ -232,11 +232,11 @@ func TestFetchAssignmentEntry_404Surfaces_PagesGuidance(t *testing.T) {
 
 // fetchOneTestEntry serves `body` at /cs-principles/assignments.json
 // and runs fetchAssignmentEntry against it.
-func fetchOneTestEntry(t *testing.T, body, slug string) (assignmentEntry, func()) {
+func fetchOneTestEntry(t *testing.T, body, slug string) (Entry, func()) {
 	t.Helper()
 	server, cleanup := newPagesServer(t, body, http.StatusOK)
 
-	entry, err := fetchAssignmentEntryFromURL(context.Background(), server.URL+"/cs-principles/assignments.json", slug)
+	entry, err := fetchEntryFromURL(context.Background(), server.URL+"/cs-principles/assignments.json", slug)
 	if err != nil {
 		cleanup()
 		t.Fatalf("fetchAssignmentEntry: %v", err)

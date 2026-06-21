@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/foundation50/classroom50-cli-shared/contract"
+	"github.com/foundation50/gh-student/internal/assignments"
 	"github.com/foundation50/gh-student/internal/classroomcfg"
 	"github.com/foundation50/gh-student/internal/githubapi"
 	"github.com/foundation50/gh-student/internal/localgit"
@@ -84,7 +85,7 @@ func inviteCmd() *cobra.Command {
 //
 // TRUST MODEL — this is an ADVISORY guardrail, not a security control:
 //   - The cap VALUE is trusted: max_group_size is read from the teacher's
-//     published Pages assignments.json (fetchAssignmentEntry), never from
+//     published Pages assignments.json (assignments.FetchEntry), never from
 //     the student-writable .classroom50.yaml.
 //   - The assignment POINTER is NOT trusted: .classroom50.yaml lives in the
 //     student's repo, so a student could edit `classroom`/`assignment` to
@@ -125,13 +126,13 @@ func enforceGroupSize(cmd *cobra.Command, client githubapi.Client, org, repo, in
 		return nil // target repo isn't this assignment's group repo → skip
 	}
 
-	entry, err := fetchAssignmentEntry(cmd.Context(), org, cfg.Classroom, cfg.Assignment)
+	entry, err := assignments.FetchEntry(cmd.Context(), org, cfg.Classroom, cfg.Assignment)
 	if err != nil {
 		// The local config points at an assignment we can't resolve. If it's
 		// genuinely not published, that's a "not a group repo we can check"
 		// case — skip silently. Any other (transient/network) failure warns
 		// but still proceeds: the advisory cap must not block on a blip.
-		var nf *assignmentNotFoundError
+		var nf *assignments.NotFoundError
 		if !errors.As(err, &nf) {
 			_, _ = fmt.Fprintf(cmd.ErrOrStderr(),
 				"Warning: couldn't check the group size for %s/%s (%v); proceeding with the invite — the size limit is advisory and enforced again at collection time.\n",
@@ -146,7 +147,7 @@ func enforceGroupSize(cmd *cobra.Command, client githubapi.Client, org, repo, in
 	// Bound the collaborator count with the same deadline budget the
 	// Pages fetch uses — go-gh's REST client has no default HTTP timeout,
 	// so an unbounded count could otherwise hang the invite.
-	ctx, cancel := context.WithTimeout(cmd.Context(), pagesFetchTimeout)
+	ctx, cancel := context.WithTimeout(cmd.Context(), assignments.PagesFetchTimeout)
 	defer cancel()
 	return checkGroupSizeBeforeInvite(ctx, client, org, repo, owner, invitee, entry.MaxGroupSize)
 }

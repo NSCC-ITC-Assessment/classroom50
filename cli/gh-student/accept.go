@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/foundation50/classroom50-cli-shared/contract"
+	"github.com/foundation50/gh-student/internal/assignments"
 	"github.com/foundation50/gh-student/internal/classroomcfg"
 	"github.com/foundation50/gh-student/internal/githubapi"
 	"github.com/foundation50/gh-student/internal/localgit"
@@ -206,7 +207,7 @@ func acceptAssignment(cmd *cobra.Command, client githubapi.Client, out io.Writer
 	// 1) Look up the assignment entry on the published Pages site
 	//    (no token; publish-pages keeps the JSON public). The entry
 	//    carries the template ref, mode, and autograder ref.
-	entry, err := fetchAssignmentEntry(cmd.Context(), org, classroom, assignment)
+	entry, err := assignments.FetchEntry(cmd.Context(), org, classroom, assignment)
 	if err != nil {
 		return err
 	}
@@ -229,10 +230,10 @@ func acceptAssignment(cmd *cobra.Command, client githubapi.Client, out io.Writer
 	//    fetch); other names fetch from Pages.
 	autograderName := entry.ResolveAutograder()
 	var shim string
-	if autograderName == defaultAutograderName {
+	if autograderName == contract.DefaultAutograderName {
 		shim = renderEmbeddedShim(org)
 	} else {
-		workflow, err := fetchAutograderWorkflow(cmd.Context(), org, classroom, autograderName)
+		workflow, err := assignments.FetchAutograderWorkflow(cmd.Context(), org, classroom, autograderName)
 		if err != nil {
 			return err
 		}
@@ -352,7 +353,7 @@ type GeneratedRepo struct {
 // message (template not readable by the student).
 // 422-already-exists → alreadyExisted=true and the PATCH is skipped
 // so re-runs don't disturb an existing repo.
-func createTemplatedPrivateAssignmentRepoInOrg(client githubapi.Client, out io.Writer, username, classroom, assignment, org string, tmpl templateRef) (htmlURL, fullName string, alreadyExisted bool, err error) {
+func createTemplatedPrivateAssignmentRepoInOrg(client githubapi.Client, out io.Writer, username, classroom, assignment, org string, tmpl assignments.TemplateRef) (htmlURL, fullName string, alreadyExisted bool, err error) {
 	newRepoName := reponame.Name(classroom, assignment, username)
 	createBody, err := json.Marshal(map[string]any{
 		"owner":   org,

@@ -16,6 +16,7 @@ import (
 	"github.com/foundation50/classroom50-cli-shared/ghutil"
 	"github.com/foundation50/gh-student/internal/classroomcfg"
 	"github.com/foundation50/gh-student/internal/githubapi"
+	identitypkg "github.com/foundation50/gh-student/internal/identity"
 	"github.com/foundation50/gh-student/internal/localgit"
 	"github.com/spf13/cobra"
 )
@@ -82,7 +83,7 @@ func submitAssignment(_ context.Context, client githubapi.Client, out io.Writer,
 	message := fmt.Sprintf("Submit %s", config.Assignment)
 
 	// Stamp the commit so a shell without git identity still submits.
-	identity, err := fetchGitIdentity(client)
+	identity, err := identitypkg.Fetch(client)
 	if err != nil {
 		return fmt.Errorf("resolve git identity: %w", err)
 	}
@@ -310,7 +311,7 @@ func splitOwnerRepo(s string) (owner, repo string) {
 // repo, stages workTree onto `branch`, commits with `identity`, and
 // pushes. Returns the new commit SHA (informational; the runner
 // workflow does the auto-tagging on its end).
-func commitWorkTreeOnRemoteBranch(gitDir string, workTree string, remoteURL string, branch string, message string, identity gitIdentity, out io.Writer, errOut io.Writer) (string, error) {
+func commitWorkTreeOnRemoteBranch(gitDir string, workTree string, remoteURL string, branch string, message string, identity identitypkg.GitIdentity, out io.Writer, errOut io.Writer) (string, error) {
 	if err := runCmd(out, errOut, "", "git", "clone", "--bare", remoteURL, gitDir); err != nil {
 		return "", fmt.Errorf("clone remote history: %w", err)
 	}

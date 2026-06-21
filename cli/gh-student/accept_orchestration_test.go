@@ -7,10 +7,12 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/foundation50/gh-student/internal/assignments"
 )
 
 func TestCreateTemplatedPrivateAssignmentRepoInOrg(t *testing.T) {
-	tmpl := templateRef{Owner: "cs50", Repo: "hello-template", Branch: "main"}
+	tmpl := assignments.TemplateRef{Owner: "cs50", Repo: "hello-template", Branch: "main"}
 
 	t.Run("success: generate then patch, returns new repo", func(t *testing.T) {
 		var generated, patched bool
