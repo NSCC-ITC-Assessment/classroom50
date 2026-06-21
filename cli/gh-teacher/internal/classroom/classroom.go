@@ -50,8 +50,9 @@ var studentsCSVHeader = strings.Join(configrepo.RosterColumns, ",") + "\n"
 // defaultAutograderName is the sentinel meaning "use the universal
 // default autograder". Single-sourced from the shared contract package;
 // the migrate path stamps it onto imported assignments that don't name
-// their own autograder. (The autograder command keeps its own copy of
-// this const; both are single-sourced from the same contract constant.)
+// their own autograder. (The internal/autograder seam keeps its own
+// package-private copy; both are single-sourced from the same contract
+// constant.)
 const defaultAutograderName = contract.DefaultAutograderName
 
 func NewCmd() *cobra.Command {

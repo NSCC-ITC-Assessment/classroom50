@@ -1,4 +1,4 @@
-package main
+package autograder
 
 import (
 	"net/http"
@@ -16,7 +16,7 @@ func TestAutograderFilePath(t *testing.T) {
 	// URL the student CLI builds against. Only non-default
 	// autograders land as files in the config repo — `default`
 	// resolves to the embedded gh-student shim instead — but
-	// autograderFilePath itself is a pure helper that should still
+	// FilePath itself is a pure helper that should still
 	// produce the same shape for any name.
 	cases := []struct {
 		classroom string
@@ -27,8 +27,8 @@ func TestAutograderFilePath(t *testing.T) {
 		{"intro-java", "c-makefile", "intro-java/autograders/c-makefile.yaml"},
 	}
 	for _, tc := range cases {
-		if got := autograderFilePath(tc.classroom, tc.name); got != tc.want {
-			t.Errorf("autograderFilePath(%q, %q) = %q, want %q", tc.classroom, tc.name, got, tc.want)
+		if got := FilePath(tc.classroom, tc.name); got != tc.want {
+			t.Errorf("FilePath(%q, %q) = %q, want %q", tc.classroom, tc.name, got, tc.want)
 		}
 	}
 }
@@ -63,12 +63,12 @@ func TestValidateAutograderName(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			err := validateAutograderName(tc.name)
+			err := ValidateName(tc.name)
 			if tc.wantErr && err == nil {
-				t.Fatalf("validateAutograderName(%q) = nil, want error", tc.name)
+				t.Fatalf("ValidateName(%q) = nil, want error", tc.name)
 			}
 			if !tc.wantErr && err != nil {
-				t.Fatalf("validateAutograderName(%q) = %v, want nil", tc.name, err)
+				t.Fatalf("ValidateName(%q) = %v, want nil", tc.name, err)
 			}
 		})
 	}
@@ -78,12 +78,12 @@ func TestValidateAutograderName_EmptyMentionsDefault(t *testing.T) {
 	// The empty-input message is the only nudge a teacher gets when
 	// they type `--autograder` with no value. It must name the
 	// default so they can either accept it or pass the right thing.
-	err := validateAutograderName("")
+	err := ValidateName("")
 	if err == nil {
 		t.Fatalf("expected error for empty name, got nil")
 	}
-	if !strings.Contains(err.Error(), defaultAutograderName) {
-		t.Errorf("empty-name error should reference default %q, got %q", defaultAutograderName, err)
+	if !strings.Contains(err.Error(), defaultName) {
+		t.Errorf("empty-name error should reference default %q, got %q", defaultName, err)
 	}
 }
 
@@ -96,7 +96,7 @@ func TestAutograderExists(t *testing.T) {
 	cases := []struct {
 		name       string
 		path       string // path the test server treats as existing
-		queryName  string // autograder name passed to autograderExists
+		queryName  string // autograder name passed to Exists
 		wantExists bool
 	}{
 		{
@@ -144,12 +144,12 @@ func TestAutograderExists(t *testing.T) {
 			t.Cleanup(server.Close)
 			client := githubtest.NewTestClient(t, server)
 
-			got, err := autograderExists(client, "cs50", "classroom50", "cs-principles", tc.queryName, "main")
+			got, err := Exists(client, "cs50", "classroom50", "cs-principles", tc.queryName, "main")
 			if err != nil {
-				t.Fatalf("autograderExists: %v", err)
+				t.Fatalf("Exists: %v", err)
 			}
 			if got != tc.wantExists {
-				t.Errorf("autograderExists = %v, want %v (path probed: %q)", got, tc.wantExists, gotPath)
+				t.Errorf("Exists = %v, want %v (path probed: %q)", got, tc.wantExists, gotPath)
 			}
 			// Confirm the path actually probed matches the
 			// `<classroom>/autograders/<name>.yaml` contract — a

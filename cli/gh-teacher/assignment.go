@@ -12,7 +12,9 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/foundation50/classroom50-cli-shared/contract"
 	"github.com/foundation50/gh-teacher/internal/assignment"
+	autograderseam "github.com/foundation50/gh-teacher/internal/autograder"
 	"github.com/foundation50/gh-teacher/internal/cliutil"
 	"github.com/foundation50/gh-teacher/internal/configrepo"
 	"github.com/foundation50/gh-teacher/internal/configwrite"
@@ -150,9 +152,9 @@ func assignmentAddCmd() *cobra.Command {
 			}
 			autograderVal := strings.TrimSpace(autograder)
 			if autograderVal == "" {
-				autograderVal = defaultAutograderName
+				autograderVal = contract.DefaultAutograderName
 			}
-			if err := validateAutograderName(autograderVal); err != nil {
+			if err := autograderseam.ValidateName(autograderVal); err != nil {
 				return err
 			}
 			dueVal, dueMetaVal, err := normalizeDueDate(strings.TrimSpace(due))
@@ -188,7 +190,7 @@ func assignmentAddCmd() *cobra.Command {
 	cmd.Flags().StringVar(&due, "due", "", "Optional due date (e.g. 2026-09-15T23:59:00-04:00); stored as UTC. Omit the offset to use the machine's local timezone")
 	cmd.Flags().StringVar(&mode, "mode", assignment.ModeIndividual, "Assignment mode: `individual` (default) or `group`. Group mode requires --max-group-size.")
 	cmd.Flags().IntVar(&maxGroupSize, "max-group-size", 0, "Maximum collaborators on a group repo (>= 2; required with --mode group). Enforced within the CLI when students join; direct GitHub-UI invites can bypass it.")
-	cmd.Flags().StringVar(&autograder, "autograder", defaultAutograderName, "Autograder workflow shim this assignment opts into; resolves to <classroom>/autograders/<name>.yaml in the config repo")
+	cmd.Flags().StringVar(&autograder, "autograder", contract.DefaultAutograderName, "Autograder workflow shim this assignment opts into; resolves to <classroom>/autograders/<name>.yaml in the config repo")
 	cmd.Flags().StringVar(&runtimeFile, "runtime", "", "Path to a JSON file describing the runtime environment (runs-on, python/node/java/go versions, apt packages, or container image), or `-` to read from stdin. Omit for ubuntu-latest + Python 3.12.")
 	cmd.Flags().StringVar(&testsFile, "tests", "", "Path to a JSON file with a bare array of declarative test specs (io/run/python), or `-` to read from stdin. Sets the assignment's `tests` block; mutually exclusive with a per-assignment autograder.py. See `gh teacher assignment test --help`.")
 	cmd.Flags().BoolVar(&feedbackPR, "feedback-pr", true, "Open one long-lived Feedback pull request per student repo so you can leave inline review comments on the full starter→submission diff. The autograde runner freezes a base branch at the baseline commit and opens the PR on the first submission that has a diff. Default on; pass --feedback-pr=false to disable. Requires `gh teacher init` to have set up the org prerequisites.")
@@ -330,7 +332,7 @@ func formatAssignmentListJSON(entries []assignment.AssignmentEntry) ([]byte, err
 	}
 	for i := range entries {
 		if entries[i].Autograder == "" {
-			entries[i].Autograder = defaultAutograderName
+			entries[i].Autograder = contract.DefaultAutograderName
 		}
 	}
 	return output.JSONPretty(entries)
@@ -444,15 +446,15 @@ func runAssignmentAdd(client githubapi.Client, out, errOut io.Writer, org, class
 		// every student's accept 404s on the Pages fetch later. The
 		// default autograder is embedded in gh-student and has no
 		// on-disk counterpart, so skip the probe in that case.
-		if entry.Autograder != defaultAutograderName {
-			exists, err := autograderExists(client, org, configrepo.ConfigRepoName, classroom, entry.Autograder, parentSHA)
+		if entry.Autograder != contract.DefaultAutograderName {
+			exists, err := autograderseam.Exists(client, org, configrepo.ConfigRepoName, classroom, entry.Autograder, parentSHA)
 			if err != nil {
 				return nil, fmt.Errorf("check autograder %s/%s/%s: %w",
-					org, configrepo.ConfigRepoName, autograderFilePath(classroom, entry.Autograder), err)
+					org, configrepo.ConfigRepoName, autograderseam.FilePath(classroom, entry.Autograder), err)
 			}
 			if !exists {
 				return nil, fmt.Errorf("autograder %q does not exist at %s/%s/%s — create it (or pass --autograder default) before registering this assignment",
-					entry.Autograder, org, configrepo.ConfigRepoName, autograderFilePath(classroom, entry.Autograder))
+					entry.Autograder, org, configrepo.ConfigRepoName, autograderseam.FilePath(classroom, entry.Autograder))
 			}
 		}
 
