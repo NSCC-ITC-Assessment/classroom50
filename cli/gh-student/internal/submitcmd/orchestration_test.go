@@ -1,4 +1,4 @@
-package main
+package submitcmd
 
 import (
 	"encoding/base64"
@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/foundation50/gh-student/internal/githubtest"
 )
 
 func TestFetchRepoPath(t *testing.T) {
@@ -43,7 +45,7 @@ func TestFetchRepoPath(t *testing.T) {
 	})
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
-	client := newTestRESTClient(t, server)
+	client := githubtest.NewTestClient(t, server)
 
 	dst := t.TempDir()
 	if err := fetchRepoPath(client, dst, "o", "r", "main", ".github"); err != nil {
@@ -74,7 +76,7 @@ func TestFetchRepoPath_RejectsNonBase64(t *testing.T) {
 	})
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
-	client := newTestRESTClient(t, server)
+	client := githubtest.NewTestClient(t, server)
 
 	err := fetchRepoPath(client, t.TempDir(), "o", "r", "main", "file.txt")
 	if err == nil || !strings.Contains(err.Error(), "unsupported encoding") {

@@ -1,4 +1,10 @@
-package main
+// Package submitcmd implements `gh student submit`: snapshot the current
+// branch and push it as a new commit on the assignment repo's main, so
+// the autograde workflow tags and grades the submission. It is an
+// extracted command package; only NewCmd is exported. Consumes the
+// internal/* seams (githubapi, classroomcfg, identity, localgit) + the
+// shared ghutil helper, never package main.
+package submitcmd
 
 import (
 	"bytes"
@@ -21,7 +27,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func submitCmd() *cobra.Command {
+func NewCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "submit",
 		Short: "Submit the current assignment to its remote",
@@ -46,22 +52,23 @@ func submitCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cmd.SilenceUsage = true
 
-			client, err := requireAuthClient(cmd)
+			client, err := githubapi.RequireAuthClient(cmd)
 			if err != nil {
 				return err
 			}
 
 			out := cmd.OutOrStdout()
 			errOut := cmd.ErrOrStderr()
+			verbose, _ := cmd.Flags().GetBool("verbose")
 
-			return submitAssignment(cmd.Context(), client, out, errOut)
+			return submitAssignment(cmd.Context(), client, verbose, out, errOut)
 		},
 	}
 
 	return cmd
 }
 
-func submitAssignment(_ context.Context, client githubapi.Client, out io.Writer, errOut io.Writer) error {
+func submitAssignment(_ context.Context, client githubapi.Client, verbose bool, out io.Writer, errOut io.Writer) error {
 	const (
 		remote = "origin"
 		branch = "main"
