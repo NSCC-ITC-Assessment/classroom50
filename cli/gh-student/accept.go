@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/foundation50/classroom50-cli-shared/contract"
+	"github.com/foundation50/gh-student/internal/classroomcfg"
 	"github.com/foundation50/gh-student/internal/githubapi"
 	"github.com/foundation50/gh-student/internal/localgit"
 	"github.com/foundation50/gh-student/internal/reponame"
@@ -259,24 +260,24 @@ func acceptAssignment(cmd *cobra.Command, client githubapi.Client, out io.Writer
 	}
 
 	// 5) Write .classroom50.yaml + the autograde workflow in one
-	//    Tree commit. dropClassroomFiles waits out GitHub's
+	//    Tree commit. classroomcfg.DropFiles waits out GitHub's
 	//    post-template-generation replication lag.
 	repoName := reponame.Name(classroom, assignment, username)
-	cfg := ClassroomConfig{
+	cfg := classroomcfg.Config{
 		Classroom:  classroom,
 		Assignment: assignment,
-		Source: ClassroomSource{
+		Source: classroomcfg.Source{
 			Owner:  entry.Template.Owner,
 			Repo:   entry.Template.Repo,
 			Branch: entry.Template.Branch,
 		},
 	}
-	if err := dropClassroomFiles(client, org, repoName, entry.Template.Branch, cfg, shim); err != nil {
+	if err := classroomcfg.DropFiles(client, org, repoName, entry.Template.Branch, cfg, shim); err != nil {
 		return err
 	}
 	if verbose {
 		_, _ = fmt.Fprintf(out, "wrote %s and %s in %s/%s (autograder %q)\n",
-			ClassroomMetadataPath, autogradeWorkflowPath, org, repoName, autograderName)
+			classroomcfg.MetadataPath, classroomcfg.AutogradeWorkflowPath, org, repoName, autograderName)
 	}
 
 	return reportAccepted(out, fullName, htmlURL)

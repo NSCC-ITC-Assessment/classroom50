@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/foundation50/classroom50-cli-shared/contract"
+	"github.com/foundation50/gh-student/internal/classroomcfg"
 	"github.com/foundation50/gh-student/internal/githubapi"
 	"github.com/foundation50/gh-student/internal/localgit"
 	"github.com/foundation50/gh-student/internal/reponame"
@@ -109,7 +110,7 @@ func enforceGroupSize(cmd *cobra.Command, client githubapi.Client, org, repo, in
 	if err != nil || !inside {
 		return nil // not in a repo → no group context to enforce
 	}
-	cfg, err := readClassroomConfig(filepath.Join(root, ClassroomMetadataPath))
+	cfg, err := classroomcfg.ReadConfig(filepath.Join(root, classroomcfg.MetadataPath))
 	if err != nil {
 		return nil // no/!readable .classroom50.yaml → not a classroom repo
 	}
@@ -161,7 +162,7 @@ func enforceGroupSize(cmd *cobra.Command, client githubapi.Client, org, repo, in
 // The prefix is derived from reponame.Prefix — the same source
 // reponame.Name builds from — so this consumer can never drift from
 // the producer's `<classroom>-<assignment>-<owner>` shape.
-func groupRepoOwner(repo string, cfg *ClassroomConfig) string {
+func groupRepoOwner(repo string, cfg *classroomcfg.Config) string {
 	prefix := reponame.Prefix(cfg.Classroom, cfg.Assignment)
 	lower := strings.ToLower(repo)
 	if strings.HasPrefix(lower, prefix) {

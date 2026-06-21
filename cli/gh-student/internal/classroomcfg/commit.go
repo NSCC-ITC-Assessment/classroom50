@@ -1,4 +1,4 @@
-package main
+package classroomcfg
 
 import (
 	"errors"
@@ -10,7 +10,7 @@ import (
 )
 
 // commitFilesAttempts: read-parent + build-tree retries at 200ms × 2^n backoff
-// (~3s), to ride out a freshly-templated repo's git-data lag. dropClassroomFiles
+// (~3s), to ride out a freshly-templated repo's git-data lag. DropFiles
 // already calls WaitForStableBranch first; this absorbs any lag that slips past
 // the poll budget.
 const commitFilesAttempts = 5
@@ -19,12 +19,12 @@ const commitFilesAttempts = 5
 // readable yet and the Tree API would 404 on the blank base_tree. Retryable.
 var errRefNotReady = errors.New("branch ref not fully propagated")
 
-// commitFiles lands `files` (path → UTF-8 content) on `branch` as one Tree
+// CommitFiles lands `files` (path → UTF-8 content) on `branch` as one Tree
 // commit, retrying the read+build while a freshly-templated repo's git-data
 // APIs lag. No rebase loop: this writes to the student's own just-accepted repo,
 // which has no concurrent writers (the teacher-side commitTree handles the
 // contended config repo).
-func commitFiles(client githubapi.Client, owner, repo, branch, message string, files map[string]string) error {
+func CommitFiles(client githubapi.Client, owner, repo, branch, message string, files map[string]string) error {
 	if len(files) == 0 {
 		return nil
 	}

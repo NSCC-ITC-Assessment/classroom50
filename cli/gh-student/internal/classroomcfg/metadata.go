@@ -1,0 +1,178 @@
+// Package classroomcfg owns the `.classroom50.yaml` on-disk contract and
+// the write path that drops a freshly-accepted assignment repo's initial
+// files. The config types (Config/Source) are read by every gh-student
+// command; the write helpers (DropFiles/CommitFiles/WaitForStableBranch)
+// are the accept-side seam that lands `.classroom50.yaml` + the autograde
+// workflow in one Tree commit. Depends on internal/githubapi and the
+// shared gittree/ghutil helpers, never on package main.
+package classroomcfg
+
+import (
+	"bytes"
+	"fmt"
+	"net/url"
+	"os"
+	"strings"
+
+	"github.com/foundation50/classroom50-cli-shared/ghutil"
+	"github.com/foundation50/gh-student/internal/githubapi"
+	"gopkg.in/yaml.v3"
+)
+
+// MetadataPath: in-repo path read by both the student CLI and the
+// autograde-runner workflow's bootstrap step.
+const MetadataPath = ".classroom50.yaml"
+
+// AutogradeWorkflowPath: in-repo destination for the autograde shim
+// written at accept time.
+const AutogradeWorkflowPath = ".github/workflows/autograde.yaml"
+
+// Config is the on-disk shape of `.classroom50.yaml`. classroom +
+// assignment identify the submission; source.* records the template repo
+// so `gh student submit` can re-fetch the latest instructor `.gitignore`
+// / `.github/` on each push.
+//
+// The runner derives its config-repo coordinates from the calling repo's
+// org (security-pinned at workflow runtime) and the classroom slug, so no
+// `config:` block is needed on disk.
+type Config struct {
+	Classroom  string `yaml:"classroom"`
+	Assignment string `yaml:"assignment"`
+	Source     Source `yaml:"source"`
+}
+
+// Source: source.* block (template repo). Submit reads instructor-side
+// `.gitignore` / `.github/` from here.
+type Source struct {
+	Owner  string `yaml:"owner"`
+	Repo   string `yaml:"repo"`
+	Branch string `yaml:"branch"`
+}
+
+// Render serializes cfg as double-quoted YAML. Used by accept to drop the
+// initial file; submit doesn't re-render since the shape is stable across
+// the assignment's lifetime.
+func Render(cfg Config) ([]byte, error) {
+	yamlBytes, err := marshalQuotedYAML(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("marshal classroom metadata: %w", err)
+	}
+	return yamlBytes, nil
+}
+
+// DropFiles commits `.classroom50.yaml` + the autograde workflow in one
+// Tree commit so the repo's initial shape lands atomically.
+// WaitForStableBranch polls first because GitHub doesn't propagate the
+// post-templated-repo commit ref synchronously (the contents API briefly
+// returns 409 "Git Repository is empty" otherwise).
+func DropFiles(client githubapi.Client, owner, repo, branch string, cfg Config, workflowContent string) error {
+	if err := WaitForStableBranch(client, owner, repo, branch); err != nil {
+		return err
+	}
+
+	metadataBytes, err := Render(cfg)
+	if err != nil {
+		return err
+	}
+
+	files := map[string]string{
+		MetadataPath:          string(metadataBytes),
+		AutogradeWorkflowPath: workflowContent,
+	}
+	return CommitFiles(client, owner, repo, branch,
+		"Initialize .classroom50.yaml and autograde workflow (gh student accept)",
+		files)
+}
+
+// WaitForStableBranch polls until a freshly-created branch's ref
+// propagates. Thin wrapper over the shared ghutil helper.
+func WaitForStableBranch(client githubapi.Client, owner, repo, branch string) error {
+	return githubapi.WaitForStableBranch(client, owner, repo, branch)
+}
+
+// EscapeContentPath URL-encodes each path segment, preserving slashes.
+func EscapeContentPath(path string) string {
+	parts := strings.Split(path, "/")
+	for i, part := range parts {
+		parts[i] = url.PathEscape(part)
+	}
+	return strings.Join(parts, "/")
+}
+
+// marshalQuotedYAML: double-quoted string scalars, 2-space indent.
+// Defends against auto-typing of slugs like "yes" or "2026".
+func marshalQuotedYAML(v any) ([]byte, error) {
+	var node yaml.Node
+	if err := node.Encode(v); err != nil {
+		return nil, err
+	}
+	quoteStringValues(&node)
+
+	var buf bytes.Buffer
+	enc := yaml.NewEncoder(&buf)
+	enc.SetIndent(2)
+	if err := enc.Encode(&node); err != nil {
+		_ = enc.Close()
+		return nil, err
+	}
+	if err := enc.Close(); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+// quoteStringValues forces DoubleQuotedStyle on every string-tagged
+// scalar. Keys, numbers, and booleans pass through.
+func quoteStringValues(n *yaml.Node) {
+	if n == nil {
+		return
+	}
+	switch n.Kind {
+	case yaml.DocumentNode, yaml.SequenceNode:
+		for _, c := range n.Content {
+			quoteStringValues(c)
+		}
+	case yaml.MappingNode:
+		// Content alternates [key, value, ...]; quote values only.
+		for i := 0; i+1 < len(n.Content); i += 2 {
+			quoteStringValues(n.Content[i+1])
+		}
+	case yaml.ScalarNode:
+		if n.Tag == "!!str" {
+			n.Style = yaml.DoubleQuotedStyle
+		}
+	}
+}
+
+// IsHTTPNotFound reports whether err is a 404 githubapi.HTTPError. Thin
+// wrapper over the shared ghutil helper.
+func IsHTTPNotFound(err error) bool {
+	return ghutil.IsHTTPNotFound(err)
+}
+
+// ReadConfig reads and validates a `.classroom50.yaml` at path. The
+// classroom/assignment identity and the full source.* template block must
+// all be present (submit and invite both rely on them).
+func ReadConfig(path string) (*Config, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", path, err)
+	}
+
+	var config Config
+	if err := yaml.Unmarshal(data, &config); err != nil {
+		return nil, fmt.Errorf("parse %s: %w", path, err)
+	}
+
+	if config.Classroom == "" {
+		return nil, fmt.Errorf("missing classroom in %s", path)
+	}
+	if config.Assignment == "" {
+		return nil, fmt.Errorf("missing assignment in %s", path)
+	}
+	if config.Source.Owner == "" || config.Source.Repo == "" || config.Source.Branch == "" {
+		return nil, fmt.Errorf("missing source.owner/source.repo/source.branch: %s", path)
+	}
+
+	return &config, nil
+}

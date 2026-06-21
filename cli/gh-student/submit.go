@@ -14,10 +14,10 @@ import (
 	"strings"
 
 	"github.com/foundation50/classroom50-cli-shared/ghutil"
+	"github.com/foundation50/gh-student/internal/classroomcfg"
 	"github.com/foundation50/gh-student/internal/githubapi"
 	"github.com/foundation50/gh-student/internal/localgit"
 	"github.com/spf13/cobra"
-	"gopkg.in/yaml.v3"
 )
 
 func submitCmd() *cobra.Command {
@@ -74,7 +74,7 @@ func submitAssignment(_ context.Context, client githubapi.Client, out io.Writer,
 		return fmt.Errorf("not inside a Git repository")
 	}
 
-	config, err := readClassroomConfig(filepath.Join(root, ClassroomMetadataPath))
+	config, err := classroomcfg.ReadConfig(filepath.Join(root, classroomcfg.MetadataPath))
 	if err != nil {
 		return err
 	}
@@ -133,12 +133,12 @@ func submitAssignment(_ context.Context, client githubapi.Client, out io.Writer,
 	}
 
 	if err := fetchRepoPath(client, workTree, config.Source.Owner, config.Source.Repo, config.Source.Branch, ".gitignore"); err != nil {
-		if !isHTTPNotFound(err) {
+		if !classroomcfg.IsHTTPNotFound(err) {
 			return fmt.Errorf("fetch instructor .gitignore: %w", err)
 		}
 	}
 	if err := fetchRepoPath(client, workTree, config.Source.Owner, config.Source.Repo, config.Source.Branch, ".github"); err != nil {
-		if !isHTTPNotFound(err) {
+		if !classroomcfg.IsHTTPNotFound(err) {
 			return fmt.Errorf("fetch instructor .github: %w", err)
 		}
 	}
@@ -206,7 +206,7 @@ func fetchRepoPath(
 	apiPath := fmt.Sprintf("repos/%s/%s/contents/%s?ref=%s",
 		url.PathEscape(owner),
 		url.PathEscape(repo),
-		escapeContentPath(path),
+		classroomcfg.EscapeContentPath(path),
 		url.QueryEscape(ref),
 	)
 
@@ -474,28 +474,4 @@ func copyFilePreservingMode(src string, dst string, mode os.FileMode) error {
 	}
 
 	return nil
-}
-
-func readClassroomConfig(path string) (*ClassroomConfig, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("read %s: %w", path, err)
-	}
-
-	var config ClassroomConfig
-	if err := yaml.Unmarshal(data, &config); err != nil {
-		return nil, fmt.Errorf("parse %s: %w", path, err)
-	}
-
-	if config.Classroom == "" {
-		return nil, fmt.Errorf("missing classroom in %s", path)
-	}
-	if config.Assignment == "" {
-		return nil, fmt.Errorf("missing assignment in %s", path)
-	}
-	if config.Source.Owner == "" || config.Source.Repo == "" || config.Source.Branch == "" {
-		return nil, fmt.Errorf("missing source.owner/source.repo/source.branch: %s", path)
-	}
-
-	return &config, nil
 }

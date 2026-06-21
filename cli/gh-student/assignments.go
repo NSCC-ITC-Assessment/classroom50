@@ -50,12 +50,6 @@ func (e assignmentEntry) ResolveAutograder() string {
 	return e.Autograder
 }
 
-// autogradeWorkflowPath: in-repo destination for the autograde shim
-// dropped at accept time. Public contract — the workflow only fires
-// when GitHub finds it at this path. Triggers: push to `main` and
-// push of a `submit/*` tag.
-const autogradeWorkflowPath = ".github/workflows/autograde.yaml"
-
 // templateRef: assignment starter-code source. All three fields
 // are always populated by `gh teacher assignment add` (which fills
 // `default_branch` when `@branch` is omitted).

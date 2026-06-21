@@ -1,4 +1,4 @@
-package main
+package classroomcfg
 
 import (
 	"encoding/json"
@@ -7,12 +7,14 @@ import (
 	"net/http/httptest"
 	"sync"
 	"testing"
+
+	"github.com/foundation50/gh-student/internal/githubtest"
 )
 
 // TestCommitFiles_RetriesOnFreshRepoLag pins the behavioral change introduced
-// when commitFiles moved onto the shared fresh-repo-retry loop: a just-templated
+// when CommitFiles moved onto the shared fresh-repo-retry loop: a just-templated
 // student repo whose first Tree write 409s "Git Repository is empty" must be
-// retried, not surfaced as a failure. Before the refactor commitFiles did a
+// retried, not surfaced as a failure. Before the refactor CommitFiles did a
 // single attempt and would have errored here.
 func TestCommitFiles_RetriesOnFreshRepoLag(t *testing.T) {
 	var (
@@ -67,11 +69,11 @@ func TestCommitFiles_RetriesOnFreshRepoLag(t *testing.T) {
 
 	server := httptest.NewServer(mux)
 	defer server.Close()
-	client := newTestRESTClient(t, server)
+	client := githubtest.NewTestClient(t, server)
 
-	err := commitFiles(client, "o", "r", "main", "msg", map[string]string{"a.txt": "hi"})
+	err := CommitFiles(client, "o", "r", "main", "msg", map[string]string{"a.txt": "hi"})
 	if err != nil {
-		t.Fatalf("commitFiles: unexpected error: %v", err)
+		t.Fatalf("CommitFiles: unexpected error: %v", err)
 	}
 
 	mu.Lock()
@@ -89,14 +91,14 @@ func TestCommitFiles_RetriesOnFreshRepoLag(t *testing.T) {
 func TestCommitFiles_EmptyIsNoop(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		t.Errorf("unexpected request %s %s for empty commitFiles", r.Method, r.URL.Path)
+		t.Errorf("unexpected request %s %s for empty CommitFiles", r.Method, r.URL.Path)
 		w.WriteHeader(http.StatusInternalServerError)
 	})
 	server := httptest.NewServer(mux)
 	defer server.Close()
-	client := newTestRESTClient(t, server)
+	client := githubtest.NewTestClient(t, server)
 
-	if err := commitFiles(client, "o", "r", "main", "msg", nil); err != nil {
-		t.Fatalf("commitFiles(nil): %v", err)
+	if err := CommitFiles(client, "o", "r", "main", "msg", nil); err != nil {
+		t.Fatalf("CommitFiles(nil): %v", err)
 	}
 }

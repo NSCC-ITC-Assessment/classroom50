@@ -1,4 +1,4 @@
-package main
+package classroomcfg
 
 import (
 	"errors"
@@ -17,18 +17,18 @@ func TestRenderClassroomMetadata_Shape(t *testing.T) {
 	// the config-repo coordinates from the calling repo's org and
 	// the classroom slug at workflow time, so no `config:` block is
 	// written here.
-	cfg := ClassroomConfig{
+	cfg := Config{
 		Classroom:  "cs-principles",
 		Assignment: "hello",
-		Source: ClassroomSource{
+		Source: Source{
 			Owner:  "cs50",
 			Repo:   "hello-template",
 			Branch: "main",
 		},
 	}
-	out, err := renderClassroomMetadata(cfg)
+	out, err := Render(cfg)
 	if err != nil {
-		t.Fatalf("renderClassroomMetadata: %v", err)
+		t.Fatalf("Render: %v", err)
 	}
 
 	// String scalars must be double-quoted so YAML doesn't
@@ -62,7 +62,7 @@ func TestRenderClassroomMetadata_Shape(t *testing.T) {
 	}
 
 	// Round-trip: yaml.Unmarshal must recover the original config.
-	var round ClassroomConfig
+	var round Config
 	if err := yaml.Unmarshal(out, &round); err != nil {
 		t.Fatalf("round-trip parse: %v", err)
 	}
@@ -75,14 +75,14 @@ func TestRenderClassroomMetadata_PreservesNumericLookingSlugs(t *testing.T) {
 	// Pins double-quoting: a numeric-looking classroom slug must
 	// not encode as a YAML integer — downstream string compares
 	// against args would break.
-	cfg := ClassroomConfig{
+	cfg := Config{
 		Classroom:  "2026",
 		Assignment: "hello",
-		Source:     ClassroomSource{Owner: "cs50", Repo: "hello-template", Branch: "main"},
+		Source:     Source{Owner: "cs50", Repo: "hello-template", Branch: "main"},
 	}
-	out, err := renderClassroomMetadata(cfg)
+	out, err := Render(cfg)
 	if err != nil {
-		t.Fatalf("renderClassroomMetadata: %v", err)
+		t.Fatalf("Render: %v", err)
 	}
 	if !strings.Contains(string(out), `classroom: "2026"`) {
 		t.Errorf("classroom should be double-quoted to preserve string type, got:\n%s", out)
@@ -107,8 +107,8 @@ func TestIsHTTPNotFound(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := isHTTPNotFound(tc.err); got != tc.want {
-				t.Fatalf("isHTTPNotFound(%v) = %v, want %v", tc.err, got, tc.want)
+			if got := IsHTTPNotFound(tc.err); got != tc.want {
+				t.Fatalf("IsHTTPNotFound(%v) = %v, want %v", tc.err, got, tc.want)
 			}
 		})
 	}

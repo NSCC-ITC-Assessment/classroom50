@@ -9,11 +9,12 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/foundation50/gh-student/internal/classroomcfg"
 	"github.com/foundation50/gh-student/internal/reponame"
 )
 
 func TestGroupRepoOwner(t *testing.T) {
-	cfg := &ClassroomConfig{Classroom: "cs-principles", Assignment: "project1"}
+	cfg := &classroomcfg.Config{Classroom: "cs-principles", Assignment: "project1"}
 	cases := []struct {
 		repo string
 		want string
@@ -44,7 +45,7 @@ func TestGroupRepoOwnerRoundTripsAssignmentRepoName(t *testing.T) {
 		{"cs50", "hello", "cs50-duck"},
 	}
 	for _, tc := range cases {
-		cfg := &ClassroomConfig{Classroom: tc.classroom, Assignment: tc.assignment}
+		cfg := &classroomcfg.Config{Classroom: tc.classroom, Assignment: tc.assignment}
 		repo := reponame.Name(tc.classroom, tc.assignment, tc.owner)
 		if got, want := groupRepoOwner(repo, cfg), strings.ToLower(tc.owner); got != want {
 			t.Errorf("groupRepoOwner(reponame.Name(%q,%q,%q)=%q) = %q, want %q",
