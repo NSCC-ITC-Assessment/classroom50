@@ -18,8 +18,8 @@
 // This package is a deliberate primitives surface, not a fused service
 // object: the three consuming commands each need a different subset (invite
 // uses LookupUser+InviteOrgByID; member uses only the forbidden classifier;
-// roster composes the ensure-membership flow via inviteIfNotMember, which
-// stays in package main), so the primitives are exported individually
+// roster composes the ensure-membership flow via inviteIfNotMember in
+// internal/roster), so the primitives are exported individually
 // rather than hidden behind a single operation.
 package membership
 

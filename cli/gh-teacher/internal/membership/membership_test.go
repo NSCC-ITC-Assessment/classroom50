@@ -150,7 +150,7 @@ func TestLookupUser(t *testing.T) {
 }
 
 // TestInviteOrgByID_KnownErrorIsRecoverable pins the cross-package contract
-// that roster.go's inviteIfNotMember depends on: when InviteOrgByID hits a
+// that internal/roster's inviteIfNotMember depends on: when InviteOrgByID hits a
 // 422 for an already-active/pending user, it returns an error that callers
 // in OTHER packages can recover via errors.As into *OrgMembershipKnownError
 // and read the exported State field from. The .state -> exported .State
@@ -171,7 +171,7 @@ func TestInviteOrgByID_KnownErrorIsRecoverable(t *testing.T) {
 			if !errors.As(err, &known) {
 				t.Fatalf("errors.As did not recover *OrgMembershipKnownError from %v", err)
 			}
-			// The exported field is what a different package (roster.go) reads.
+			// The exported field is what a different package (internal/roster) reads.
 			if known.State != tc.wantState {
 				t.Errorf("known.State = %q, want %q", known.State, tc.wantState)
 			}

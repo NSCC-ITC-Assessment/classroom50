@@ -16,6 +16,7 @@ import (
 
 	"github.com/foundation50/gh-teacher/internal/auth"
 	"github.com/foundation50/gh-teacher/internal/remove"
+	"github.com/foundation50/gh-teacher/internal/roster"
 )
 
 var (
@@ -41,7 +42,7 @@ func main() {
 	root.AddCommand(auditCmd())
 	root.AddCommand(rotateServiceTokenCmd())
 	root.AddCommand(classroomCmd())
-	root.AddCommand(rosterCmd())
+	root.AddCommand(roster.NewCmd())
 	root.AddCommand(assignmentCmd())
 	root.AddCommand(autograderCmd())
 	root.AddCommand(inviteCmd())

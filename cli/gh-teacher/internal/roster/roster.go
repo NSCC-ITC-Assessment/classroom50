@@ -1,4 +1,12 @@
-package main
+// Package roster implements the `gh teacher roster` command: managing the
+// classroom roster in <org>/classroom50/<classroom>/students.csv (list, add,
+// remove, import), including resolving each student's GitHub id and inviting
+// them to the org. It is an extracted command package (mirrors internal/auth
+// and internal/remove): only NewCmd is exported; the subcommand factories and
+// run* orchestration are package-private. It depends only on the internal/*
+// substrate seams (configrepo, configwrite, membership, validate, output,
+// githubapi), never on package main.
+package roster
 
 import (
 	"errors"
@@ -17,7 +25,7 @@ import (
 	"github.com/foundation50/gh-teacher/internal/validate"
 )
 
-func rosterCmd() *cobra.Command {
+func NewCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "roster",
 		Short: "Manage the classroom roster (students.csv)",
