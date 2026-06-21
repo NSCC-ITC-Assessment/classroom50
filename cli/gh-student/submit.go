@@ -15,6 +15,7 @@ import (
 
 	"github.com/foundation50/classroom50-cli-shared/ghutil"
 	"github.com/foundation50/gh-student/internal/githubapi"
+	"github.com/foundation50/gh-student/internal/localgit"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 )
@@ -65,7 +66,7 @@ func submitAssignment(_ context.Context, client githubapi.Client, out io.Writer,
 		branch = "main"
 	)
 
-	root, inside, err := currentGitRoot()
+	root, inside, err := localgit.CurrentGitRoot()
 	if err != nil {
 		return err
 	}

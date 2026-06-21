@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/foundation50/gh-student/internal/reponame"
 )
 
 func TestGroupRepoOwner(t *testing.T) {
@@ -29,9 +31,9 @@ func TestGroupRepoOwner(t *testing.T) {
 }
 
 // TestGroupRepoOwnerRoundTripsAssignmentRepoName pins the producer
-// (assignmentRepoName) and consumer (groupRepoOwner) to the same
+// (reponame.Name) and consumer (groupRepoOwner) to the same
 // `<classroom>-<assignment>-<owner>` shape. Both now derive from
-// assignmentRepoPrefix, so a future separator/casing change can't drift
+// reponame.Prefix, so a future separator/casing change can't drift
 // one side into silently returning "" (which would disable the cap).
 func TestGroupRepoOwnerRoundTripsAssignmentRepoName(t *testing.T) {
 	cases := []struct {
@@ -43,9 +45,9 @@ func TestGroupRepoOwnerRoundTripsAssignmentRepoName(t *testing.T) {
 	}
 	for _, tc := range cases {
 		cfg := &ClassroomConfig{Classroom: tc.classroom, Assignment: tc.assignment}
-		repo := assignmentRepoName(tc.classroom, tc.assignment, tc.owner)
+		repo := reponame.Name(tc.classroom, tc.assignment, tc.owner)
 		if got, want := groupRepoOwner(repo, cfg), strings.ToLower(tc.owner); got != want {
-			t.Errorf("groupRepoOwner(assignmentRepoName(%q,%q,%q)=%q) = %q, want %q",
+			t.Errorf("groupRepoOwner(reponame.Name(%q,%q,%q)=%q) = %q, want %q",
 				tc.classroom, tc.assignment, tc.owner, repo, got, want)
 		}
 	}

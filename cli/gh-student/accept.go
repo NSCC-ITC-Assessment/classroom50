@@ -9,11 +9,12 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"os/exec"
 	"strings"
 
 	"github.com/foundation50/classroom50-cli-shared/contract"
 	"github.com/foundation50/gh-student/internal/githubapi"
+	"github.com/foundation50/gh-student/internal/localgit"
+	"github.com/foundation50/gh-student/internal/reponame"
 	"github.com/spf13/cobra"
 )
 
@@ -184,19 +185,12 @@ func acceptOrgInvite(client githubapi.Client, org string) (AcceptStatus, error) 
 	return AcceptStatus{StatusCode: http.StatusOK}, nil
 }
 
-// assignmentModeIndividual and assignmentModeGroup are the modes
-// `gh student accept` supports. Both are accepted (the first accepter
-// creates a group repo just like an individual one); only an unrecognized
-// mode surfaces an error. Single-sourced in the shared contract package.
-const assignmentModeIndividual = contract.ModeIndividual
-const assignmentModeGroup = contract.ModeGroup
-
 // checkAcceptableMode gates `gh student accept` by assignment mode.
 // Both individual and group are accepted (and an empty mode defaults to
 // individual); only an unrecognized mode is rejected. Pure helper so the
 // lifted group seam is unit-testable.
 func checkAcceptableMode(assignment, mode string) error {
-	if mode != "" && mode != assignmentModeIndividual && mode != assignmentModeGroup {
+	if mode != "" && mode != contract.ModeIndividual && mode != contract.ModeGroup {
 		return fmt.Errorf("assignment %q has unsupported mode %q", assignment, mode)
 	}
 	return nil
@@ -267,7 +261,7 @@ func acceptAssignment(cmd *cobra.Command, client githubapi.Client, out io.Writer
 	// 5) Write .classroom50.yaml + the autograde workflow in one
 	//    Tree commit. dropClassroomFiles waits out GitHub's
 	//    post-template-generation replication lag.
-	repoName := assignmentRepoName(classroom, assignment, username)
+	repoName := reponame.Name(classroom, assignment, username)
 	cfg := ClassroomConfig{
 		Classroom:  classroom,
 		Assignment: assignment,
@@ -320,7 +314,7 @@ func reportAlreadyAccepted(out io.Writer, fullName, htmlURL string) error {
 // printCloneInstructions: clone block; warns if cwd is inside a
 // Git repo (nested clones are confusing).
 func printCloneInstructions(out io.Writer, htmlURL string) error {
-	root, insideRepo, err := currentGitRoot()
+	root, insideRepo, err := localgit.CurrentGitRoot()
 	if err != nil {
 		return err
 	}
@@ -351,29 +345,6 @@ type GeneratedRepo struct {
 	HasWiki     bool `json:"has_wiki"`
 }
 
-// assignmentRepoName: canonical lowercased
-// <classroom>-<assignment>-<username> repo name. Cross-binary
-// contract — cli/gh-teacher/download.go rebuilds the prefix by hand
-// (separate go.mod, no shared symbol) and runner.py::username_from_repo
-// mirrors the same formula. Changing the shape here silently makes
-// `gh teacher download` return zero repos and misidentifies every
-// submission in scores.json.
-func assignmentRepoName(classroom, assignment, username string) string {
-	return assignmentRepoPrefix(classroom, assignment) + strings.ToLower(username)
-}
-
-// assignmentRepoPrefix is the single source of the group/individual repo
-// name prefix `<classroom>-<assignment>-` (all lowercased). Both the
-// producer (assignmentRepoName) and the consumer (groupRepoOwner, which
-// strips this prefix to recover the owner login) derive from it, so the
-// `<classroom>-<assignment>-<owner>` shape can only change in one place.
-func assignmentRepoPrefix(classroom, assignment string) string {
-	return fmt.Sprintf("%s-%s-",
-		strings.ToLower(classroom),
-		strings.ToLower(assignment),
-	)
-}
-
 // createTemplatedPrivateAssignmentRepoInOrg generates a private
 // repo from the entry's template and disables
 // issues/projects/wiki. 404 on generate → cross-org visibility
@@ -381,7 +352,7 @@ func assignmentRepoPrefix(classroom, assignment string) string {
 // 422-already-exists → alreadyExisted=true and the PATCH is skipped
 // so re-runs don't disturb an existing repo.
 func createTemplatedPrivateAssignmentRepoInOrg(client githubapi.Client, out io.Writer, username, classroom, assignment, org string, tmpl templateRef) (htmlURL, fullName string, alreadyExisted bool, err error) {
-	newRepoName := assignmentRepoName(classroom, assignment, username)
+	newRepoName := reponame.Name(classroom, assignment, username)
 	createBody, err := json.Marshal(map[string]any{
 		"owner":   org,
 		"name":    newRepoName,
@@ -449,7 +420,7 @@ func createTemplatedPrivateAssignmentRepoInOrg(client githubapi.Client, out io.W
 // removes the org-wide danger of repo-admin (no delete/transfer/
 // visibility change), so admin-on-own-repo is safe.
 func inviteUserAsAdmin(client githubapi.Client, out io.Writer, username, classroom, assignment, org string) error {
-	fullRepoName := assignmentRepoName(classroom, assignment, username)
+	fullRepoName := reponame.Name(classroom, assignment, username)
 	if _, err := githubapi.SetCollaborator(client, org, fullRepoName, username, "admin"); err != nil {
 		return err
 	}
@@ -459,20 +430,4 @@ func inviteUserAsAdmin(client githubapi.Client, out io.Writer, username, classro
 	}
 
 	return nil
-}
-
-func currentGitRoot() (string, bool, error) {
-	cmd := exec.Command("git", "rev-parse", "--show-toplevel")
-
-	out, err := cmd.Output()
-	if err != nil {
-		if _, ok := errors.AsType[*exec.ExitError](err); ok {
-			// Not inside a git tree.
-			return "", false, nil
-		}
-		// e.g. git not installed.
-		return "", false, fmt.Errorf("check git repository: %w", err)
-	}
-
-	return strings.TrimSpace(string(out)), true, nil
 }

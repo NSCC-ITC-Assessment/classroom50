@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/foundation50/gh-student/internal/reponame"
 )
 
 // TestCheckAcceptableMode pins the lifted accept seam: group is now
@@ -48,7 +50,7 @@ func TestInviteUserAsAdmin(t *testing.T) {
 		assignment = "hello"
 		username   = "alice"
 	)
-	wantPath := "/repos/" + org + "/" + assignmentRepoName(classroom, assignment, username) + "/collaborators/" + username
+	wantPath := "/repos/" + org + "/" + reponame.Name(classroom, assignment, username) + "/collaborators/" + username
 
 	var gotPath, gotMethod string
 	var gotBody map[string]any

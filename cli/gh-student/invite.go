@@ -8,7 +8,10 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/foundation50/classroom50-cli-shared/contract"
 	"github.com/foundation50/gh-student/internal/githubapi"
+	"github.com/foundation50/gh-student/internal/localgit"
+	"github.com/foundation50/gh-student/internal/reponame"
 	"github.com/spf13/cobra"
 )
 
@@ -102,7 +105,7 @@ func inviteCmd() *cobra.Command {
 // honest invite. Only a genuine "group is full" decision (or an API error
 // while counting members of the matched repo) blocks the invite.
 func enforceGroupSize(cmd *cobra.Command, client githubapi.Client, org, repo, invitee string) error {
-	root, inside, err := currentGitRoot()
+	root, inside, err := localgit.CurrentGitRoot()
 	if err != nil || !inside {
 		return nil // not in a repo → no group context to enforce
 	}
@@ -135,7 +138,7 @@ func enforceGroupSize(cmd *cobra.Command, client githubapi.Client, org, repo, in
 		}
 		return nil
 	}
-	if entry.Mode != assignmentModeGroup {
+	if entry.Mode != contract.ModeGroup {
 		return nil // individual assignment → no cap
 	}
 
@@ -155,11 +158,11 @@ func enforceGroupSize(cmd *cobra.Command, client githubapi.Client, org, repo, in
 // isn't the founder's group repo for the local config's assignment), so the
 // member count is only ever taken with a real, matched owner.
 //
-// The prefix is derived from assignmentRepoPrefix — the same source
-// assignmentRepoName builds from — so this consumer can never drift from
+// The prefix is derived from reponame.Prefix — the same source
+// reponame.Name builds from — so this consumer can never drift from
 // the producer's `<classroom>-<assignment>-<owner>` shape.
 func groupRepoOwner(repo string, cfg *ClassroomConfig) string {
-	prefix := assignmentRepoPrefix(cfg.Classroom, cfg.Assignment)
+	prefix := reponame.Prefix(cfg.Classroom, cfg.Assignment)
 	lower := strings.ToLower(repo)
 	if strings.HasPrefix(lower, prefix) {
 		return lower[len(prefix):]
