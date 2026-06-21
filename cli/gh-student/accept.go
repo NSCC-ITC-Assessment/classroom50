@@ -30,6 +30,14 @@ import (
 // so it's a real, lintable YAML file rather than a Go string
 // literal.
 //
+// NOTE: this asset is filesystem-pinned. //go:embed cannot cross
+// directories (no ../) and package main is unimportable, so the accept
+// command (which embeds and writes this shim) must stay at the module
+// root — it is the principled terminus of the gh-student package
+// extraction, not unfinished work. Do NOT "finish" the refactor by
+// moving the embed tree into internal/*. See
+// docs/solutions/architecture-patterns/embed-terminus-and-build-as-oracle-in-go-package-extraction.md
+//
 //go:embed embed/autograde-shim.yaml
 var embeddedShimContent string
 
@@ -87,7 +95,7 @@ func acceptCmd() *cobra.Command {
 				return fmt.Errorf("invalid arguments: org, classroom, and assignment must all be non-empty")
 			}
 
-			client, err := requireAuthClient(cmd)
+			client, err := githubapi.RequireAuthClient(cmd)
 			if err != nil {
 				return err
 			}

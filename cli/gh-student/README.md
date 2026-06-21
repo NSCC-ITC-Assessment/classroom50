@@ -58,15 +58,31 @@ VSCode users: install the [Go extension](https://marketplace.visualstudio.com/it
 
 ## Layout
 
-`main.go` defines the cobra root command and registers subcommands. Each subcommand lives in its own file (`whoami.go`, `accept.go`, …) exposing a `<name>Cmd()` factory function. To add a new command, copy an existing file and follow the same pattern: factory returns `*cobra.Command`, write to `cmd.OutOrStdout()`, wrap errors with `fmt.Errorf("ctx: %w", err)`.
+`main.go` defines the cobra root command and registers subcommands. The CLI was
+extracted from a flat `package main` into `internal/<domain>/` packages, mirroring
+`cli/gh-teacher` (the two are separate Go modules, so seams are paralleled, not
+shared).
 
-Accept and submit lean on three shared modules:
+**Command packages** (each exposes an exported constructor — `NewCmd()` for a
+single-command package, or `New<Name>Cmd()` for the auth group — registered by
+`main.go`):
 
-- `tree_commit.go` — a one-shot `commitFiles` that lands multiple files in a single Tree commit, delegating the git-data plumbing (`RefAndTree`, `UploadBlobs`, `CreateTree`, `CreateCommit`, `UpdateRef`) to the shared `cli/shared/gittree` package. It runs through `gittree.CommitWithFreshRepoRetry`, retrying on a freshly-templated repo's git-data lag (404/409 "Git Repository is empty"/empty-ref). Accept uses it to drop `.classroom50.yaml` and the fetched autograde workflow shim atomically.
-- `assignments.go` — Pages-URL fetchers for the published `assignments.json` *and* the per-classroom autograder shim YAMLs at `<classroom>/autograders/<name>.yaml`. Both run unauth: students have no access to the (private) config repo, and `publish-pages.yaml`'s allow-list puts both paths on the public Pages site. The typed `assignmentNotFoundError` lets callers surface "ask your instructor to run `gh teacher assignment add ...`" via `errors.As`; the autograder fetch surfaces a 404 with "autograder `<name>` not published yet — ask your instructor to confirm `<classroom>/autograders/<name>.yaml` exists" wording. Malformed YAML is rejected at fetch time so a broken shim never lands in a student repo.
-- `metadata.go` — the typed `ClassroomConfig` (classroom + assignment + source identity) and `dropClassroomFiles` (takes the rendered shim content as a parameter so the embed is the single source of truth). The post-templated-repo replication-lag poll, `WaitForStableBranch`, lives in the shared `cli/shared/ghutil` package.
+- `internal/auth` — `login` / `logout` / `whoami` (thin wrappers over the shared `ghauth` + the `githubapi` seam).
+- `internal/submitcmd` — `submit`.
+- `internal/invitecmd` — `invite` (+ the group-membership size-cap helpers).
 
-Submit is intentionally minimal: `submitCmd` refreshes the template repo's `.gitignore` and `.github/` (both optional, fetched from the template ref recorded in `.classroom50.yaml`), then commits + pushes to `main`. The autograde shim itself is set once at accept time and never refreshed — actual grading logic lives in the teacher's config repo (the org-level runner-side bootstrap `.github/scripts/runner.py`, the optional classroom default `<classroom>/autograder.py`, and optional per-assignment overrides under `<classroom>/autograders/<slug>/autograder.py`), all fetched from the teacher's Pages site at workflow runtime. The runner workflow auto-tags the pushed commit and publishes a release at the submit tag.
+**Substrate seams** (the shared behavior the commands build on):
+
+- `internal/githubapi` — the **only** importer of `go-gh/v2/pkg/api`. Exposes the transport-verb `Client` interface (`Get`/`Post`/`Patch`/`Request`/`RequestWithContext`), `RequireAuthClient`/`RequiredScopes`, the `HTTPError` alias, and thin wrappers over the `cli/shared` ops that need the concrete client (`CurrentUser`/`SetCollaborator`/`WaitForStableBranch`/`UploadBlobs`/`CommitWithFreshRepoRetry`). `internal/githubtest` is the white-box test client.
+- `internal/classroomcfg` — the `.classroom50.yaml` contract (`Config`/`Source`/`MetadataPath`/`AutogradeWorkflowPath`) plus the accept-side write path (`DropFiles`/`CommitFiles`/`WaitForStableBranch`, `ReadConfig`, `Render`, `EscapeContentPath`, `IsHTTPNotFound`). `CommitFiles` runs through `gittree.CommitWithFreshRepoRetry`, retrying on a freshly-templated repo's git-data lag.
+- `internal/assignments` — the **token-less** GitHub Pages read path (plain `net/http`, no go-gh): `FetchEntry`/`FetchAutograderWorkflow`, the `Entry`/`TemplateRef`/`AutogradeWorkflow` types, and the typed `NotFoundError`/`IsNotFound` so callers can surface "ask your instructor to run `gh teacher assignment add ...`" via `errors.As`. Malformed YAML is rejected at fetch time so a broken shim never lands in a student repo.
+- `internal/identity` — the submit-commit git author/committer identity (`GitIdentity`/`Fetch`).
+- `internal/reponame` — the canonical `<classroom>-<assignment>-<username>` repo-name formula (`Name`/`Prefix`), the cross-binary contract shared with gh-teacher's `download.go` and `runner.py`.
+- `internal/localgit` — `CurrentGitRoot`, the local-git-tree nested-clone guard.
+
+**`accept.go` stays in `package main` at the module root** — it embeds the universal autograder shim (`//go:embed embed/autograde-shim.yaml`), and `//go:embed` cannot reference a directory outside the embedding file's own (`package main` is also unimportable from `internal/*`). So the accept command, which embeds and writes that shim, is the principled terminus of the extraction, not unfinished work. Moving the embed tree into `internal/*` is a deliberate non-goal — see [the captured learning](../../docs/solutions/architecture-patterns/embed-terminus-and-build-as-oracle-in-go-package-extraction.md). `accept.go` consumes the seams above like every other command.
+
+Submit is intentionally minimal: it refreshes the template repo's `.gitignore` and `.github/` (both optional, fetched from the template ref recorded in `.classroom50.yaml`), then commits + pushes to `main`. The autograde shim itself is set once at accept time and never refreshed — actual grading logic lives in the teacher's config repo and is fetched from the teacher's Pages site at workflow runtime. The runner workflow auto-tags the pushed commit and publishes a release at the submit tag.
 
 ## Distribution
 
