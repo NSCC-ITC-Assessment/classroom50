@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/foundation50/gh-teacher/internal/assignment"
 	"github.com/foundation50/gh-teacher/internal/githubtest"
 )
 
@@ -414,7 +415,7 @@ func TestCopyOneTemplate(t *testing.T) {
 		if got.Action != templateActionReused {
 			t.Errorf("action = %s, want reused", got.Action)
 		}
-		if got.Template != (templateRef{Owner: "tgt", Repo: "hello", Branch: "main"}) {
+		if got.Template != (assignment.TemplateRef{Owner: "tgt", Repo: "hello", Branch: "main"}) {
 			t.Errorf("template = %+v, want tgt/hello@main", got.Template)
 		}
 		if !strings.Contains(errOut.String(), "Reusing existing template") {
@@ -487,7 +488,7 @@ func TestCopyOneTemplate(t *testing.T) {
 		if got.Action != templateActionGenerated {
 			t.Errorf("action = %s, want generated", got.Action)
 		}
-		if got.Template != (templateRef{Owner: "tgt", Repo: "hello", Branch: "main"}) {
+		if got.Template != (assignment.TemplateRef{Owner: "tgt", Repo: "hello", Branch: "main"}) {
 			t.Errorf("template = %+v, want tgt/hello@main", got.Template)
 		}
 		if !generateCalled {

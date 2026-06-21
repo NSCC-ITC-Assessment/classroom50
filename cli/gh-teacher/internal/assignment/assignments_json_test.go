@@ -1,9 +1,11 @@
-package main
+package assignment
 
 import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/foundation50/classroom50-cli-shared/contract"
 )
 
 func TestParseAssignments_Canonical(t *testing.T) {
@@ -20,21 +22,21 @@ func TestParseAssignments_Canonical(t *testing.T) {
     }
   ]
 }`)
-	file, err := parseAssignments(in)
+	file, err := ParseAssignments(in)
 	if err != nil {
-		t.Fatalf("parseAssignments: %v", err)
+		t.Fatalf("ParseAssignments: %v", err)
 	}
-	if file.Schema != assignmentsSchemaV1 {
-		t.Errorf("schema = %q, want %q", file.Schema, assignmentsSchemaV1)
+	if file.Schema != contract.AssignmentsSchemaV1 {
+		t.Errorf("schema = %q, want %q", file.Schema, contract.AssignmentsSchemaV1)
 	}
 	if len(file.Assignments) != 1 {
 		t.Fatalf("expected 1 assignment, got %d", len(file.Assignments))
 	}
 	got := file.Assignments[0]
-	want := assignmentEntry{
+	want := AssignmentEntry{
 		Slug:       "hello",
 		Name:       "Hello",
-		Template:   templateRef{Owner: "cs50", Repo: "hello-template", Branch: "main"},
+		Template:   TemplateRef{Owner: "cs50", Repo: "hello-template", Branch: "main"},
 		Due:        "2026-09-15T23:59:00-04:00",
 		Mode:       "individual",
 		Autograder: "default",
@@ -65,9 +67,9 @@ func TestParseAssignments_AutograderField(t *testing.T) {
     }
   ]
 }`)
-	file, err := parseAssignments(in)
+	file, err := ParseAssignments(in)
 	if err != nil {
-		t.Fatalf("parseAssignments: %v", err)
+		t.Fatalf("ParseAssignments: %v", err)
 	}
 	if got := file.Assignments[0].Autograder; got != "io-suite" {
 		t.Errorf("explicit autograder dropped: got %q, want %q", got, "io-suite")
@@ -92,7 +94,7 @@ func TestParseAssignments_RejectsInvalidAutograder(t *testing.T) {
     }
   ]
 }`)
-	_, err := parseAssignments(in)
+	_, err := ParseAssignments(in)
 	if err == nil {
 		t.Fatalf("expected error for traversal autograder name, got nil")
 	}
@@ -136,9 +138,9 @@ func TestParseAssignments_TestsRoundTrip(t *testing.T) {
     }
   ]
 }`)
-	file, err := parseAssignments(in)
+	file, err := ParseAssignments(in)
 	if err != nil {
-		t.Fatalf("parseAssignments: %v", err)
+		t.Fatalf("ParseAssignments: %v", err)
 	}
 	tests := file.Assignments[0].Tests
 	if len(tests) != 2 {
@@ -152,11 +154,11 @@ func TestParseAssignments_TestsRoundTrip(t *testing.T) {
 	}
 
 	// Re-encode and re-parse to confirm round-trip stability.
-	encoded, err := encodeAssignments(file)
+	encoded, err := EncodeAssignments(file)
 	if err != nil {
-		t.Fatalf("encodeAssignments: %v", err)
+		t.Fatalf("EncodeAssignments: %v", err)
 	}
-	again, err := parseAssignments(encoded)
+	again, err := ParseAssignments(encoded)
 	if err != nil {
 		t.Fatalf("re-parse: %v", err)
 	}
@@ -188,9 +190,9 @@ func TestParseAssignments_FeedbackPRRoundTrip(t *testing.T) {
     }
   ]
 }`)
-	file, err := parseAssignments(in)
+	file, err := ParseAssignments(in)
 	if err != nil {
-		t.Fatalf("parseAssignments: %v", err)
+		t.Fatalf("ParseAssignments: %v", err)
 	}
 	if !file.Assignments[0].FeedbackPR {
 		t.Errorf("hello.FeedbackPR = false, want true")
@@ -199,9 +201,9 @@ func TestParseAssignments_FeedbackPRRoundTrip(t *testing.T) {
 		t.Errorf("world.FeedbackPR = true, want false (field absent)")
 	}
 
-	encoded, err := encodeAssignments(file)
+	encoded, err := EncodeAssignments(file)
 	if err != nil {
-		t.Fatalf("encodeAssignments: %v", err)
+		t.Fatalf("EncodeAssignments: %v", err)
 	}
 	// false omits from the wire (omitempty); true must persist.
 	if !strings.Contains(string(encoded), `"feedback_pr": true`) {
@@ -210,7 +212,7 @@ func TestParseAssignments_FeedbackPRRoundTrip(t *testing.T) {
 	if strings.Contains(string(encoded), `"feedback_pr": false`) {
 		t.Errorf("feedback_pr:false should omit, not serialize:\n%s", encoded)
 	}
-	again, err := parseAssignments(encoded)
+	again, err := ParseAssignments(encoded)
 	if err != nil {
 		t.Fatalf("re-parse: %v", err)
 	}
@@ -235,7 +237,7 @@ func TestParseAssignments_RejectsNonBoolFeedbackPR(t *testing.T) {
     }
   ]
 }`)
-	if _, err := parseAssignments(in); err == nil {
+	if _, err := ParseAssignments(in); err == nil {
 		t.Fatal("expected parse error for non-bool feedback_pr, got nil")
 	}
 }
@@ -258,7 +260,7 @@ func TestParseAssignments_RejectsInvalidTest(t *testing.T) {
     }
   ]
 }`)
-	_, err := parseAssignments(in)
+	_, err := ParseAssignments(in)
 	if err == nil {
 		t.Fatalf("expected error for invalid test type, got nil")
 	}
@@ -286,7 +288,7 @@ func TestParseAssignments_RejectsUnknownTestField(t *testing.T) {
     }
   ]
 }`)
-	_, err := parseAssignments(in)
+	_, err := ParseAssignments(in)
 	if err == nil {
 		t.Fatalf("expected decode error for unknown test field, got nil")
 	}
@@ -300,9 +302,9 @@ func TestParseAssignments_EmptyAssignmentsArray(t *testing.T) {
   "schema": "classroom50/assignments/v1",
   "assignments": []
 }`)
-	file, err := parseAssignments(in)
+	file, err := ParseAssignments(in)
 	if err != nil {
-		t.Fatalf("parseAssignments: %v", err)
+		t.Fatalf("ParseAssignments: %v", err)
 	}
 	if file.Assignments == nil {
 		t.Errorf("Assignments should be a non-nil empty slice (so a re-encode emits [], not null)")
@@ -320,9 +322,9 @@ func TestParseAssignments_NullAssignmentsField(t *testing.T) {
   "schema": "classroom50/assignments/v1",
   "assignments": null
 }`)
-	file, err := parseAssignments(in)
+	file, err := ParseAssignments(in)
 	if err != nil {
-		t.Fatalf("parseAssignments: %v", err)
+		t.Fatalf("ParseAssignments: %v", err)
 	}
 	if file.Assignments == nil || len(file.Assignments) != 0 {
 		t.Errorf("expected Assignments to normalize to [], got %#v", file.Assignments)
@@ -397,7 +399,7 @@ func TestParseAssignments_Rejects(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := parseAssignments([]byte(tc.in))
+			_, err := ParseAssignments([]byte(tc.in))
 			if err == nil {
 				t.Fatalf("expected error containing %q, got nil", tc.wantErrPart)
 			}
@@ -411,13 +413,13 @@ func TestParseAssignments_Rejects(t *testing.T) {
 func TestEncodeAssignments_EmptyArrayWireShape(t *testing.T) {
 	// nil and empty-slice MUST both produce `[]` so re-encodes don't
 	// alternate between `null` and `[]` based on accident.
-	for _, in := range []assignmentsJSON{
-		{Schema: assignmentsSchemaV1, Assignments: nil},
-		{Schema: assignmentsSchemaV1, Assignments: []assignmentEntry{}},
+	for _, in := range []AssignmentsJSON{
+		{Schema: contract.AssignmentsSchemaV1, Assignments: nil},
+		{Schema: contract.AssignmentsSchemaV1, Assignments: []AssignmentEntry{}},
 	} {
-		data, err := encodeAssignments(in)
+		data, err := EncodeAssignments(in)
 		if err != nil {
-			t.Fatalf("encodeAssignments(%v): %v", in, err)
+			t.Fatalf("EncodeAssignments(%v): %v", in, err)
 		}
 		if !strings.Contains(string(data), `"assignments": []`) {
 			t.Errorf("expected `\"assignments\": []`, got:\n%s", data)
@@ -426,10 +428,10 @@ func TestEncodeAssignments_EmptyArrayWireShape(t *testing.T) {
 }
 
 func TestEncodeAssignments_NilFieldsRoundTrip(t *testing.T) {
-	// Schema empty? encodeAssignments fills it in.
-	data, err := encodeAssignments(assignmentsJSON{})
+	// Schema empty? EncodeAssignments fills it in.
+	data, err := EncodeAssignments(AssignmentsJSON{})
 	if err != nil {
-		t.Fatalf("encodeAssignments: %v", err)
+		t.Fatalf("EncodeAssignments: %v", err)
 	}
 	if !strings.Contains(string(data), `"schema": "classroom50/assignments/v1"`) {
 		t.Errorf("expected schema sentinel to be filled in, got:\n%s", data)
@@ -437,27 +439,27 @@ func TestEncodeAssignments_NilFieldsRoundTrip(t *testing.T) {
 }
 
 func TestEncodeAssignments_RoundTrip(t *testing.T) {
-	in := assignmentsJSON{
-		Schema: assignmentsSchemaV1,
-		Assignments: []assignmentEntry{
+	in := AssignmentsJSON{
+		Schema: contract.AssignmentsSchemaV1,
+		Assignments: []AssignmentEntry{
 			{
 				Slug:        "hello",
 				Name:        "Hello",
 				Description: "First assignment",
-				Template:    templateRef{Owner: "cs50", Repo: "hello-template", Branch: "main"},
+				Template:    TemplateRef{Owner: "cs50", Repo: "hello-template", Branch: "main"},
 				Due:         "2026-09-15T23:59:00-04:00",
 				Mode:        "individual",
 				Autograder:  "default",
 			},
 		},
 	}
-	encoded, err := encodeAssignments(in)
+	encoded, err := EncodeAssignments(in)
 	if err != nil {
-		t.Fatalf("encodeAssignments: %v", err)
+		t.Fatalf("EncodeAssignments: %v", err)
 	}
-	decoded, err := parseAssignments(encoded)
+	decoded, err := ParseAssignments(encoded)
 	if err != nil {
-		t.Fatalf("parseAssignments: %v", err)
+		t.Fatalf("ParseAssignments: %v", err)
 	}
 	if !reflect.DeepEqual(decoded, in) {
 		t.Errorf("round-trip mismatch:\n got: %#v\nwant: %#v", decoded, in)
@@ -467,21 +469,21 @@ func TestEncodeAssignments_RoundTrip(t *testing.T) {
 func TestEncodeAssignments_NormalizesEmptyAutograder(t *testing.T) {
 	// Empty autograder field is normalized to "default" on the way
 	// out. The caller-side struct also isn't mutated (see the
-	// defensive copy in encodeAssignments).
-	in := assignmentsJSON{
-		Schema: assignmentsSchemaV1,
-		Assignments: []assignmentEntry{
+	// defensive copy in EncodeAssignments).
+	in := AssignmentsJSON{
+		Schema: contract.AssignmentsSchemaV1,
+		Assignments: []AssignmentEntry{
 			{
 				Slug:     "hello",
 				Name:     "Hello",
-				Template: templateRef{Owner: "cs50", Repo: "hello-template", Branch: "main"},
+				Template: TemplateRef{Owner: "cs50", Repo: "hello-template", Branch: "main"},
 				Mode:     "individual",
 			},
 		},
 	}
-	data, err := encodeAssignments(in)
+	data, err := EncodeAssignments(in)
 	if err != nil {
-		t.Fatalf("encodeAssignments: %v", err)
+		t.Fatalf("EncodeAssignments: %v", err)
 	}
 	if !strings.Contains(string(data), `"autograder": "default"`) {
 		t.Errorf("expected normalized `\"autograder\": \"default\"`, got:\n%s", data)
@@ -497,21 +499,21 @@ func TestEncodeAssignments_NormalizesEmptyAutograder(t *testing.T) {
 func TestEncodeAssignments_OmitsOptionalEmptyFields(t *testing.T) {
 	// Description and Due use `omitempty`. Empty values must not
 	// appear in the encoded output so on-disk diffs stay minimal.
-	in := assignmentsJSON{
-		Schema: assignmentsSchemaV1,
-		Assignments: []assignmentEntry{
+	in := AssignmentsJSON{
+		Schema: contract.AssignmentsSchemaV1,
+		Assignments: []AssignmentEntry{
 			{
 				Slug:       "hello",
 				Name:       "Hello",
-				Template:   templateRef{Owner: "cs50", Repo: "hello-template", Branch: "main"},
+				Template:   TemplateRef{Owner: "cs50", Repo: "hello-template", Branch: "main"},
 				Mode:       "individual",
 				Autograder: "default",
 			},
 		},
 	}
-	data, err := encodeAssignments(in)
+	data, err := EncodeAssignments(in)
 	if err != nil {
-		t.Fatalf("encodeAssignments: %v", err)
+		t.Fatalf("EncodeAssignments: %v", err)
 	}
 	for _, omitted := range []string{`"description"`, `"due"`} {
 		if strings.Contains(string(data), omitted) {
@@ -521,13 +523,13 @@ func TestEncodeAssignments_OmitsOptionalEmptyFields(t *testing.T) {
 }
 
 func TestUpsertAssignment_AppendAndReplace(t *testing.T) {
-	entries := []assignmentEntry{
+	entries := []AssignmentEntry{
 		{Slug: "hello", Name: "Hello"},
 		{Slug: "intro", Name: "Intro"},
 	}
 
 	// New slug appends to the end.
-	updated, replaced := upsertAssignment(entries, assignmentEntry{Slug: "goodbye", Name: "Goodbye"})
+	updated, replaced := UpsertAssignment(entries, AssignmentEntry{Slug: "goodbye", Name: "Goodbye"})
 	if replaced {
 		t.Errorf("appending a new slug should not report 'replaced'")
 	}
@@ -536,7 +538,7 @@ func TestUpsertAssignment_AppendAndReplace(t *testing.T) {
 	}
 
 	// Existing slug replaces in place — position preserved.
-	updated2, replaced2 := upsertAssignment(updated, assignmentEntry{Slug: "intro", Name: "Intro v2"})
+	updated2, replaced2 := UpsertAssignment(updated, AssignmentEntry{Slug: "intro", Name: "Intro v2"})
 	if !replaced2 {
 		t.Errorf("replacing an existing slug should report 'replaced'")
 	}
@@ -549,8 +551,8 @@ func TestUpsertAssignment_CaseSensitive(t *testing.T) {
 	// Slug validator only accepts lowercase, so case-insensitive
 	// matching would just hide a validator-rejected typo. Verify
 	// that "Hello" and "hello" are treated as distinct.
-	entries := []assignmentEntry{{Slug: "hello"}}
-	updated, replaced := upsertAssignment(entries, assignmentEntry{Slug: "Hello"})
+	entries := []AssignmentEntry{{Slug: "hello"}}
+	updated, replaced := UpsertAssignment(entries, AssignmentEntry{Slug: "Hello"})
 	if replaced {
 		t.Errorf("case mismatch should NOT match existing slug")
 	}
@@ -574,16 +576,16 @@ func TestMaxGroupSize_RoundTripsAndBounds(t *testing.T) {
     }
   ]
 }`
-	file, err := parseAssignments([]byte(body))
+	file, err := ParseAssignments([]byte(body))
 	if err != nil {
-		t.Fatalf("parseAssignments: %v", err)
+		t.Fatalf("ParseAssignments: %v", err)
 	}
 	if file.Assignments[0].MaxGroupSize != 4 {
 		t.Errorf("MaxGroupSize = %d, want 4", file.Assignments[0].MaxGroupSize)
 	}
-	encoded, err := encodeAssignments(file)
+	encoded, err := EncodeAssignments(file)
 	if err != nil {
-		t.Fatalf("encodeAssignments: %v", err)
+		t.Fatalf("EncodeAssignments: %v", err)
 	}
 	if !strings.Contains(string(encoded), `"max_group_size": 4`) {
 		t.Errorf("max_group_size should round-trip, got:\n%s", encoded)
@@ -591,9 +593,9 @@ func TestMaxGroupSize_RoundTripsAndBounds(t *testing.T) {
 
 	// Unset omits from the file.
 	file.Assignments[0].MaxGroupSize = 0
-	encoded, err = encodeAssignments(file)
+	encoded, err = EncodeAssignments(file)
 	if err != nil {
-		t.Fatalf("encodeAssignments: %v", err)
+		t.Fatalf("EncodeAssignments: %v", err)
 	}
 	if strings.Contains(string(encoded), "max_group_size") {
 		t.Errorf("unset max_group_size should omit, got:\n%s", encoded)
@@ -602,35 +604,35 @@ func TestMaxGroupSize_RoundTripsAndBounds(t *testing.T) {
 	// Out of bounds fails both validators.
 	bad := file.Assignments[0]
 	bad.MaxGroupSize = 9999
-	if err := validateAssignmentEntry(bad); err == nil || !strings.Contains(err.Error(), "max_group_size") {
+	if err := ValidateAssignmentEntry(bad); err == nil || !strings.Contains(err.Error(), "max_group_size") {
 		t.Errorf("write-path validator should reject 9999, got %v", err)
 	}
-	if err := validateExistingEntry(bad); err == nil || !strings.Contains(err.Error(), "max_group_size") {
+	if err := ValidateExistingEntry(bad); err == nil || !strings.Contains(err.Error(), "max_group_size") {
 		t.Errorf("parse-path validator should reject 9999, got %v", err)
 	}
 }
 
 func TestFindAssignment(t *testing.T) {
-	entries := []assignmentEntry{{Slug: "hello"}, {Slug: "intro"}}
-	if idx, ok := findAssignment(entries, "intro"); !ok || idx != 1 {
+	entries := []AssignmentEntry{{Slug: "hello"}, {Slug: "intro"}}
+	if idx, ok := FindAssignment(entries, "intro"); !ok || idx != 1 {
 		t.Errorf("expected (1, true) for intro, got (%d, %v)", idx, ok)
 	}
-	if _, ok := findAssignment(entries, "missing"); ok {
+	if _, ok := FindAssignment(entries, "missing"); ok {
 		t.Errorf("missing slug should not be found")
 	}
-	// Case-sensitive, mirroring upsertAssignment.
-	if _, ok := findAssignment(entries, "Hello"); ok {
+	// Case-sensitive, mirroring UpsertAssignment.
+	if _, ok := FindAssignment(entries, "Hello"); ok {
 		t.Errorf("lookup should be case-sensitive")
 	}
 }
 
 func TestRemoveAssignment(t *testing.T) {
-	entries := []assignmentEntry{
+	entries := []AssignmentEntry{
 		{Slug: "hello"},
 		{Slug: "intro"},
 		{Slug: "goodbye"},
 	}
-	updated, removed := removeAssignment(entries, "intro")
+	updated, removed := RemoveAssignment(entries, "intro")
 	if !removed {
 		t.Errorf("expected removed=true for matching slug")
 	}
@@ -639,7 +641,7 @@ func TestRemoveAssignment(t *testing.T) {
 	}
 
 	// Missing slug → no change, removed=false.
-	stable, removed2 := removeAssignment(entries, "missing")
+	stable, removed2 := RemoveAssignment(entries, "missing")
 	if removed2 {
 		t.Errorf("expected removed=false for non-matching slug")
 	}
@@ -649,108 +651,108 @@ func TestRemoveAssignment(t *testing.T) {
 }
 
 func TestValidateAssignmentEntry_HappyPath(t *testing.T) {
-	entry := assignmentEntry{
+	entry := AssignmentEntry{
 		Slug:       "hello",
 		Name:       "Hello",
-		Template:   templateRef{Owner: "cs50", Repo: "hello-template", Branch: "main"},
+		Template:   TemplateRef{Owner: "cs50", Repo: "hello-template", Branch: "main"},
 		Mode:       "individual",
 		Autograder: "default",
 	}
-	if err := validateAssignmentEntry(entry); err != nil {
-		t.Errorf("validateAssignmentEntry: %v", err)
+	if err := ValidateAssignmentEntry(entry); err != nil {
+		t.Errorf("ValidateAssignmentEntry: %v", err)
 	}
 }
 
 // TestValidateAssignmentEntry_GroupMode: a group entry is schema-legal
 // when it carries a usable max_group_size (>= 2).
 func TestValidateAssignmentEntry_GroupMode(t *testing.T) {
-	entry := assignmentEntry{
+	entry := AssignmentEntry{
 		Slug:         "team-project",
 		Name:         "Team Project",
-		Template:     templateRef{Owner: "cs50", Repo: "team-project-template", Branch: "main"},
+		Template:     TemplateRef{Owner: "cs50", Repo: "team-project-template", Branch: "main"},
 		Mode:         "group",
 		MaxGroupSize: 4,
 		Autograder:   "default",
 	}
-	if err := validateAssignmentEntry(entry); err != nil {
-		t.Errorf("validateAssignmentEntry(group): %v", err)
+	if err := ValidateAssignmentEntry(entry); err != nil {
+		t.Errorf("ValidateAssignmentEntry(group): %v", err)
 	}
 }
 
 // TestValidateAssignmentEntry_GroupModeRequiresSize: group mode without
 // a usable size, and individual mode carrying a size, are both rejected.
 func TestValidateAssignmentEntry_GroupModeRequiresSize(t *testing.T) {
-	groupNoSize := assignmentEntry{
+	groupNoSize := AssignmentEntry{
 		Slug: "team", Name: "Team",
-		Template:   templateRef{Owner: "cs50", Repo: "t", Branch: "main"},
+		Template:   TemplateRef{Owner: "cs50", Repo: "t", Branch: "main"},
 		Mode:       "group",
 		Autograder: "default",
 	}
-	if err := validateAssignmentEntry(groupNoSize); err == nil || !strings.Contains(err.Error(), "max_group_size") {
+	if err := ValidateAssignmentEntry(groupNoSize); err == nil || !strings.Contains(err.Error(), "max_group_size") {
 		t.Errorf("group without size: got %v, want a max_group_size error", err)
 	}
 	// Parse path is strict too (no legacy tolerance pre-launch): a group
 	// entry with no/too-small size is rejected on read.
-	if err := validateExistingEntry(groupNoSize); err == nil || !strings.Contains(err.Error(), "max_group_size") {
+	if err := ValidateExistingEntry(groupNoSize); err == nil || !strings.Contains(err.Error(), "max_group_size") {
 		t.Errorf("parse-path group without size: got %v, want a max_group_size error", err)
 	}
 
-	individualWithSize := assignmentEntry{
+	individualWithSize := AssignmentEntry{
 		Slug: "solo", Name: "Solo",
-		Template:     templateRef{Owner: "cs50", Repo: "t", Branch: "main"},
+		Template:     TemplateRef{Owner: "cs50", Repo: "t", Branch: "main"},
 		Mode:         "individual",
 		MaxGroupSize: 3,
 		Autograder:   "default",
 	}
-	if err := validateAssignmentEntry(individualWithSize); err == nil || !strings.Contains(err.Error(), "max_group_size") {
+	if err := ValidateAssignmentEntry(individualWithSize); err == nil || !strings.Contains(err.Error(), "max_group_size") {
 		t.Errorf("individual with size: got %v, want a max_group_size error", err)
 	}
 }
 
 func TestValidateAssignmentEntry_Rejects(t *testing.T) {
-	base := assignmentEntry{
+	base := AssignmentEntry{
 		Slug:       "hello",
 		Name:       "Hello",
-		Template:   templateRef{Owner: "cs50", Repo: "hello-template", Branch: "main"},
+		Template:   TemplateRef{Owner: "cs50", Repo: "hello-template", Branch: "main"},
 		Mode:       "individual",
 		Autograder: "default",
 	}
 	cases := []struct {
 		name        string
-		mutate      func(*assignmentEntry)
+		mutate      func(*AssignmentEntry)
 		wantErrPart string
 	}{
-		{"empty slug", func(e *assignmentEntry) { e.Slug = "" }, "slug"},
-		{"slug pattern violation", func(e *assignmentEntry) { e.Slug = "Hello" }, "slug"},
-		{"empty name", func(e *assignmentEntry) { e.Name = "" }, "--name"},
-		{"empty mode", func(e *assignmentEntry) { e.Mode = "" }, "mode"},
-		{"unsupported mode", func(e *assignmentEntry) { e.Mode = "team" }, "invalid mode"},
-		{"empty template owner", func(e *assignmentEntry) { e.Template.Owner = "" }, "template"},
-		{"empty template repo", func(e *assignmentEntry) { e.Template.Repo = "" }, "template"},
-		{"empty template branch", func(e *assignmentEntry) { e.Template.Branch = "" }, "branch"},
-		{"empty autograder", func(e *assignmentEntry) { e.Autograder = "" }, "autograder"},
-		{"autograder traversal", func(e *assignmentEntry) { e.Autograder = "../etc/passwd" }, "autograder"},
-		{"due date-only", func(e *assignmentEntry) { e.Due = "2026-09-15" }, "RFC 3339"},
-		{"due missing timezone", func(e *assignmentEntry) { e.Due = "2026-09-15T23:59:00" }, "RFC 3339"},
-		{"due garbage", func(e *assignmentEntry) { e.Due = "next Tuesday" }, "RFC 3339"},
+		{"empty slug", func(e *AssignmentEntry) { e.Slug = "" }, "slug"},
+		{"slug pattern violation", func(e *AssignmentEntry) { e.Slug = "Hello" }, "slug"},
+		{"empty name", func(e *AssignmentEntry) { e.Name = "" }, "--name"},
+		{"empty mode", func(e *AssignmentEntry) { e.Mode = "" }, "mode"},
+		{"unsupported mode", func(e *AssignmentEntry) { e.Mode = "team" }, "invalid mode"},
+		{"empty template owner", func(e *AssignmentEntry) { e.Template.Owner = "" }, "template"},
+		{"empty template repo", func(e *AssignmentEntry) { e.Template.Repo = "" }, "template"},
+		{"empty template branch", func(e *AssignmentEntry) { e.Template.Branch = "" }, "branch"},
+		{"empty autograder", func(e *AssignmentEntry) { e.Autograder = "" }, "autograder"},
+		{"autograder traversal", func(e *AssignmentEntry) { e.Autograder = "../etc/passwd" }, "autograder"},
+		{"due date-only", func(e *AssignmentEntry) { e.Due = "2026-09-15" }, "RFC 3339"},
+		{"due missing timezone", func(e *AssignmentEntry) { e.Due = "2026-09-15T23:59:00" }, "RFC 3339"},
+		{"due garbage", func(e *AssignmentEntry) { e.Due = "next Tuesday" }, "RFC 3339"},
 		// due_meta, when present, must match the schema's shape — a
 		// GUI/hand-edit can't smuggle a malformed provenance block past
 		// the CLI while a schema-validating client would reject it.
-		{"due_meta empty input", func(e *assignmentEntry) {
-			e.DueMeta = &dueMeta{Input: "", Offset: "-04:00", Source: dueSourceExplicit}
+		{"due_meta empty input", func(e *AssignmentEntry) {
+			e.DueMeta = &DueMeta{Input: "", Offset: "-04:00", Source: DueSourceExplicit}
 		}, "due_meta.input"},
-		{"due_meta bad offset", func(e *assignmentEntry) {
-			e.DueMeta = &dueMeta{Input: "x", Offset: "Z", Source: dueSourceExplicit}
+		{"due_meta bad offset", func(e *AssignmentEntry) {
+			e.DueMeta = &DueMeta{Input: "x", Offset: "Z", Source: DueSourceExplicit}
 		}, "due_meta.offset"},
-		{"due_meta bad source", func(e *assignmentEntry) {
-			e.DueMeta = &dueMeta{Input: "x", Offset: "-04:00", Source: "guessed"}
+		{"due_meta bad source", func(e *AssignmentEntry) {
+			e.DueMeta = &DueMeta{Input: "x", Offset: "-04:00", Source: "guessed"}
 		}, "due_meta.source"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			entry := base
 			tc.mutate(&entry)
-			err := validateAssignmentEntry(entry)
+			err := ValidateAssignmentEntry(entry)
 			if err == nil {
 				t.Fatalf("expected error containing %q, got nil", tc.wantErrPart)
 			}
@@ -762,10 +764,10 @@ func TestValidateAssignmentEntry_Rejects(t *testing.T) {
 }
 
 func TestValidateAssignmentEntry_DueMeta(t *testing.T) {
-	base := assignmentEntry{
+	base := AssignmentEntry{
 		Slug:       "hello",
 		Name:       "Hello",
-		Template:   templateRef{Owner: "cs50", Repo: "hello-template", Branch: "main"},
+		Template:   TemplateRef{Owner: "cs50", Repo: "hello-template", Branch: "main"},
 		Mode:       "individual",
 		Autograder: "default",
 		Due:        "2026-09-16T03:59:00Z",
@@ -774,18 +776,18 @@ func TestValidateAssignmentEntry_DueMeta(t *testing.T) {
 	t.Run("due without due_meta validates (pre-due_meta files)", func(t *testing.T) {
 		// Back-compat: files written before due_meta existed carry
 		// `due` alone and must still validate.
-		if err := validateAssignmentEntry(base); err != nil {
+		if err := ValidateAssignmentEntry(base); err != nil {
 			t.Errorf("due-only entry should validate, got %v", err)
 		}
 	})
 
 	t.Run("well-formed due_meta validates", func(t *testing.T) {
 		e := base
-		e.DueMeta = &dueMeta{
+		e.DueMeta = &DueMeta{
 			Input: "2026-09-15T23:59:00", Zone: "America/New_York",
-			Offset: "-04:00", Source: dueSourceAuto,
+			Offset: "-04:00", Source: DueSourceAuto,
 		}
-		if err := validateAssignmentEntry(e); err != nil {
+		if err := ValidateAssignmentEntry(e); err != nil {
 			t.Errorf("well-formed due_meta should validate, got %v", err)
 		}
 	})

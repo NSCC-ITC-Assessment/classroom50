@@ -9,6 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/foundation50/gh-teacher/internal/assignment"
 	"github.com/foundation50/gh-teacher/internal/configrepo"
 	"github.com/foundation50/gh-teacher/internal/githubapi"
 	"github.com/foundation50/gh-teacher/internal/validate"
@@ -285,12 +286,12 @@ func performMigration(client githubapi.Client, out, errOut io.Writer, plan migra
 	return nil
 }
 
-// buildMigratedEntries materializes the assignmentEntry slice for
+// buildMigratedEntries materializes the assignment.AssignmentEntry slice for
 // the commit. A commit-time mapping failure (unreachable in normal
 // operation since copyOneTemplate pre-validates) is recorded as a
 // Skipped action so post-commit counts + exit code stay accurate.
-func buildMigratedEntries(errOut io.Writer, plan migrationPlan, resolved []resolvedTemplate) []assignmentEntry {
-	out := make([]assignmentEntry, 0, len(resolved))
+func buildMigratedEntries(errOut io.Writer, plan migrationPlan, resolved []resolvedTemplate) []assignment.AssignmentEntry {
+	out := make([]assignment.AssignmentEntry, 0, len(resolved))
 	for i := range resolved {
 		if resolved[i].Action == templateActionSkipped {
 			continue
@@ -311,7 +312,7 @@ func buildMigratedEntries(errOut io.Writer, plan migrationPlan, resolved []resol
 // stdout (one anchor line + per-file deltas) and follow-up advice
 // to stderr. All counts come from the committed entries so the
 // summary stays consistent with what landed on disk.
-func printMigrationSummary(out, errOut io.Writer, plan migrationPlan, resolved []resolvedTemplate, entries []assignmentEntry, commitSHA, branch string) {
+func printMigrationSummary(out, errOut io.Writer, plan migrationPlan, resolved []resolvedTemplate, entries []assignment.AssignmentEntry, commitSHA, branch string) {
 	generated, reused, skipped := countTemplateActions(resolved)
 	indiv, group := countEntriesByMode(entries)
 	short := commitSHA

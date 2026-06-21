@@ -11,6 +11,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/foundation50/gh-teacher/internal/assignment"
 	"github.com/foundation50/gh-teacher/internal/configrepo"
 	"github.com/foundation50/gh-teacher/internal/githubtest"
 )
@@ -204,7 +205,7 @@ func TestRunMigrate_NonDryRun_HappyPath(t *testing.T) {
 
 	// assignments.json content carries the migrated_from block
 	// pointing at the source.
-	var assigns assignmentsJSON
+	var assigns assignment.AssignmentsJSON
 	body := state.uploadedFiles["classroom50test/assignments.json"]
 	if err := json.Unmarshal([]byte(body), &assigns); err != nil {
 		t.Fatalf("decode assignments.json: %v\nbody:\n%s", err, body)
@@ -216,7 +217,7 @@ func TestRunMigrate_NonDryRun_HappyPath(t *testing.T) {
 	if entry.Slug != "readability" || entry.Mode != "individual" {
 		t.Errorf("entry = {Slug:%q Mode:%q}, want {Slug:readability Mode:individual}", entry.Slug, entry.Mode)
 	}
-	wantTpl := templateRef{Owner: "cs50-fall-2026", Repo: "readability", Branch: "main"}
+	wantTpl := assignment.TemplateRef{Owner: "cs50-fall-2026", Repo: "readability", Branch: "main"}
 	if entry.Template != wantTpl {
 		t.Errorf("entry.Template = %+v, want %+v", entry.Template, wantTpl)
 	}
@@ -301,7 +302,7 @@ func TestRunMigrate_NonDryRun_SkipsSourceNotTemplate(t *testing.T) {
 		t.Errorf("commits created = %d, want 1 (commit still lands with the entries that succeeded)", state.commitsCreated)
 	}
 	// assignments.json on disk has zero entries.
-	var assigns assignmentsJSON
+	var assigns assignment.AssignmentsJSON
 	body := state.uploadedFiles["classroom50test/assignments.json"]
 	if err := json.Unmarshal([]byte(body), &assigns); err != nil {
 		t.Fatalf("decode assignments.json: %v\nbody:\n%s", err, body)

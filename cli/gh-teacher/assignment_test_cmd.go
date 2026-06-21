@@ -8,6 +8,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/foundation50/gh-teacher/internal/assignment"
 	"github.com/foundation50/gh-teacher/internal/configrepo"
 	"github.com/foundation50/gh-teacher/internal/githubapi"
 	"github.com/foundation50/gh-teacher/internal/output"
@@ -97,7 +98,7 @@ func assignmentTestAddCmd() *cobra.Command {
 				return err
 			}
 
-			spec := testSpec{
+			spec := assignment.TestSpec{
 				Name:         strings.TrimSpace(name),
 				Type:         strings.TrimSpace(ttype),
 				Setup:        setup,
@@ -116,7 +117,7 @@ func assignmentTestAddCmd() *cobra.Command {
 				ec := exitCode
 				spec.ExitCode = &ec
 			}
-			if err := validateTestSpec(spec); err != nil {
+			if err := assignment.ValidateTestSpec(spec); err != nil {
 				return err
 			}
 
@@ -146,9 +147,9 @@ func assignmentTestAddCmd() *cobra.Command {
 // runAssignmentTestAdd upserts one test into an existing assignment
 // entry. The conflict check and entry lookup run inside the commitTree
 // build closure against each attempt's parent SHA, so concurrent edits
-// rebase cleanly. validateAssignmentEntry re-runs in the closure to
+// rebase cleanly. assignment.ValidateAssignmentEntry re-runs in the closure to
 // enforce the count cap + name uniqueness against the merged array.
-func runAssignmentTestAdd(client githubapi.Client, out io.Writer, org, classroom, slug string, spec testSpec) error {
+func runAssignmentTestAdd(client githubapi.Client, out io.Writer, org, classroom, slug string, spec assignment.TestSpec) error {
 	branch, err := configrepo.ResolveConfigRepoBranch(client, org)
 	if err != nil {
 		return err
@@ -166,24 +167,24 @@ func runAssignmentTestAdd(client githubapi.Client, out io.Writer, org, classroom
 		if err != nil {
 			return nil, err
 		}
-		idx, ok := findAssignment(file.Assignments, slug)
+		idx, ok := assignment.FindAssignment(file.Assignments, slug)
 		if !ok {
 			return nil, fmt.Errorf("assignment %q is not registered in %s/%s/%s — run `gh teacher assignment add %s %s %s ...` first",
 				slug, org, configrepo.ConfigRepoName, assignmentsFilePath(classroom), org, classroom, slug)
 		}
 		entry := file.Assignments[idx]
-		updated, replaced := upsertTest(entry.Tests, spec)
+		updated, replaced := assignment.UpsertTest(entry.Tests, spec)
 		entry.Tests = updated
 		if replaced {
 			action = "updated"
 		} else {
 			action = "added"
 		}
-		if err := validateAssignmentEntry(entry); err != nil {
+		if err := assignment.ValidateAssignmentEntry(entry); err != nil {
 			return nil, err
 		}
 		file.Assignments[idx] = entry
-		data, err := encodeAssignments(file)
+		data, err := assignment.EncodeAssignments(file)
 		if err != nil {
 			return nil, err
 		}
@@ -249,7 +250,7 @@ func runAssignmentTestList(client githubapi.Client, out, errOut io.Writer, org, 
 	if err != nil {
 		return err
 	}
-	idx, ok := findAssignment(file.Assignments, slug)
+	idx, ok := assignment.FindAssignment(file.Assignments, slug)
 	if !ok {
 		return fmt.Errorf("assignment %q is not registered in %s/%s/%s",
 			slug, org, configrepo.ConfigRepoName, assignmentsFilePath(classroom))
@@ -258,7 +259,7 @@ func runAssignmentTestList(client githubapi.Client, out, errOut io.Writer, org, 
 
 	if asJSON {
 		if tests == nil {
-			tests = []testSpec{}
+			tests = []assignment.TestSpec{}
 		}
 		data, err := output.JSONPretty(tests)
 		if err != nil {
@@ -336,23 +337,23 @@ func runAssignmentTestRemove(client githubapi.Client, out io.Writer, org, classr
 		if err != nil {
 			return nil, err
 		}
-		idx, ok := findAssignment(file.Assignments, slug)
+		idx, ok := assignment.FindAssignment(file.Assignments, slug)
 		if !ok {
 			return nil, fmt.Errorf("assignment %q is not registered in %s/%s/%s",
 				slug, org, configrepo.ConfigRepoName, assignmentsFilePath(classroom))
 		}
 		entry := file.Assignments[idx]
-		next, ok := removeTest(entry.Tests, testName)
+		next, ok := assignment.RemoveTest(entry.Tests, testName)
 		removed = ok
 		if !ok {
 			return nil, nil // test already absent: no-op, no empty commit
 		}
 		entry.Tests = next
-		if err := validateAssignmentEntry(entry); err != nil {
+		if err := assignment.ValidateAssignmentEntry(entry); err != nil {
 			return nil, err
 		}
 		file.Assignments[idx] = entry
-		data, err := encodeAssignments(file)
+		data, err := assignment.EncodeAssignments(file)
 		if err != nil {
 			return nil, err
 		}
@@ -400,7 +401,7 @@ func ensureDeclarativeTestsSupported(client githubapi.Client, org, ref string) e
 // never run. Probed against `ref` so a caller inside a commitTree build
 // closure sees the same parent state as the rest of its read.
 func ensureNoPerAssignmentAutograder(client githubapi.Client, org, classroom, slug, ref string) error {
-	path := perAssignmentAutograderPath(classroom, slug)
+	path := assignment.PerAssignmentAutograderPath(classroom, slug)
 	exists, err := configrepo.ContentsExists(client, org, configrepo.ConfigRepoName, path, ref)
 	if err != nil {
 		return fmt.Errorf("check %s/%s/%s: %w", org, configrepo.ConfigRepoName, path, err)

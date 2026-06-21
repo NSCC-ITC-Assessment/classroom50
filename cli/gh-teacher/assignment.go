@@ -12,6 +12,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/foundation50/gh-teacher/internal/assignment"
 	"github.com/foundation50/gh-teacher/internal/cliutil"
 	"github.com/foundation50/gh-teacher/internal/configrepo"
 	"github.com/foundation50/gh-teacher/internal/githubapi"
@@ -161,11 +162,11 @@ func assignmentAddCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			runtime, err := parseRuntimeFile(strings.TrimSpace(runtimeFile))
+			runtime, err := assignment.ParseRuntimeFile(strings.TrimSpace(runtimeFile))
 			if err != nil {
 				return err
 			}
-			tests, err := parseTestsFile(strings.TrimSpace(testsFile))
+			tests, err := assignment.ParseTestsFile(strings.TrimSpace(testsFile))
 			if err != nil {
 				return err
 			}
@@ -184,7 +185,7 @@ func assignmentAddCmd() *cobra.Command {
 	cmd.Flags().StringVar(&template, "template", "", "Template repo as <owner>/<repo> or <owner>/<repo>@<branch> (required)")
 	cmd.Flags().StringVar(&description, "description", "", "Optional one-line description")
 	cmd.Flags().StringVar(&due, "due", "", "Optional due date (e.g. 2026-09-15T23:59:00-04:00); stored as UTC. Omit the offset to use the machine's local timezone")
-	cmd.Flags().StringVar(&mode, "mode", assignmentModeIndividual, "Assignment mode: `individual` (default) or `group`. Group mode requires --max-group-size.")
+	cmd.Flags().StringVar(&mode, "mode", assignment.ModeIndividual, "Assignment mode: `individual` (default) or `group`. Group mode requires --max-group-size.")
 	cmd.Flags().IntVar(&maxGroupSize, "max-group-size", 0, "Maximum collaborators on a group repo (>= 2; required with --mode group). Enforced within the CLI when students join; direct GitHub-UI invites can bypass it.")
 	cmd.Flags().StringVar(&autograder, "autograder", defaultAutograderName, "Autograder workflow shim this assignment opts into; resolves to <classroom>/autograders/<name>.yaml in the config repo")
 	cmd.Flags().StringVar(&runtimeFile, "runtime", "", "Path to a JSON file describing the runtime environment (runs-on, python/node/java/go versions, apt packages, or container image), or `-` to read from stdin. Omit for ubuntu-latest + Python 3.12.")
@@ -322,9 +323,9 @@ func runAssignmentList(client githubapi.Client, out, errOut io.Writer, org, clas
 // trailing newline so terminal output and `jq` pipes match. Empty
 // Autograder normalizes to "default" so consumers can index
 // without nil guards.
-func formatAssignmentListJSON(entries []assignmentEntry) ([]byte, error) {
+func formatAssignmentListJSON(entries []assignment.AssignmentEntry) ([]byte, error) {
 	if entries == nil {
-		entries = []assignmentEntry{}
+		entries = []assignment.AssignmentEntry{}
 	}
 	for i := range entries {
 		if entries[i].Autograder == "" {
@@ -370,17 +371,17 @@ func assignmentsFilePath(classroom string) string {
 func validateModeAndSizeFlags(mode string, maxGroupSize int, sizeProvided bool) (string, error) {
 	modeVal := strings.TrimSpace(mode)
 	if modeVal == "" {
-		modeVal = assignmentModeIndividual
+		modeVal = assignment.ModeIndividual
 	}
-	if !isValidAssignmentMode(modeVal) {
-		return "", fmt.Errorf("invalid --mode %q: expected one of %s", modeVal, strings.Join(assignmentModes, ", "))
+	if !assignment.IsValidAssignmentMode(modeVal) {
+		return "", fmt.Errorf("invalid --mode %q: expected one of %s", modeVal, strings.Join(assignment.AssignmentModes, ", "))
 	}
 	switch modeVal {
-	case assignmentModeGroup:
+	case assignment.ModeGroup:
 		if maxGroupSize < 2 {
 			return "", fmt.Errorf("--max-group-size must be >= 2 for a group assignment (got %d)", maxGroupSize)
 		}
-		if err := validateMaxGroupSize(maxGroupSize); err != nil {
+		if err := assignment.ValidateMaxGroupSize(maxGroupSize); err != nil {
 			return "", err
 		}
 	default:
@@ -391,7 +392,7 @@ func validateModeAndSizeFlags(mode string, maxGroupSize int, sizeProvided bool) 
 	return modeVal, nil
 }
 
-func runAssignmentAdd(client githubapi.Client, out, errOut io.Writer, org, classroom, slug, name, description string, tmpl templateArg, due string, dueMetaVal *dueMeta, mode string, maxGroupSize int, autograder string, runtime *runtimeRef, tests []testSpec, feedbackPR bool) error {
+func runAssignmentAdd(client githubapi.Client, out, errOut io.Writer, org, classroom, slug, name, description string, tmpl templateArg, due string, dueMetaVal *assignment.DueMeta, mode string, maxGroupSize int, autograder string, runtime *assignment.RuntimeRef, tests []assignment.TestSpec, feedbackPR bool) error {
 	branch, err := configrepo.ResolveConfigRepoBranch(client, org)
 	if err != nil {
 		return err
@@ -412,7 +413,7 @@ func runAssignmentAdd(client githubapi.Client, out, errOut io.Writer, org, class
 			resolved.Owner, resolved.Repo, org, org)
 	}
 
-	entry := assignmentEntry{
+	entry := assignment.AssignmentEntry{
 		Slug:         slug,
 		Name:         name,
 		Description:  description,
@@ -426,7 +427,7 @@ func runAssignmentAdd(client githubapi.Client, out, errOut io.Writer, org, class
 		Tests:        tests,
 		FeedbackPR:   feedbackPR,
 	}
-	if err := validateAssignmentEntry(entry); err != nil {
+	if err := assignment.ValidateAssignmentEntry(entry); err != nil {
 		return err
 	}
 
@@ -477,17 +478,17 @@ func runAssignmentAdd(client githubapi.Client, out, errOut io.Writer, org, class
 		// them here for the post-commit warning. nil means the flag was
 		// omitted; an explicit empty array (`--tests` with `[]`) is a
 		// deliberate clear and shouldn't warn.
-		if idx, ok := findAssignment(file.Assignments, slug); ok && entry.Tests == nil {
+		if idx, ok := assignment.FindAssignment(file.Assignments, slug); ok && entry.Tests == nil {
 			droppedTests = len(file.Assignments[idx].Tests)
 		}
-		updated, replaced := upsertAssignment(file.Assignments, entry)
+		updated, replaced := assignment.UpsertAssignment(file.Assignments, entry)
 		if replaced {
 			action = "updated"
 		} else {
 			action = "added"
 		}
 		file.Assignments = updated
-		data, err := encodeAssignments(file)
+		data, err := assignment.EncodeAssignments(file)
 		if err != nil {
 			return nil, err
 		}
@@ -540,9 +541,9 @@ func runAssignmentAdd(client githubapi.Client, out, errOut io.Writer, org, class
 	// Heads-up if the encoded file is approaching the GitHub
 	// contents-API behavior change (~1 MiB encoded → encoding:"none",
 	// which would wedge future reads/writes). Diagnostic only;
-	// no behavioral effect. See largeAssignmentsWarnBytes in
-	// assignments_json.go for the rationale.
-	if lastEncodedSize > largeAssignmentsWarnBytes {
+	// no behavioral effect. See assignment.LargeAssignmentsWarnBytes in
+	// internal/assignment/assignments_json.go for the rationale.
+	if lastEncodedSize > assignment.LargeAssignmentsWarnBytes {
 		_, _ = fmt.Fprintf(errOut,
 			"Warning: %s/%s/%s is %d bytes — approaching GitHub's ~1 MiB contents-API ceiling. Past that, the API returns encoding:\"none\" and future `gh teacher assignment add/remove` calls will fail to read the file. Consider splitting the classroom or shrinking per-entry fields.\n",
 			org, configrepo.ConfigRepoName, assignmentsFilePath(classroom), lastEncodedSize)
@@ -563,7 +564,7 @@ func runAssignmentRemove(client githubapi.Client, out io.Writer, org, classroom,
 		if err != nil {
 			return nil, err
 		}
-		next, ok := removeAssignment(file.Assignments, slug)
+		next, ok := assignment.RemoveAssignment(file.Assignments, slug)
 		removed = ok
 		if !ok {
 			// commitTree treats nil-or-empty as a no-op so a missing
@@ -571,7 +572,7 @@ func runAssignmentRemove(client githubapi.Client, out io.Writer, org, classroom,
 			return nil, nil
 		}
 		file.Assignments = next
-		data, err := encodeAssignments(file)
+		data, err := assignment.EncodeAssignments(file)
 		if err != nil {
 			return nil, err
 		}
@@ -597,19 +598,19 @@ func runAssignmentRemove(client githubapi.Client, out io.Writer, org, classroom,
 // rebase-consistent reads inside commitTree, branch name for the
 // read-only list path — the contents API accepts both). Missing
 // file → points the teacher at `gh teacher classroom add`.
-func loadAssignments(client githubapi.Client, org, classroom, ref string) (assignmentsJSON, error) {
+func loadAssignments(client githubapi.Client, org, classroom, ref string) (assignment.AssignmentsJSON, error) {
 	path := assignmentsFilePath(classroom)
 	data, ok, err := configrepo.ReadFileContents(client, org, configrepo.ConfigRepoName, path, ref)
 	if err != nil {
-		return assignmentsJSON{}, err
+		return assignment.AssignmentsJSON{}, err
 	}
 	if !ok {
-		return assignmentsJSON{}, fmt.Errorf("%s/%s/%s not found — run `gh teacher classroom add %s %s` first, or restore the file if it was deleted",
+		return assignment.AssignmentsJSON{}, fmt.Errorf("%s/%s/%s not found — run `gh teacher classroom add %s %s` first, or restore the file if it was deleted",
 			org, configrepo.ConfigRepoName, path, org, classroom)
 	}
-	file, err := parseAssignments(data)
+	file, err := assignment.ParseAssignments(data)
 	if err != nil {
-		return assignmentsJSON{}, fmt.Errorf("%s/%s/%s: %w", org, configrepo.ConfigRepoName, path, err)
+		return assignment.AssignmentsJSON{}, fmt.Errorf("%s/%s/%s: %w", org, configrepo.ConfigRepoName, path, err)
 	}
 	return file, nil
 }
@@ -617,7 +618,7 @@ func loadAssignments(client githubapi.Client, org, classroom, ref string) (assig
 // templateArg is the parsed `--template` flag. Branch is empty if
 // the teacher omits `@branch`; validateTemplateRepo then fills it
 // from the template's `default_branch`. Kept distinct from
-// templateRef because on-disk Branch must be populated.
+// assignment.TemplateRef because on-disk Branch must be populated.
 type templateArg struct {
 	Owner  string
 	Repo   string
@@ -655,12 +656,12 @@ func parseTemplateRef(raw string) (templateArg, error) {
 // (auto-detected), then converted to UTC. The teacher's original
 // input and the applied offset/zone are preserved in due_meta so a
 // wrong-zone deadline stays auditable.
-func normalizeDueDate(raw string) (string, *dueMeta, error) {
+func normalizeDueDate(raw string) (string, *assignment.DueMeta, error) {
 	if raw == "" {
 		return "", nil, nil
 	}
 	loc, locErr := localDueLocation()
-	t, hadOffset, err := parseDueTime(raw, loc)
+	t, hadOffset, err := assignment.ParseDueTime(raw, loc)
 	if err != nil {
 		return "", nil, fmt.Errorf("invalid --due: %w", err)
 	}
@@ -674,9 +675,9 @@ func normalizeDueDate(raw string) (string, *dueMeta, error) {
 				"could not be resolved (%v); pass an explicit offset like -04:00", raw, locErr)
 	}
 	if hadOffset {
-		return t.UTC().Format(time.RFC3339), newDueMeta(raw, t, dueSourceExplicit), nil
+		return t.UTC().Format(time.RFC3339), assignment.NewDueMeta(raw, t, assignment.DueSourceExplicit), nil
 	}
-	meta := newDueMeta(raw, t, dueSourceAuto)
+	meta := assignment.NewDueMeta(raw, t, assignment.DueSourceAuto)
 	meta.Zone = dueZoneName(loc, t)
 	return t.UTC().Format(time.RFC3339), meta, nil
 }
@@ -720,7 +721,7 @@ func dueZoneName(loc *time.Location, t time.Time) string {
 // assignment must be rejected (out-of-org private). Post-HTTP
 // decisions live in resolveTemplateBranch so the decision table is
 // unit-testable without an httptest scaffold.
-func validateTemplateRepo(client githubapi.Client, t templateArg) (ref templateRef, private bool, err error) {
+func validateTemplateRepo(client githubapi.Client, t templateArg) (ref assignment.TemplateRef, private bool, err error) {
 	path := fmt.Sprintf("repos/%s/%s", url.PathEscape(t.Owner), url.PathEscape(t.Repo))
 	var resp struct {
 		IsTemplate    bool   `json:"is_template"`
@@ -729,14 +730,14 @@ func validateTemplateRepo(client githubapi.Client, t templateArg) (ref templateR
 	}
 	if err := client.Get(path, &resp); err != nil {
 		if cliutil.IsHTTPStatus(err, http.StatusNotFound) {
-			return templateRef{}, false, fmt.Errorf("template `%s/%s` is not visible to your account — either make it public, or copy it into your org and reference the copy",
+			return assignment.TemplateRef{}, false, fmt.Errorf("template `%s/%s` is not visible to your account — either make it public, or copy it into your org and reference the copy",
 				t.Owner, t.Repo)
 		}
-		return templateRef{}, false, fmt.Errorf("GET %s: %w", path, err)
+		return assignment.TemplateRef{}, false, fmt.Errorf("GET %s: %w", path, err)
 	}
 	ref, err = resolveTemplateBranch(t, resp.IsTemplate, resp.DefaultBranch)
 	if err != nil {
-		return templateRef{}, false, err
+		return assignment.TemplateRef{}, false, err
 	}
 	return ref, resp.Private, nil
 }
@@ -749,12 +750,12 @@ func templateInOrg(templateOwner, org string) bool {
 	return strings.EqualFold(templateOwner, org)
 }
 
-// resolveTemplateBranch picks the final templateRef from
+// resolveTemplateBranch picks the final assignment.TemplateRef from
 // --template + repo fields: not-a-template, explicit @branch,
 // default_branch fallback, or empty-default_branch guard.
-func resolveTemplateBranch(t templateArg, isTemplate bool, defaultBranch string) (templateRef, error) {
+func resolveTemplateBranch(t templateArg, isTemplate bool, defaultBranch string) (assignment.TemplateRef, error) {
 	if !isTemplate {
-		return templateRef{}, fmt.Errorf("`%s/%s` is not a template repository — toggle Settings → \"Template repository\" on the repo, then re-run", t.Owner, t.Repo)
+		return assignment.TemplateRef{}, fmt.Errorf("`%s/%s` is not a template repository — toggle Settings → \"Template repository\" on the repo, then re-run", t.Owner, t.Repo)
 	}
 	branch := t.Branch
 	if branch == "" {
@@ -763,7 +764,7 @@ func resolveTemplateBranch(t templateArg, isTemplate bool, defaultBranch string)
 	if branch == "" {
 		// Defensive: a fresh repo can return empty default_branch,
 		// and an empty Branch on disk would trip `gh student accept`.
-		return templateRef{}, fmt.Errorf("template `%s/%s` has no default branch — pass --template %s/%s@<branch> explicitly", t.Owner, t.Repo, t.Owner, t.Repo)
+		return assignment.TemplateRef{}, fmt.Errorf("template `%s/%s` has no default branch — pass --template %s/%s@<branch> explicitly", t.Owner, t.Repo, t.Owner, t.Repo)
 	}
-	return templateRef{Owner: t.Owner, Repo: t.Repo, Branch: branch}, nil
+	return assignment.TemplateRef{Owner: t.Owner, Repo: t.Repo, Branch: branch}, nil
 }

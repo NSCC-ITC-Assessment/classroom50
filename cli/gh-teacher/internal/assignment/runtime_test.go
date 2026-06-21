@@ -1,4 +1,4 @@
-package main
+package assignment
 
 import (
 	"os"
@@ -10,54 +10,54 @@ import (
 func TestValidateRuntime_HostPaths(t *testing.T) {
 	cases := []struct {
 		name    string
-		runtime runtimeRef
+		runtime RuntimeRef
 		wantErr string
 	}{
 		{
 			name:    "empty is valid",
-			runtime: runtimeRef{},
+			runtime: RuntimeRef{},
 		},
 		{
 			name:    "ubuntu-latest with python",
-			runtime: runtimeRef{RunsOn: "ubuntu-latest", Python: "3.12"},
+			runtime: RuntimeRef{RunsOn: "ubuntu-latest", Python: "3.12"},
 		},
 		{
 			name:    "all language fields",
-			runtime: runtimeRef{Python: "3.12", Node: "20", Java: "21", Go: "1.23"},
+			runtime: RuntimeRef{Python: "3.12", Node: "20", Java: "21", Go: "1.23"},
 		},
 		{
 			name:    "apt packages",
-			runtime: runtimeRef{Apt: []string{"build-essential", "valgrind", "lib-fake.dev"}},
+			runtime: RuntimeRef{Apt: []string{"build-essential", "valgrind", "lib-fake.dev"}},
 		},
 		{
 			name:    "self-hosted runner rejected",
-			runtime: runtimeRef{RunsOn: "self-hosted-grading"},
+			runtime: RuntimeRef{RunsOn: "self-hosted-grading"},
 			wantErr: "allow-list",
 		},
 		{
 			name:    "unknown github label rejected",
-			runtime: runtimeRef{RunsOn: "ubuntu-30.04"},
+			runtime: RuntimeRef{RunsOn: "ubuntu-30.04"},
 			wantErr: "allow-list",
 		},
 		{
 			name:    "python version with semicolon rejected",
-			runtime: runtimeRef{Python: "3.12; rm -rf /"},
+			runtime: RuntimeRef{Python: "3.12; rm -rf /"},
 			wantErr: "runtime.python",
 		},
 		{
 			name:    "apt with shell metacharacters rejected",
-			runtime: runtimeRef{Apt: []string{"build-essential;rm"}},
+			runtime: RuntimeRef{Apt: []string{"build-essential;rm"}},
 			wantErr: "runtime.apt",
 		},
 		{
 			name:    "apt with uppercase rejected",
-			runtime: runtimeRef{Apt: []string{"Foo"}},
+			runtime: RuntimeRef{Apt: []string{"Foo"}},
 			wantErr: "runtime.apt",
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			err := validateRuntime(tc.runtime)
+			err := ValidateRuntime(tc.runtime)
 			if tc.wantErr == "" {
 				if err != nil {
 					t.Fatalf("unexpected error: %v", err)
@@ -77,21 +77,21 @@ func TestValidateRuntime_HostPaths(t *testing.T) {
 func TestValidateRuntime_ContainerPaths(t *testing.T) {
 	cases := []struct {
 		name    string
-		runtime runtimeRef
+		runtime RuntimeRef
 		wantErr string
 	}{
 		{
 			name: "image only",
-			runtime: runtimeRef{
-				Container: &containerSpec{Image: "ghcr.io/cs50/grading-env:1.2"},
+			runtime: RuntimeRef{
+				Container: &ContainerSpec{Image: "ghcr.io/cs50/grading-env:1.2"},
 			},
 		},
 		{
 			name: "image with credentials",
-			runtime: runtimeRef{
-				Container: &containerSpec{
+			runtime: RuntimeRef{
+				Container: &ContainerSpec{
 					Image: "ghcr.io/private/grader:latest",
-					Credentials: &containerCreds{
+					Credentials: &ContainerCreds{
 						Username: "cs50-bot",
 						Password: "${{ secrets.GHCR_TOKEN }}",
 					},
@@ -100,40 +100,40 @@ func TestValidateRuntime_ContainerPaths(t *testing.T) {
 		},
 		{
 			name: "image with apt rejected",
-			runtime: runtimeRef{
-				Container: &containerSpec{Image: "ubuntu:24.04"},
+			runtime: RuntimeRef{
+				Container: &ContainerSpec{Image: "ubuntu:24.04"},
 				Apt:       []string{"build-essential"},
 			},
 			wantErr: "runtime.apt is not allowed when runtime.container",
 		},
 		{
 			name: "macos runs-on with container rejected",
-			runtime: runtimeRef{
+			runtime: RuntimeRef{
 				RunsOn:    "macos-latest",
-				Container: &containerSpec{Image: "ubuntu:24.04"},
+				Container: &ContainerSpec{Image: "ubuntu:24.04"},
 			},
 			wantErr: "Ubuntu hosts only",
 		},
 		{
 			name: "empty image rejected",
-			runtime: runtimeRef{
-				Container: &containerSpec{Image: ""},
+			runtime: RuntimeRef{
+				Container: &ContainerSpec{Image: ""},
 			},
 			wantErr: "runtime.container.image must not be empty",
 		},
 		{
 			name: "image with shell metacharacters rejected",
-			runtime: runtimeRef{
-				Container: &containerSpec{Image: "ubuntu:24.04;rm"},
+			runtime: RuntimeRef{
+				Container: &ContainerSpec{Image: "ubuntu:24.04;rm"},
 			},
 			wantErr: "characters other than",
 		},
 		{
 			name: "raw password rejected",
-			runtime: runtimeRef{
-				Container: &containerSpec{
+			runtime: RuntimeRef{
+				Container: &ContainerSpec{
 					Image: "ghcr.io/cs50/grader:1",
-					Credentials: &containerCreds{
+					Credentials: &ContainerCreds{
 						Username: "cs50-bot",
 						Password: "ghp_actualtokenvaluedonotuse",
 					},
@@ -143,10 +143,10 @@ func TestValidateRuntime_ContainerPaths(t *testing.T) {
 		},
 		{
 			name: "credentials missing username rejected",
-			runtime: runtimeRef{
-				Container: &containerSpec{
+			runtime: RuntimeRef{
+				Container: &ContainerSpec{
 					Image: "ghcr.io/cs50/grader:1",
-					Credentials: &containerCreds{
+					Credentials: &ContainerCreds{
 						Password: "${{ secrets.X }}",
 					},
 				},
@@ -155,10 +155,10 @@ func TestValidateRuntime_ContainerPaths(t *testing.T) {
 		},
 		{
 			name: "credentials missing password rejected",
-			runtime: runtimeRef{
-				Container: &containerSpec{
+			runtime: RuntimeRef{
+				Container: &ContainerSpec{
 					Image: "ghcr.io/cs50/grader:1",
-					Credentials: &containerCreds{
+					Credentials: &ContainerCreds{
 						Username: "cs50-bot",
 					},
 				},
@@ -167,8 +167,8 @@ func TestValidateRuntime_ContainerPaths(t *testing.T) {
 		},
 		{
 			name: "user 32-char accepted (boundary)",
-			runtime: runtimeRef{
-				Container: &containerSpec{
+			runtime: RuntimeRef{
+				Container: &ContainerSpec{
 					Image: "cs50/cli:latest",
 					User:  "a" + strings.Repeat("b", 31), // first char + 31 = 32
 				},
@@ -176,8 +176,8 @@ func TestValidateRuntime_ContainerPaths(t *testing.T) {
 		},
 		{
 			name: "user 33-char rejected (over boundary)",
-			runtime: runtimeRef{
-				Container: &containerSpec{
+			runtime: RuntimeRef{
+				Container: &ContainerSpec{
 					Image: "cs50/cli:latest",
 					User:  "a" + strings.Repeat("b", 32), // first char + 32 = 33
 				},
@@ -186,60 +186,60 @@ func TestValidateRuntime_ContainerPaths(t *testing.T) {
 		},
 		{
 			name: "user trailing colon rejected",
-			runtime: runtimeRef{
-				Container: &containerSpec{Image: "cs50/cli:latest", User: "1000:"},
+			runtime: RuntimeRef{
+				Container: &ContainerSpec{Image: "cs50/cli:latest", User: "1000:"},
 			},
 			wantErr: "runtime.container.user",
 		},
 		{
 			name: "user multi-colon rejected",
-			runtime: runtimeRef{
-				Container: &containerSpec{Image: "cs50/cli:latest", User: "1000:1000:1000"},
+			runtime: RuntimeRef{
+				Container: &ContainerSpec{Image: "cs50/cli:latest", User: "1000:1000:1000"},
 			},
 			wantErr: "runtime.container.user",
 		},
 		{
 			name: "user leading underscore accepted",
-			runtime: runtimeRef{
-				Container: &containerSpec{Image: "cs50/cli:latest", User: "_appuser"},
+			runtime: RuntimeRef{
+				Container: &ContainerSpec{Image: "cs50/cli:latest", User: "_appuser"},
 			},
 		},
 		{
 			name: "user root accepted",
-			runtime: runtimeRef{
-				Container: &containerSpec{Image: "cs50/cli:latest", User: "root"},
+			runtime: RuntimeRef{
+				Container: &ContainerSpec{Image: "cs50/cli:latest", User: "root"},
 			},
 		},
 		{
 			name: "user numeric uid accepted",
-			runtime: runtimeRef{
-				Container: &containerSpec{Image: "cs50/cli:latest", User: "0"},
+			runtime: RuntimeRef{
+				Container: &ContainerSpec{Image: "cs50/cli:latest", User: "0"},
 			},
 		},
 		{
 			name: "user uid:gid accepted",
-			runtime: runtimeRef{
-				Container: &containerSpec{Image: "cs50/cli:latest", User: "1000:1000"},
+			runtime: RuntimeRef{
+				Container: &ContainerSpec{Image: "cs50/cli:latest", User: "1000:1000"},
 			},
 		},
 		{
 			name: "user with shell metacharacters rejected",
-			runtime: runtimeRef{
-				Container: &containerSpec{Image: "cs50/cli:latest", User: "root; rm -rf /"},
+			runtime: RuntimeRef{
+				Container: &ContainerSpec{Image: "cs50/cli:latest", User: "root; rm -rf /"},
 			},
 			wantErr: "runtime.container.user",
 		},
 		{
 			name: "user with leading hyphen rejected",
-			runtime: runtimeRef{
-				Container: &containerSpec{Image: "cs50/cli:latest", User: "-rm"},
+			runtime: RuntimeRef{
+				Container: &ContainerSpec{Image: "cs50/cli:latest", User: "-rm"},
 			},
 			wantErr: "runtime.container.user",
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			err := validateRuntime(tc.runtime)
+			err := ValidateRuntime(tc.runtime)
 			if tc.wantErr == "" {
 				if err != nil {
 					t.Fatalf("unexpected error: %v", err)
@@ -257,12 +257,12 @@ func TestValidateRuntime_ContainerPaths(t *testing.T) {
 }
 
 func TestParseRuntimeFile_Empty(t *testing.T) {
-	got, err := parseRuntimeFile("")
+	got, err := ParseRuntimeFile("")
 	if err != nil {
 		t.Fatalf("empty path should be no-op, got error: %v", err)
 	}
 	if got != nil {
-		t.Errorf("empty path should yield nil runtimeRef, got %#v", got)
+		t.Errorf("empty path should yield nil RuntimeRef, got %#v", got)
 	}
 }
 
@@ -278,12 +278,12 @@ func TestParseRuntimeFile_HappyPath(t *testing.T) {
 	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 		t.Fatalf("write: %v", err)
 	}
-	got, err := parseRuntimeFile(path)
+	got, err := ParseRuntimeFile(path)
 	if err != nil {
-		t.Fatalf("parseRuntimeFile: %v", err)
+		t.Fatalf("ParseRuntimeFile: %v", err)
 	}
 	if got == nil {
-		t.Fatal("got nil runtimeRef on happy path")
+		t.Fatal("got nil RuntimeRef on happy path")
 		return
 	}
 	if got.RunsOn != "ubuntu-latest" || got.Python != "3.12" {
@@ -304,7 +304,7 @@ func TestParseRuntimeFile_UnknownField(t *testing.T) {
 	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 		t.Fatalf("write: %v", err)
 	}
-	_, err := parseRuntimeFile(path)
+	_, err := ParseRuntimeFile(path)
 	if err == nil {
 		t.Fatal("expected decode error for unknown field, got nil")
 	}
@@ -320,7 +320,7 @@ func TestParseRuntimeFile_TrailingContentRejected(t *testing.T) {
 	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 		t.Fatalf("write: %v", err)
 	}
-	_, err := parseRuntimeFile(path)
+	_, err := ParseRuntimeFile(path)
 	if err == nil {
 		t.Fatal("expected error for trailing content, got nil")
 	}
@@ -333,7 +333,7 @@ func TestParseRuntimeFile_ValidationFailureWrapsPath(t *testing.T) {
 	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 		t.Fatalf("write: %v", err)
 	}
-	_, err := parseRuntimeFile(path)
+	_, err := ParseRuntimeFile(path)
 	if err == nil {
 		t.Fatal("expected validation error, got nil")
 	}
@@ -343,17 +343,17 @@ func TestParseRuntimeFile_ValidationFailureWrapsPath(t *testing.T) {
 }
 
 func TestValidateAssignmentEntry_RuntimePropagates(t *testing.T) {
-	// Bad runtime block must fail validateAssignmentEntry — the
+	// Bad runtime block must fail ValidateAssignmentEntry — the
 	// write path uses the same validator under the hood.
-	entry := assignmentEntry{
+	entry := AssignmentEntry{
 		Slug:       "hello",
 		Name:       "Hello",
-		Template:   templateRef{Owner: "cs50", Repo: "hello-template", Branch: "main"},
+		Template:   TemplateRef{Owner: "cs50", Repo: "hello-template", Branch: "main"},
 		Mode:       "individual",
 		Autograder: "default",
-		Runtime:    &runtimeRef{Apt: []string{"BAD;PKG"}},
+		Runtime:    &RuntimeRef{Apt: []string{"BAD;PKG"}},
 	}
-	err := validateAssignmentEntry(entry)
+	err := ValidateAssignmentEntry(entry)
 	if err == nil {
 		t.Fatal("expected runtime validation to bubble up, got nil")
 	}
@@ -380,9 +380,9 @@ func TestParseAssignments_RuntimeRoundTrips(t *testing.T) {
     }
   ]
 }`)
-	file, err := parseAssignments(in)
+	file, err := ParseAssignments(in)
 	if err != nil {
-		t.Fatalf("parseAssignments: %v", err)
+		t.Fatalf("ParseAssignments: %v", err)
 	}
 	got := file.Assignments[0].Runtime
 	if got == nil {
@@ -394,11 +394,11 @@ func TestParseAssignments_RuntimeRoundTrips(t *testing.T) {
 	}
 
 	// Re-encode and re-parse to confirm round-trip stability.
-	encoded, err := encodeAssignments(file)
+	encoded, err := EncodeAssignments(file)
 	if err != nil {
-		t.Fatalf("encodeAssignments: %v", err)
+		t.Fatalf("EncodeAssignments: %v", err)
 	}
-	again, err := parseAssignments(encoded)
+	again, err := ParseAssignments(encoded)
 	if err != nil {
 		t.Fatalf("re-parse: %v", err)
 	}
@@ -423,7 +423,7 @@ func TestParseAssignments_RejectsInvalidRuntime(t *testing.T) {
     }
   ]
 }`)
-	_, err := parseAssignments(in)
+	_, err := ParseAssignments(in)
 	if err == nil {
 		t.Fatal("expected parse to reject self-hosted runs-on, got nil")
 	}

@@ -11,6 +11,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/foundation50/gh-teacher/internal/assignment"
 	"github.com/foundation50/gh-teacher/internal/githubtest"
 )
 
@@ -124,7 +125,7 @@ func newTestCmdServer(t *testing.T, assignmentsBody string, autograderExists boo
 
 // helloAssignments returns an assignments.json body with one valid
 // "hello" entry carrying the given tests array (raw JSON, e.g. `[]` or
-// a populated array). Shape matches what encodeAssignments writes.
+// a populated array). Shape matches what assignment.EncodeAssignments writes.
 func helloAssignments(testsJSON string) string {
 	tests := ""
 	if testsJSON != "" {
@@ -146,14 +147,14 @@ func helloAssignments(testsJSON string) string {
 }
 
 // decodeCommitted parses the assignments.json the fixture captured.
-func decodeCommitted(t *testing.T, fix *testCmdFixture) assignmentsJSON {
+func decodeCommitted(t *testing.T, fix *testCmdFixture) assignment.AssignmentsJSON {
 	t.Helper()
 	fix.mu.Lock()
 	defer fix.mu.Unlock()
 	if fix.committed == nil {
 		t.Fatal("no blob was committed")
 	}
-	file, err := parseAssignments(fix.committed)
+	file, err := assignment.ParseAssignments(fix.committed)
 	if err != nil {
 		t.Fatalf("committed assignments.json does not parse: %v", err)
 	}
@@ -165,7 +166,7 @@ func TestRunAssignmentTestAdd_AppendsToEntry(t *testing.T) {
 	client := githubtest.NewTestClient(t, server)
 
 	var stdout bytes.Buffer
-	spec := testSpec{Name: "compiles", Type: "run", Run: "gcc -o hello hello.c", Points: 1}
+	spec := assignment.TestSpec{Name: "compiles", Type: "run", Run: "gcc -o hello hello.c", Points: 1}
 	if err := runAssignmentTestAdd(client, &stdout, "o", "cs-principles", "hello", spec); err != nil {
 		t.Fatalf("runAssignmentTestAdd: %v", err)
 	}
@@ -194,7 +195,7 @@ func TestRunAssignmentTestAdd_ReplacesByName(t *testing.T) {
 	client := githubtest.NewTestClient(t, server)
 
 	var stdout bytes.Buffer
-	spec := testSpec{Name: "compiles", Type: "run", Run: "new", Points: 3}
+	spec := assignment.TestSpec{Name: "compiles", Type: "run", Run: "new", Points: 3}
 	if err := runAssignmentTestAdd(client, &stdout, "o", "cs-principles", "hello", spec); err != nil {
 		t.Fatalf("runAssignmentTestAdd: %v", err)
 	}
@@ -213,7 +214,7 @@ func TestRunAssignmentTestAdd_RejectsExistingAutograder(t *testing.T) {
 	client := githubtest.NewTestClient(t, server)
 
 	var stdout bytes.Buffer
-	spec := testSpec{Name: "compiles", Type: "run", Run: "true", Points: 1}
+	spec := assignment.TestSpec{Name: "compiles", Type: "run", Run: "true", Points: 1}
 	err := runAssignmentTestAdd(client, &stdout, "o", "cs-principles", "hello", spec)
 	if err == nil {
 		t.Fatal("expected mutual-exclusion error, got nil")
@@ -239,7 +240,7 @@ func TestRunAssignmentTestAdd_UnregisteredSlugFails(t *testing.T) {
 	client := githubtest.NewTestClient(t, server)
 
 	var stdout bytes.Buffer
-	spec := testSpec{Name: "compiles", Type: "run", Run: "true", Points: 1}
+	spec := assignment.TestSpec{Name: "compiles", Type: "run", Run: "true", Points: 1}
 	err := runAssignmentTestAdd(client, &stdout, "o", "cs-principles", "hello", spec)
 	if err == nil {
 		t.Fatal("expected unregistered-slug error, got nil")
@@ -280,7 +281,7 @@ func TestRunAssignmentTestAdd_RequiresMaterializeScript(t *testing.T) {
 	client := githubtest.NewTestClient(t, server)
 
 	var stdout bytes.Buffer
-	spec := testSpec{Name: "compiles", Type: "run", Run: "true", Points: 1}
+	spec := assignment.TestSpec{Name: "compiles", Type: "run", Run: "true", Points: 1}
 	err := runAssignmentTestAdd(client, &stdout, "o", "cs-principles", "hello", spec)
 	if err == nil {
 		t.Fatal("expected missing-skeleton error, got nil")
@@ -296,7 +297,7 @@ func TestRunAssignmentAdd_WithTestsPersists(t *testing.T) {
 	server, fix := newTestCmdServer(t, helloAssignments(""), false)
 	client := githubtest.NewTestClient(t, server)
 
-	tests := []testSpec{{Name: "compiles", Type: "run", Run: "true", Points: 1}}
+	tests := []assignment.TestSpec{{Name: "compiles", Type: "run", Run: "true", Points: 1}}
 	var stdout, stderr bytes.Buffer
 	err := runAssignmentAdd(client, &stdout, &stderr, "o", "cs-principles", "hello", "Hello", "",
 		templateArg{Owner: "cs50", Repo: "hello-template"}, "", nil, "individual", 0, "default", nil, tests, false)
@@ -329,7 +330,7 @@ func TestRunAssignmentAdd_TestsRejectedWithAutograder(t *testing.T) {
 	server, fix := newTestCmdServer(t, helloAssignments(""), true)
 	client := githubtest.NewTestClient(t, server)
 
-	tests := []testSpec{{Name: "compiles", Type: "run", Run: "true", Points: 1}}
+	tests := []assignment.TestSpec{{Name: "compiles", Type: "run", Run: "true", Points: 1}}
 	var stdout, stderr bytes.Buffer
 	err := runAssignmentAdd(client, &stdout, &stderr, "o", "cs-principles", "hello", "Hello", "",
 		templateArg{Owner: "cs50", Repo: "hello-template"}, "", nil, "individual", 0, "default", nil, tests, false)
@@ -376,7 +377,7 @@ func TestRunAssignmentAdd_ExplicitEmptyTestsClearsSilently(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 	err := runAssignmentAdd(client, &stdout, &stderr, "o", "cs-principles", "hello", "Hello", "",
-		templateArg{Owner: "cs50", Repo: "hello-template"}, "", nil, "individual", 0, "default", nil, []testSpec{}, false)
+		templateArg{Owner: "cs50", Repo: "hello-template"}, "", nil, "individual", 0, "default", nil, []assignment.TestSpec{}, false)
 	if err != nil {
 		t.Fatalf("runAssignmentAdd: %v", err)
 	}
@@ -475,7 +476,7 @@ func TestRunAssignmentTestList_JSONAndQuiet(t *testing.T) {
 	if err := runAssignmentTestList(client, &stdout, &stderr, "o", "cs-principles", "hello", true, true); err != nil {
 		t.Fatalf("runAssignmentTestList: %v", err)
 	}
-	var got []testSpec
+	var got []assignment.TestSpec
 	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
 		t.Fatalf("stdout is not a JSON array of specs: %v\n%s", err, stdout.String())
 	}

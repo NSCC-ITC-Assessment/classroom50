@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/foundation50/gh-teacher/internal/assignment"
 	"github.com/foundation50/gh-teacher/internal/cliutil"
 	"github.com/foundation50/gh-teacher/internal/githubapi"
 	"github.com/foundation50/gh-teacher/internal/validate"
@@ -30,7 +31,7 @@ const (
 // still lands.
 type resolvedTemplate struct {
 	Assignment classroomAssignmentDetail
-	Template   templateRef
+	Template   assignment.TemplateRef
 	Action     templateAction
 	SkipReason string
 	// TargetPrivate is the visibility of the TARGET template repo (the
@@ -128,7 +129,7 @@ func generateFromTemplate(client githubapi.Client, srcOwner, srcRepo, targetOwne
 	}
 	if out.DefaultBranch == "" {
 		// Defensive: a missing default_branch would silently land
-		// an unusable templateRef on disk.
+		// an unusable assignment.TemplateRef on disk.
 		return "", fmt.Errorf("POST %s: response missing default_branch", path)
 	}
 	return out.DefaultBranch, nil
@@ -186,7 +187,7 @@ func runTemplateCopy(client githubapi.Client, errOut io.Writer, plan migrationPl
 // copyOneTemplate handles a single source assignment. The decision
 // table:
 //
-//   - slug or mode would fail downstream assignmentEntry validation → skip
+//   - slug or mode would fail downstream assignment.AssignmentEntry validation → skip
 //   - source repo missing or not a template → skip
 //   - target name 404 → generate + mark + wait for branch to stabilize
 //   - target name exists + is_template → reuse
@@ -203,15 +204,15 @@ func copyOneTemplate(client githubapi.Client, errOut io.Writer, targetOrg, templ
 		return resolvedTemplate{Assignment: a, Action: templateActionSkipped, SkipReason: reason}
 	}
 
-	// Validate the shape downstream assignmentEntry needs BEFORE
+	// Validate the shape downstream assignment.AssignmentEntry needs BEFORE
 	// any API writes — otherwise a bad slug or mode would generate
 	// a template repo and then drop the entry at commit time,
 	// orphaning the generated repo.
 	if err := validate.ShortName(a.Slug, "slug"); err != nil {
 		return skip(err.Error()), nil
 	}
-	if !isValidAssignmentMode(a.Type) {
-		return skip(fmt.Sprintf("source has unknown type %q (must be one of %v)", a.Type, assignmentModes)), nil
+	if !assignment.IsValidAssignmentMode(a.Type) {
+		return skip(fmt.Sprintf("source has unknown type %q (must be one of %v)", a.Type, assignment.AssignmentModes)), nil
 	}
 
 	if a.StarterCodeRepo == nil || a.StarterCodeRepo.FullName == "" {
@@ -246,7 +247,7 @@ func copyOneTemplate(client githubapi.Client, errOut io.Writer, targetOrg, templ
 		return resolvedTemplate{
 			Assignment:    a,
 			Action:        templateActionReused,
-			Template:      templateRef{Owner: targetOrg, Repo: targetName, Branch: probe.Branch},
+			Template:      assignment.TemplateRef{Owner: targetOrg, Repo: targetName, Branch: probe.Branch},
 			TargetPrivate: probe.Private,
 		}, nil
 	}
@@ -276,7 +277,7 @@ func copyOneTemplate(client githubapi.Client, errOut io.Writer, targetOrg, templ
 	return resolvedTemplate{
 		Assignment:    a,
 		Action:        templateActionGenerated,
-		Template:      templateRef{Owner: targetOrg, Repo: targetName, Branch: branch},
+		Template:      assignment.TemplateRef{Owner: targetOrg, Repo: targetName, Branch: branch},
 		TargetPrivate: a.StarterCodeRepo.Private,
 	}, nil
 }
@@ -318,12 +319,12 @@ func countTemplateActions(resolved []resolvedTemplate) (generated, reused, skipp
 // post-commit summary. Computed from the entries themselves (not
 // from the pre-skip plan) so the summary can't disagree with what
 // landed in assignments.json.
-func countEntriesByMode(entries []assignmentEntry) (individual, group int) {
+func countEntriesByMode(entries []assignment.AssignmentEntry) (individual, group int) {
 	for _, e := range entries {
 		switch e.Mode {
-		case assignmentModeIndividual:
+		case assignment.ModeIndividual:
 			individual++
-		case assignmentModeGroup:
+		case assignment.ModeGroup:
 			group++
 		}
 	}

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/foundation50/gh-teacher/internal/assignment"
 	"github.com/foundation50/gh-teacher/internal/configrepo"
 	"github.com/foundation50/gh-teacher/internal/validate"
 )
@@ -54,24 +55,24 @@ func classroomMigratedFromFromDetail(detail classroomDetail, migratedAt time.Tim
 }
 
 // assignmentToEntry maps a source assignment + a resolved target
-// template ref into the on-disk assignmentEntry. targetTemplate is
+// template ref into the on-disk assignment.AssignmentEntry. targetTemplate is
 // the post-copy template repo in the target org; the source
 // `starter_code_repository` lives in migrated_from.starter_repo.
 // Errors on shapes that produce an invalid on-disk entry.
 func assignmentToEntry(
 	detail classroomAssignmentDetail,
 	classroomID int64,
-	targetTemplate templateRef,
+	targetTemplate assignment.TemplateRef,
 	migratedAt time.Time,
-) (assignmentEntry, error) {
+) (assignment.AssignmentEntry, error) {
 	if detail.Slug == "" {
-		return assignmentEntry{}, fmt.Errorf("source assignment %d has empty slug", detail.ID)
+		return assignment.AssignmentEntry{}, fmt.Errorf("source assignment %d has empty slug", detail.ID)
 	}
 	if err := validate.ShortName(detail.Slug, "slug"); err != nil {
-		return assignmentEntry{}, fmt.Errorf("source assignment %d: %w", detail.ID, err)
+		return assignment.AssignmentEntry{}, fmt.Errorf("source assignment %d: %w", detail.ID, err)
 	}
-	if !isValidAssignmentMode(detail.Type) {
-		return assignmentEntry{}, fmt.Errorf("source assignment %d (%q) has unknown type %q (must be one of %v)", detail.ID, detail.Slug, detail.Type, assignmentModes)
+	if !assignment.IsValidAssignmentMode(detail.Type) {
+		return assignment.AssignmentEntry{}, fmt.Errorf("source assignment %d (%q) has unknown type %q (must be one of %v)", detail.ID, detail.Slug, detail.Type, assignment.AssignmentModes)
 	}
 
 	// Deadline is nullable in source; a non-null value is dropped
@@ -82,17 +83,17 @@ func assignmentToEntry(
 	// deadline is normalized to a UTC instant, with the verbatim
 	// source value preserved in due_meta for the audit trail.
 	due := ""
-	var dueProvenance *dueMeta
+	var dueProvenance *assignment.DueMeta
 	if detail.Deadline != nil {
 		// loc is unused for an offset-bearing value; the hadOffset
 		// guard below rejects the zone-less case outright.
-		if t, hadOffset, err := parseDueTime(*detail.Deadline, time.UTC); err == nil && hadOffset {
+		if t, hadOffset, err := assignment.ParseDueTime(*detail.Deadline, time.UTC); err == nil && hadOffset {
 			due = t.UTC().Format(time.RFC3339)
-			dueProvenance = newDueMeta(*detail.Deadline, t, dueSourceMigrated)
+			dueProvenance = assignment.NewDueMeta(*detail.Deadline, t, assignment.DueSourceMigrated)
 		}
 	}
 
-	mig := &migratedFromRef{
+	mig := &assignment.MigratedFromRef{
 		Source:       migrateSourceGitHubClassroom,
 		ClassroomID:  classroomID,
 		AssignmentID: detail.ID,
@@ -109,15 +110,15 @@ func assignmentToEntry(
 	// missing/odd source value — the teacher can tighten it later via
 	// `gh teacher assignment add --mode group --max-group-size`.
 	maxGroupSize := 0
-	if detail.Type == assignmentModeGroup {
-		if detail.MaxTeams != nil && *detail.MaxTeams >= 2 && *detail.MaxTeams <= maxGroupSizeCap {
+	if detail.Type == assignment.ModeGroup {
+		if detail.MaxTeams != nil && *detail.MaxTeams >= 2 && *detail.MaxTeams <= assignment.MaxGroupSizeCap {
 			maxGroupSize = *detail.MaxTeams
 		} else {
-			maxGroupSize = maxGroupSizeCap
+			maxGroupSize = assignment.MaxGroupSizeCap
 		}
 	}
 
-	return assignmentEntry{
+	return assignment.AssignmentEntry{
 		Slug:         detail.Slug,
 		Name:         detail.Title,
 		Template:     targetTemplate,
@@ -145,9 +146,9 @@ type migrationPlan struct {
 func (p migrationPlan) countsByMode() (individual, group, other int) {
 	for _, a := range p.Assignments {
 		switch a.Type {
-		case assignmentModeIndividual:
+		case assignment.ModeIndividual:
 			individual++
-		case assignmentModeGroup:
+		case assignment.ModeGroup:
 			group++
 		default:
 			other++

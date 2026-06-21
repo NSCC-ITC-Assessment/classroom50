@@ -12,6 +12,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/foundation50/gh-teacher/internal/assignment"
 	"github.com/foundation50/gh-teacher/internal/configrepo"
 	"github.com/foundation50/gh-teacher/internal/githubtest"
 )
@@ -35,9 +36,9 @@ func TestAssignmentRepoName(t *testing.T) {
 }
 
 func TestAssignmentRegistered(t *testing.T) {
-	file := assignmentsJSON{
+	file := assignment.AssignmentsJSON{
 		Schema: assignmentsSchemaV1,
-		Assignments: []assignmentEntry{
+		Assignments: []assignment.AssignmentEntry{
 			{Slug: "hello"},
 			{Slug: "Goodbye"},
 		},
@@ -62,9 +63,9 @@ func TestAssignmentRegistered(t *testing.T) {
 }
 
 func TestAssignmentIsGroup(t *testing.T) {
-	file := assignmentsJSON{
+	file := assignment.AssignmentsJSON{
 		Schema: assignmentsSchemaV1,
-		Assignments: []assignmentEntry{
+		Assignments: []assignment.AssignmentEntry{
 			{Slug: "solo", Mode: "individual"},
 			{Slug: "team", Mode: "group"},
 			{Slug: "blank"}, // no mode → not group

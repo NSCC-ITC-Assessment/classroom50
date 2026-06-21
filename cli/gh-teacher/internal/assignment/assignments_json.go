@@ -1,4 +1,19 @@
-package main
+// Package assignment is the assignment data layer: it parses, validates,
+// and re-encodes a single assignments.json entry, including its embedded
+// tests[] and runtime{} sub-objects. It is pure data/validation logic with
+// no GitHub I/O and no commit plumbing — it depends only on internal/output,
+// internal/validate, the shared contract package, and stdlib. The assignment
+// commands, commitTree, and the autograder hub helpers stay in package main
+// and call into this package through its exported API.
+//
+// Security invariant: assignments.json is untrusted, hand-editable input, so
+// the runtime/container blocks are validated on the parse path
+// (ParseAssignments → ValidateExistingEntry → ValidateRuntime), not only at
+// write time. Callers must obtain entries through these entry points and must
+// not emit a RuntimeRef/ContainerSpec into a workflow without ValidateRuntime/
+// ValidateContainer having run — the exported validators are the trust
+// boundary for the anti-injection guards (see runtime.go).
+package assignment
 
 import (
 	"bytes"
@@ -19,16 +34,16 @@ import (
 // `group` (a shared repo a teammate joins, bounded by max_group_size).
 // Single-sourced in the shared contract package.
 const (
-	assignmentModeIndividual = contract.ModeIndividual
-	assignmentModeGroup      = contract.ModeGroup
+	ModeIndividual = contract.ModeIndividual
+	ModeGroup      = contract.ModeGroup
 )
 
-// assignmentModes is the canonical allow-list, sorted alphabetically
+// AssignmentModes is the canonical allow-list, sorted alphabetically
 // so error messages stay stable.
-var assignmentModes = []string{assignmentModeGroup, assignmentModeIndividual}
+var AssignmentModes = []string{ModeGroup, ModeIndividual}
 
-func isValidAssignmentMode(m string) bool {
-	for _, allowed := range assignmentModes {
+func IsValidAssignmentMode(m string) bool {
+	for _, allowed := range AssignmentModes {
 		if m == allowed {
 			return true
 		}
@@ -36,7 +51,7 @@ func isValidAssignmentMode(m string) bool {
 	return false
 }
 
-// largeAssignmentsWarnBytes is the encoded-size threshold above
+// LargeAssignmentsWarnBytes is the encoded-size threshold above
 // which `gh teacher assignment add` emits a stderr warning. Set
 // generously below GitHub's contents-API behavior change (~1 MiB
 // encoded → `encoding:"none"`, which would wedge every future
@@ -44,18 +59,18 @@ func isValidAssignmentMode(m string) bool {
 // hitting this should consider splitting the classroom or
 // shrinking per-entry fields before the file actually crosses the
 // API threshold.
-const largeAssignmentsWarnBytes = 700 * 1024
+const LargeAssignmentsWarnBytes = 700 * 1024
 
-// assignmentsJSON is the typed on-disk shape of assignments.json.
+// AssignmentsJSON is the typed on-disk shape of assignments.json.
 // Schema sentinel comes first so readers can branch before touching
 // the rest. Assignments always serializes as `[]` (never null) to
 // match `gh teacher classroom add`'s scaffold output.
-type assignmentsJSON struct {
+type AssignmentsJSON struct {
 	Schema      string            `json:"schema"`
-	Assignments []assignmentEntry `json:"assignments"`
+	Assignments []AssignmentEntry `json:"assignments"`
 }
 
-// assignmentEntry is one row in assignments.json. Field order reads
+// AssignmentEntry is one row in assignments.json. Field order reads
 // top-to-bottom for a teacher inspecting the file: identity ->
 // template -> schedule/mode -> autograder -> runtime -> tests ->
 // provenance. Mode and Autograder always serialize (no omitempty) so
@@ -80,33 +95,33 @@ type assignmentsJSON struct {
 // branch) so teachers leave inline review comments on the full
 // starter→submission diff. Default false; omits from the file when
 // unset. The runner re-reads it from the published manifest.
-type assignmentEntry struct {
+type AssignmentEntry struct {
 	Slug         string           `json:"slug"`
 	Name         string           `json:"name"`
 	Description  string           `json:"description,omitempty"`
-	Template     templateRef      `json:"template"`
+	Template     TemplateRef      `json:"template"`
 	Due          string           `json:"due,omitempty"`
-	DueMeta      *dueMeta         `json:"due_meta,omitempty"`
+	DueMeta      *DueMeta         `json:"due_meta,omitempty"`
 	Mode         string           `json:"mode"`
 	Autograder   string           `json:"autograder"`
 	MaxGroupSize int              `json:"max_group_size,omitempty"`
-	Runtime      *runtimeRef      `json:"runtime,omitempty"`
-	Tests        []testSpec       `json:"tests,omitempty"`
+	Runtime      *RuntimeRef      `json:"runtime,omitempty"`
+	Tests        []TestSpec       `json:"tests,omitempty"`
 	FeedbackPR   bool             `json:"feedback_pr,omitempty"`
-	MigratedFrom *migratedFromRef `json:"migrated_from,omitempty"`
+	MigratedFrom *MigratedFromRef `json:"migrated_from,omitempty"`
 }
 
-// maxGroupSizeCap bounds max_group_size (when set; 0 = unset).
-const maxGroupSizeCap = 100
+// MaxGroupSizeCap bounds max_group_size (when set; 0 = unset).
+const MaxGroupSizeCap = 100
 
-func validateMaxGroupSize(n int) error {
-	if n < 0 || n > maxGroupSizeCap {
-		return fmt.Errorf("max_group_size %d out of range (0 = unset/individual, or 2..%d for group mode)", n, maxGroupSizeCap)
+func ValidateMaxGroupSize(n int) error {
+	if n < 0 || n > MaxGroupSizeCap {
+		return fmt.Errorf("max_group_size %d out of range (0 = unset/individual, or 2..%d for group mode)", n, MaxGroupSizeCap)
 	}
 	return nil
 }
 
-// dueMeta is the write-side provenance for `due`. Because `due` is
+// DueMeta is the write-side provenance for `due`. Because `due` is
 // normalized to a UTC instant (losing the teacher's wall-clock and
 // offset), this records what was actually supplied so a wrong-zone
 // deadline can be audited after the fact. Advisory only --
@@ -118,7 +133,7 @@ func validateMaxGroupSize(n int) error {
 // best-effort IANA/local zone name, set only when the offset was
 // auto-detected (an explicit offset carries no zone name). Source
 // records how the zone was determined.
-type dueMeta struct {
+type DueMeta struct {
 	Input  string `json:"input"`
 	Zone   string `json:"zone,omitempty"`
 	Offset string `json:"offset"`
@@ -129,31 +144,31 @@ type dueMeta struct {
 // auto-detected from the machine's local zone, or was carried in from
 // a migrated source deadline.
 const (
-	dueSourceExplicit = "explicit-offset"
-	dueSourceAuto     = "auto-detected"
-	dueSourceMigrated = "migrated"
+	DueSourceExplicit = "explicit-offset"
+	DueSourceAuto     = "auto-detected"
+	DueSourceMigrated = "migrated"
 )
 
 // dueMetaOffsetRe matches the [+-]HH:MM offset shape written into
 // due_meta.offset -- kept in lockstep with the schema's due_meta.offset
-// pattern so validateDueMeta and a schema-validating client agree.
+// pattern so ValidateDueMeta and a schema-validating client agree.
 var dueMetaOffsetRe = regexp.MustCompile(`^[+-]([01]\d|2[0-3]):[0-5]\d$`)
 
-// newDueMeta builds the provenance block shared by the --due and
+// NewDueMeta builds the provenance block shared by the --due and
 // migrate paths: the supplied input, the offset applied (read off t's
 // zone), and how that offset was determined. Callers set Zone
 // separately when it was auto-detected.
-func newDueMeta(input string, t time.Time, source string) *dueMeta {
-	return &dueMeta{Input: input, Offset: t.Format("-07:00"), Source: source}
+func NewDueMeta(input string, t time.Time, source string) *DueMeta {
+	return &DueMeta{Input: input, Offset: t.Format("-07:00"), Source: source}
 }
 
-// validateDueMeta checks a due_meta block's fields against the same
+// ValidateDueMeta checks a due_meta block's fields against the same
 // shape the JSON schema enforces, so a malformed block written by a
 // GUI or hand-edit is rejected by the CLI too (the schema is documented
 // as mirroring these validators). Presence is NOT required: files
 // written before due_meta existed carry `due` alone and must still
 // validate, so callers only invoke this when the block is present.
-func validateDueMeta(m *dueMeta) error {
+func ValidateDueMeta(m *DueMeta) error {
 	if m.Input == "" {
 		return errors.New("due_meta.input must not be empty")
 	}
@@ -161,10 +176,10 @@ func validateDueMeta(m *dueMeta) error {
 		return fmt.Errorf("due_meta.offset %q must be a [+-]HH:MM zone offset", m.Offset)
 	}
 	switch m.Source {
-	case dueSourceExplicit, dueSourceAuto, dueSourceMigrated:
+	case DueSourceExplicit, DueSourceAuto, DueSourceMigrated:
 	default:
 		return fmt.Errorf("due_meta.source %q must be one of %q, %q, %q",
-			m.Source, dueSourceExplicit, dueSourceAuto, dueSourceMigrated)
+			m.Source, DueSourceExplicit, DueSourceAuto, DueSourceMigrated)
 	}
 	return nil
 }
@@ -174,13 +189,13 @@ func validateDueMeta(m *dueMeta) error {
 // in the machine's local timezone, then normalized to UTC.
 const dueNaiveLayout = "2006-01-02T15:04:05"
 
-// parseDueTime parses a due value as either a full RFC 3339 timestamp
+// ParseDueTime parses a due value as either a full RFC 3339 timestamp
 // (offset present -> hadOffset true) or a zone-less local datetime
 // interpreted in loc (hadOffset false). The returned time carries the
 // applied zone; callers normalize to UTC for storage. Sub-second
 // precision is accepted but dropped on the UTC re-format -- deadlines
 // don't need it.
-func parseDueTime(raw string, loc *time.Location) (parsed time.Time, hadOffset bool, err error) {
+func ParseDueTime(raw string, loc *time.Location) (parsed time.Time, hadOffset bool, err error) {
 	if parsed, err = time.Parse(time.RFC3339, raw); err == nil {
 		return parsed, true, nil
 	}
@@ -192,14 +207,14 @@ func parseDueTime(raw string, loc *time.Location) (parsed time.Time, hadOffset b
 			"(2026-09-15T23:59:00-04:00) or a local time (2026-09-15T23:59:00)", raw)
 }
 
-// validateDueDate guards the *stored* form: empty (no deadline) or an
+// ValidateDueDate guards the *stored* form: empty (no deadline) or an
 // RFC 3339 timestamp with an offset. The CLI always writes a UTC
 // instant, so this passes on anything it produces. It stays strict on
 // read -- a hand-edited zone-less value is rejected rather than guessed
 // at, since (unlike a fresh --due) there's no knowable machine zone to
 // attach. The naive-input tolerance lives only at the --due/migrate
-// boundary (parseDueTime), never here.
-func validateDueDate(due string) error {
+// boundary (ParseDueTime), never here.
+func ValidateDueDate(due string) error {
 	if due == "" {
 		return nil
 	}
@@ -209,12 +224,12 @@ func validateDueDate(due string) error {
 	return nil
 }
 
-// migratedFromRef records where an assignment originated when it
+// MigratedFromRef records where an assignment originated when it
 // was imported by `gh teacher classroom migrate`. Hand-authored
 // entries never carry this block. OriginalSlug is set only when it
 // differs from the current Slug; StarterRepo is the legacy
 // "owner/repo" before re-templating; InviteLink is diagnostic.
-type migratedFromRef struct {
+type MigratedFromRef struct {
 	Source       string `json:"source"`
 	ClassroomID  int64  `json:"classroom_id"`
 	AssignmentID int64  `json:"assignment_id"`
@@ -224,17 +239,17 @@ type migratedFromRef struct {
 	MigratedAt   string `json:"migrated_at"`
 }
 
-// templateRef is the assignment's starter-code source. Three
+// TemplateRef is the assignment's starter-code source. Three
 // explicit fields (not "owner/repo@branch") so consumers don't
 // re-parse. Branch is always populated; `assignment add` resolves
 // the template's `default_branch` when `@branch` is omitted.
-type templateRef struct {
+type TemplateRef struct {
 	Owner  string `json:"owner"`
 	Repo   string `json:"repo"`
 	Branch string `json:"branch"`
 }
 
-// runtimeRef captures the runtime environment for an assignment's
+// RuntimeRef captures the runtime environment for an assignment's
 // autograde job. Read by the runner's setup job and dispatched into
 // `runs-on` / `container` / language toolchain / apt steps.
 //
@@ -246,11 +261,11 @@ type templateRef struct {
 //     environment, so Apt is forbidden. Language fields still apply
 //     (setup-X actions run inside the container).
 //
-// All fields optional; an absent runtimeRef means "use defaults"
+// All fields optional; an absent RuntimeRef means "use defaults"
 // (ubuntu-latest + Python 3.12, no extra packages).
-type runtimeRef struct {
+type RuntimeRef struct {
 	RunsOn    string         `json:"runs-on,omitempty"`
-	Container *containerSpec `json:"container,omitempty"`
+	Container *ContainerSpec `json:"container,omitempty"`
 	Python    string         `json:"python,omitempty"`
 	Node      string         `json:"node,omitempty"`
 	Java      string         `json:"java,omitempty"`
@@ -258,17 +273,17 @@ type runtimeRef struct {
 	Apt       []string       `json:"apt,omitempty"`
 }
 
-// containerSpec maps to GitHub Actions' job-level `container:`
+// ContainerSpec maps to GitHub Actions' job-level `container:`
 // keyword. `Credentials.Password` must be a `${{ secrets.NAME }}`
 // reference at write time (raw tokens are rejected so they can't
-// land in git history) — see secretRefPattern in runtime.go.
+// land in git history) — see SecretRefPattern in runtime.go.
 //
 // KNOWN LIMITATION: private-image pulls via Credentials are
 // unverified end-to-end. The runtime block flows to the grade job
 // via `container: ${{ fromJSON(...) }}` and GHA does not
 // re-evaluate `${{ }}` expressions inside fromJSON-derived data,
 // so the literal text `${{ secrets.NAME }}` reaches docker login
-// as the password. See validateContainerCredentials in runtime.go
+// as the password. See ValidateContainerCredentials in runtime.go
 // for the full note. Public images (no Credentials) work as
 // designed.
 //
@@ -278,23 +293,23 @@ type runtimeRef struct {
 // most maintained images) hits EACCES when `actions/checkout`
 // writes to the runner's temp dir under `/__w/_temp/`. Setting
 // `user: root` (or `user: 0`) is the standard workaround.
-type containerSpec struct {
+type ContainerSpec struct {
 	Image       string          `json:"image"`
-	Credentials *containerCreds `json:"credentials,omitempty"`
+	Credentials *ContainerCreds `json:"credentials,omitempty"`
 	User        string          `json:"user,omitempty"`
 }
 
-type containerCreds struct {
+type ContainerCreds struct {
 	Username string `json:"username"`
 	Password string `json:"password"`
 }
 
-// parseAssignments decodes assignments.json with a two-pass scheme:
+// ParseAssignments decodes assignments.json with a two-pass scheme:
 // a lenient first pass reads only the schema sentinel so a future v2
 // file surfaces "this CLI handles only v1" instead of
 // "json: unknown field"; the strict pass runs only on v1.
 //
-// Per-entry validation (validateExistingEntry) matches the write-path
+// Per-entry validation (ValidateExistingEntry) matches the write-path
 // bar so a hand-edited or web-UI-inserted entry can't re-bless
 // itself on the next CLI write.
 //
@@ -302,85 +317,85 @@ type containerCreds struct {
 // in the config repo rather than being inlined, so realistic
 // manifests stay well under the ~1 MiB contents-API threshold.
 // `runAssignmentAdd` emits a stderr warning when the encoded file
-// crosses `largeAssignmentsWarnBytes` so operators get visibility
+// crosses `LargeAssignmentsWarnBytes` so operators get visibility
 // before the API behavior change (encoding flips to "none" past
 // ~1 MiB, wedging future reads).
-func parseAssignments(data []byte) (assignmentsJSON, error) {
+func ParseAssignments(data []byte) (AssignmentsJSON, error) {
 	if len(bytes.TrimSpace(data)) == 0 {
-		return assignmentsJSON{}, errors.New("assignments.json is empty")
+		return AssignmentsJSON{}, errors.New("assignments.json is empty")
 	}
 	var probe struct {
 		Schema string `json:"schema"`
 	}
 	if err := json.Unmarshal(data, &probe); err != nil {
-		return assignmentsJSON{}, fmt.Errorf("parse assignments.json: %w", err)
+		return AssignmentsJSON{}, fmt.Errorf("parse assignments.json: %w", err)
 	}
-	if probe.Schema != assignmentsSchemaV1 {
-		return assignmentsJSON{}, fmt.Errorf("assignments.json schema = %q, want %q (this CLI handles only v1)",
-			probe.Schema, assignmentsSchemaV1)
+	if probe.Schema != contract.AssignmentsSchemaV1 {
+		return AssignmentsJSON{}, fmt.Errorf("assignments.json schema = %q, want %q (this CLI handles only v1)",
+			probe.Schema, contract.AssignmentsSchemaV1)
 	}
-	var file assignmentsJSON
+	var file AssignmentsJSON
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&file); err != nil {
-		return assignmentsJSON{}, fmt.Errorf("parse assignments.json: %w", err)
+		return AssignmentsJSON{}, fmt.Errorf("parse assignments.json: %w", err)
 	}
 	// Reject trailing content; without this, the next re-encode
 	// would silently truncate it.
 	if err := expectEOF(dec); err != nil {
-		return assignmentsJSON{}, fmt.Errorf("parse assignments.json: %w", err)
+		return AssignmentsJSON{}, fmt.Errorf("parse assignments.json: %w", err)
 	}
 	// Callers depend on Assignments marshaling as `[]`, not `null`.
 	// Empty Autograder normalizes to "default" so downstream
 	// consumers see a uniform shape.
 	if file.Assignments == nil {
-		file.Assignments = []assignmentEntry{}
+		file.Assignments = []AssignmentEntry{}
 	}
 	for i, entry := range file.Assignments {
-		if err := validateExistingEntry(entry); err != nil {
-			return assignmentsJSON{}, fmt.Errorf("assignments[%d]: %w", i, err)
+		if err := ValidateExistingEntry(entry); err != nil {
+			return AssignmentsJSON{}, fmt.Errorf("assignments[%d]: %w", i, err)
 		}
 		if file.Assignments[i].Autograder == "" {
-			file.Assignments[i].Autograder = defaultAutograderName
+			file.Assignments[i].Autograder = contract.DefaultAutograderName
 		}
 	}
 	return file, nil
 }
 
-// encodeAssignments serializes via output.JSONPretty (2-space indent,
+// EncodeAssignments serializes via output.JSONPretty (2-space indent,
 // trailing newline) so on-disk diffs stay stable. Normalizes nil →
-// [] for Assignments and empty Autograder → defaultAutograderName so
+// [] for Assignments and empty Autograder → contract.DefaultAutograderName so
 // the wire shape is uniform. Per-entry validation is the caller's
 // job. Normalization runs on a local copy so callers never observe
 // silent slice mutation.
-func encodeAssignments(file assignmentsJSON) ([]byte, error) {
+func EncodeAssignments(file AssignmentsJSON) ([]byte, error) {
 	out := file
 	if out.Schema == "" {
-		out.Schema = assignmentsSchemaV1
+		out.Schema = contract.AssignmentsSchemaV1
 	}
 	if len(out.Assignments) == 0 {
-		out.Assignments = []assignmentEntry{}
+		out.Assignments = []AssignmentEntry{}
 	} else {
 		// Copy the backing array so normalization below doesn't
 		// leak back into the caller's slice.
-		copied := make([]assignmentEntry, len(out.Assignments))
+		copied := make([]AssignmentEntry, len(out.Assignments))
 		copy(copied, out.Assignments)
 		out.Assignments = copied
 		for i := range out.Assignments {
 			if out.Assignments[i].Autograder == "" {
-				out.Assignments[i].Autograder = defaultAutograderName
+				out.Assignments[i].Autograder = contract.DefaultAutograderName
 			}
 		}
 	}
 	return output.JSONPretty(out)
 }
 
-// upsertAssignment replaces by Slug (case-sensitive; the slug
+// UpsertAssignment replaces by Slug (case-sensitive; the slug
 // validator is lowercase-only, so case-insensitive matching would
 // just hide validator-rejected typos). Position preserved on
 // replace; new slugs append. Returns the slice and whether a row
 // was replaced.
-func upsertAssignment(entries []assignmentEntry, entry assignmentEntry) ([]assignmentEntry, bool) {
+func UpsertAssignment(entries []AssignmentEntry, entry AssignmentEntry) ([]AssignmentEntry, bool) {
 	for i := range entries {
 		if entries[i].Slug == entry.Slug {
 			entries[i] = entry
@@ -390,9 +405,9 @@ func upsertAssignment(entries []assignmentEntry, entry assignmentEntry) ([]assig
 	return append(entries, entry), false
 }
 
-// findAssignment returns the index of the entry with matching Slug
-// (case-sensitive, mirroring upsertAssignment) and whether it was found.
-func findAssignment(entries []assignmentEntry, slug string) (int, bool) {
+// FindAssignment returns the index of the entry with matching Slug
+// (case-sensitive, mirroring UpsertAssignment) and whether it was found.
+func FindAssignment(entries []AssignmentEntry, slug string) (int, bool) {
 	for i := range entries {
 		if entries[i].Slug == slug {
 			return i, true
@@ -401,9 +416,9 @@ func findAssignment(entries []assignmentEntry, slug string) (int, bool) {
 	return -1, false
 }
 
-// removeAssignment drops by Slug (case-sensitive, mirroring
-// upsertAssignment). Returns the slice and whether a row was removed.
-func removeAssignment(entries []assignmentEntry, slug string) ([]assignmentEntry, bool) {
+// RemoveAssignment drops by Slug (case-sensitive, mirroring
+// UpsertAssignment). Returns the slice and whether a row was removed.
+func RemoveAssignment(entries []AssignmentEntry, slug string) ([]AssignmentEntry, bool) {
 	for i := range entries {
 		if entries[i].Slug == slug {
 			return append(entries[:i], entries[i+1:]...), true
@@ -412,12 +427,12 @@ func removeAssignment(entries []assignmentEntry, slug string) ([]assignmentEntry
 	return entries, false
 }
 
-// validateAssignmentEntry is the write-path check. Same structural
-// bar as validateExistingEntry (parse-path); only error wording
+// ValidateAssignmentEntry is the write-path check. Same structural
+// bar as ValidateExistingEntry (parse-path); only error wording
 // differs — write errors reference CLI flags ("use --name"), parse
 // errors reference the file ("entry %q has..."). Field order is
 // "cheapest and most-likely-to-trip first".
-func validateAssignmentEntry(entry assignmentEntry) error {
+func ValidateAssignmentEntry(entry AssignmentEntry) error {
 	if entry.Slug == "" {
 		return errors.New("slug must not be empty")
 	}
@@ -430,8 +445,8 @@ func validateAssignmentEntry(entry assignmentEntry) error {
 	if entry.Mode == "" {
 		return errors.New("mode must not be empty")
 	}
-	if !isValidAssignmentMode(entry.Mode) {
-		return fmt.Errorf("invalid mode %q: must be one of %v", entry.Mode, assignmentModes)
+	if !IsValidAssignmentMode(entry.Mode) {
+		return fmt.Errorf("invalid mode %q: must be one of %v", entry.Mode, AssignmentModes)
 	}
 	if entry.Template.Owner == "" || entry.Template.Repo == "" {
 		return errors.New("template owner/repo must not be empty")
@@ -439,53 +454,53 @@ func validateAssignmentEntry(entry assignmentEntry) error {
 	if entry.Template.Branch == "" {
 		return errors.New("template branch must not be empty")
 	}
-	if err := validateDueDate(entry.Due); err != nil {
+	if err := ValidateDueDate(entry.Due); err != nil {
 		return err
 	}
 	if entry.DueMeta != nil {
-		if err := validateDueMeta(entry.DueMeta); err != nil {
+		if err := ValidateDueMeta(entry.DueMeta); err != nil {
 			return err
 		}
 	}
 	if entry.Autograder == "" {
-		return fmt.Errorf("autograder must not be empty (default is %q)", defaultAutograderName)
+		return fmt.Errorf("autograder must not be empty (default is %q)", contract.DefaultAutograderName)
 	}
-	if err := validateAutograderName(entry.Autograder); err != nil {
+	if err := validate.ShortName(entry.Autograder, "autograder"); err != nil {
 		return err
 	}
-	if err := validateMaxGroupSize(entry.MaxGroupSize); err != nil {
+	if err := ValidateMaxGroupSize(entry.MaxGroupSize); err != nil {
 		return err
 	}
 	// Mode/size relationship: a group assignment must carry a usable
 	// limit (>= 2); an individual one must not carry a size at all.
 	switch entry.Mode {
-	case assignmentModeGroup:
+	case ModeGroup:
 		if entry.MaxGroupSize < 2 {
 			return fmt.Errorf("group assignment %q must set max_group_size >= 2 (got %d)", entry.Slug, entry.MaxGroupSize)
 		}
-	case assignmentModeIndividual:
+	case ModeIndividual:
 		if entry.MaxGroupSize != 0 {
 			return fmt.Errorf("individual assignment %q must not set max_group_size (got %d)", entry.Slug, entry.MaxGroupSize)
 		}
 	}
 	if entry.Runtime != nil {
-		if err := validateRuntime(*entry.Runtime); err != nil {
+		if err := ValidateRuntime(*entry.Runtime); err != nil {
 			return err
 		}
 	}
 	if len(entry.Tests) > 0 {
-		if err := validateTests(entry.Tests); err != nil {
+		if err := ValidateTests(entry.Tests); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// validateExistingEntry is the parse-path twin of
-// validateAssignmentEntry. Same structural bar; error messages frame
+// ValidateExistingEntry is the parse-path twin of
+// ValidateAssignmentEntry. Same structural bar; error messages frame
 // the file context ("entry %q has..."). Schema-version drift lives in
 // the sentinel, not per-entry laxness — once v1, v1 holds strictly.
-func validateExistingEntry(entry assignmentEntry) error {
+func ValidateExistingEntry(entry AssignmentEntry) error {
 	if entry.Slug == "" {
 		return errors.New("entry has empty slug")
 	}
@@ -498,8 +513,8 @@ func validateExistingEntry(entry assignmentEntry) error {
 	if entry.Mode == "" {
 		return fmt.Errorf("entry %q has empty mode", entry.Slug)
 	}
-	if !isValidAssignmentMode(entry.Mode) {
-		return fmt.Errorf("entry %q has invalid mode %q (must be one of %v)", entry.Slug, entry.Mode, assignmentModes)
+	if !IsValidAssignmentMode(entry.Mode) {
+		return fmt.Errorf("entry %q has invalid mode %q (must be one of %v)", entry.Slug, entry.Mode, AssignmentModes)
 	}
 	if entry.Template.Owner == "" || entry.Template.Repo == "" {
 		return fmt.Errorf("entry %q has empty template owner/repo", entry.Slug)
@@ -507,11 +522,11 @@ func validateExistingEntry(entry assignmentEntry) error {
 	if entry.Template.Branch == "" {
 		return fmt.Errorf("entry %q has empty template branch", entry.Slug)
 	}
-	if err := validateDueDate(entry.Due); err != nil {
+	if err := ValidateDueDate(entry.Due); err != nil {
 		return fmt.Errorf("entry %q: %w", entry.Slug, err)
 	}
 	if entry.DueMeta != nil {
-		if err := validateDueMeta(entry.DueMeta); err != nil {
+		if err := ValidateDueMeta(entry.DueMeta); err != nil {
 			return fmt.Errorf("entry %q: %w", entry.Slug, err)
 		}
 	}
@@ -519,16 +534,16 @@ func validateExistingEntry(entry assignmentEntry) error {
 	// still parse; the strict pattern check still runs because a
 	// hand-edit could otherwise round-trip a malicious name.
 	if entry.Autograder == "" {
-		entry.Autograder = defaultAutograderName
+		entry.Autograder = contract.DefaultAutograderName
 	}
 	if err := validate.ShortName(entry.Autograder, "autograder"); err != nil {
 		return fmt.Errorf("entry %q: %w", entry.Slug, err)
 	}
-	if err := validateMaxGroupSize(entry.MaxGroupSize); err != nil {
+	if err := ValidateMaxGroupSize(entry.MaxGroupSize); err != nil {
 		return fmt.Errorf("entry %q: %w", entry.Slug, err)
 	}
 	switch entry.Mode {
-	case assignmentModeGroup:
+	case ModeGroup:
 		// Parse and write paths share the same strict invariant: a
 		// group assignment must carry a usable size (>= 2). Pre-launch,
 		// we don't preserve older files that predate group support, so
@@ -537,18 +552,18 @@ func validateExistingEntry(entry assignmentEntry) error {
 		if entry.MaxGroupSize < 2 {
 			return fmt.Errorf("entry %q is group mode but max_group_size is %d (must be >= 2)", entry.Slug, entry.MaxGroupSize)
 		}
-	case assignmentModeIndividual:
+	case ModeIndividual:
 		if entry.MaxGroupSize != 0 {
 			return fmt.Errorf("entry %q is individual mode but sets max_group_size %d", entry.Slug, entry.MaxGroupSize)
 		}
 	}
 	if entry.Runtime != nil {
-		if err := validateRuntime(*entry.Runtime); err != nil {
+		if err := ValidateRuntime(*entry.Runtime); err != nil {
 			return fmt.Errorf("entry %q: %w", entry.Slug, err)
 		}
 	}
 	if len(entry.Tests) > 0 {
-		if err := validateTests(entry.Tests); err != nil {
+		if err := ValidateTests(entry.Tests); err != nil {
 			return fmt.Errorf("entry %q: %w", entry.Slug, err)
 		}
 	}

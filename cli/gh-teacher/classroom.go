@@ -11,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/foundation50/classroom50-cli-shared/contract"
+	"github.com/foundation50/gh-teacher/internal/assignment"
 	"github.com/foundation50/gh-teacher/internal/configrepo"
 	"github.com/foundation50/gh-teacher/internal/githubapi"
 	"github.com/foundation50/gh-teacher/internal/output"
@@ -546,10 +547,10 @@ type assignmentBucket struct {
 // four-file scaffold. A nil `entries` is normalized to an empty
 // slice so assignments.json marshals as `[]` (not the `null` Go
 // would otherwise produce). `entries` populates assignments.json
-// through encodeAssignments (same normalization as
+// through assignment.EncodeAssignments (same normalization as
 // `gh teacher assignment add`); `migration` populates the optional
 // `migrated_from` block on classroom.json.
-func classroomScaffold(org, shortName, name, term string, entries []assignmentEntry, migration *configrepo.MigratedFromRef, team *configrepo.TeamRef) (map[string]string, error) {
+func classroomScaffold(org, shortName, name, term string, entries []assignment.AssignmentEntry, migration *configrepo.MigratedFromRef, team *configrepo.TeamRef) (map[string]string, error) {
 	classroom := configrepo.ClassroomJSON{
 		Schema:       classroomSchemaV1,
 		Name:         name,
@@ -565,9 +566,9 @@ func classroomScaffold(org, shortName, name, term string, entries []assignmentEn
 	}
 
 	if entries == nil {
-		entries = []assignmentEntry{}
+		entries = []assignment.AssignmentEntry{}
 	}
-	assignmentsBytes, err := encodeAssignments(assignmentsJSON{
+	assignmentsBytes, err := assignment.EncodeAssignments(assignment.AssignmentsJSON{
 		Schema:      assignmentsSchemaV1,
 		Assignments: entries,
 	})

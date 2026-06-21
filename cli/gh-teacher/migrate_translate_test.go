@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/foundation50/gh-teacher/internal/assignment"
 	"github.com/foundation50/gh-teacher/internal/configrepo"
 	"github.com/foundation50/gh-teacher/internal/validate"
 )
@@ -62,7 +63,7 @@ func TestDeriveShortName(t *testing.T) {
 
 func TestAssignmentToEntry(t *testing.T) {
 	migratedAt := time.Date(2026, time.May, 25, 20, 21, 0, 0, time.UTC)
-	target := templateRef{Owner: "cs50-fall-2026", Repo: "readability", Branch: "main"}
+	target := assignment.TemplateRef{Owner: "cs50-fall-2026", Repo: "readability", Branch: "main"}
 
 	t.Run("individual happy path matches real export", func(t *testing.T) {
 		detail := classroomAssignmentDetail{
@@ -86,8 +87,8 @@ func TestAssignmentToEntry(t *testing.T) {
 		if entry.Slug != "readability" || entry.Name != "readability" {
 			t.Errorf("slug/name = %q/%q, want readability/readability", entry.Slug, entry.Name)
 		}
-		if entry.Mode != assignmentModeIndividual {
-			t.Errorf("mode = %q, want %q", entry.Mode, assignmentModeIndividual)
+		if entry.Mode != assignment.ModeIndividual {
+			t.Errorf("mode = %q, want %q", entry.Mode, assignment.ModeIndividual)
 		}
 		if entry.Template != target {
 			t.Errorf("template = %+v, want %+v", entry.Template, target)
@@ -121,8 +122,8 @@ func TestAssignmentToEntry(t *testing.T) {
 		}
 		// What we produce here is what gets committed, so it must
 		// pass the write-path validator.
-		if err := validateAssignmentEntry(entry); err != nil {
-			t.Errorf("validateAssignmentEntry(produced entry): %v", err)
+		if err := assignment.ValidateAssignmentEntry(entry); err != nil {
+			t.Errorf("assignment.ValidateAssignmentEntry(produced entry): %v", err)
 		}
 	})
 
@@ -159,8 +160,8 @@ func TestAssignmentToEntry(t *testing.T) {
 		if err != nil {
 			t.Fatalf("assignmentToEntry(group, no max_teams): %v", err)
 		}
-		if entry.MaxGroupSize != maxGroupSizeCap {
-			t.Errorf("max_group_size = %d, want the cap %d as fallback", entry.MaxGroupSize, maxGroupSizeCap)
+		if entry.MaxGroupSize != assignment.MaxGroupSizeCap {
+			t.Errorf("max_group_size = %d, want the cap %d as fallback", entry.MaxGroupSize, assignment.MaxGroupSizeCap)
 		}
 	})
 
@@ -178,7 +179,7 @@ func TestAssignmentToEntry(t *testing.T) {
 		if entry.Due != "2026-09-16T03:59:00Z" {
 			t.Errorf("due = %q, want 2026-09-16T03:59:00Z (UTC-normalized)", entry.Due)
 		}
-		wantMeta := &dueMeta{Input: deadline, Offset: "-04:00", Source: dueSourceMigrated}
+		wantMeta := &assignment.DueMeta{Input: deadline, Offset: "-04:00", Source: assignment.DueSourceMigrated}
 		if !reflect.DeepEqual(entry.DueMeta, wantMeta) {
 			t.Errorf("due_meta = %#v, want %#v", entry.DueMeta, wantMeta)
 		}

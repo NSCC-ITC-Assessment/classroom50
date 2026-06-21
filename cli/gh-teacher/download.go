@@ -18,6 +18,7 @@ import (
 	"github.com/cli/go-gh/v2/pkg/auth"
 	"github.com/spf13/cobra"
 
+	"github.com/foundation50/gh-teacher/internal/assignment"
 	"github.com/foundation50/gh-teacher/internal/cliutil"
 	"github.com/foundation50/gh-teacher/internal/configrepo"
 	"github.com/foundation50/gh-teacher/internal/githubapi"
@@ -415,7 +416,7 @@ func downloadByPattern(client githubapi.Client, out, errOut io.Writer, org, clas
 // assignmentRegistered: case-insensitive slug membership check. The
 // slug flows into repo names lowercased, so a mixed-case argument
 // still matches.
-func assignmentRegistered(assignments assignmentsJSON, slug string) bool {
+func assignmentRegistered(assignments assignment.AssignmentsJSON, slug string) bool {
 	for _, entry := range assignments.Assignments {
 		if strings.EqualFold(entry.Slug, slug) {
 			return true
@@ -429,10 +430,10 @@ func assignmentRegistered(assignments assignmentsJSON, slug string) bool {
 // a derived repo (`<classroom>-<assignment>-<owner>`); teammates join
 // that repo, so their own derived repo legitimately doesn't exist and a
 // 404 on it is not a "missing submission".
-func assignmentIsGroup(assignments assignmentsJSON, slug string) bool {
+func assignmentIsGroup(assignments assignment.AssignmentsJSON, slug string) bool {
 	for _, entry := range assignments.Assignments {
 		if strings.EqualFold(entry.Slug, slug) {
-			return strings.EqualFold(entry.Mode, assignmentModeGroup)
+			return strings.EqualFold(entry.Mode, assignment.ModeGroup)
 		}
 	}
 	return false

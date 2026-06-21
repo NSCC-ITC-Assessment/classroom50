@@ -1,4 +1,4 @@
-package main
+package assignment
 
 import (
 	"bytes"
@@ -21,7 +21,7 @@ import (
 // grade job as bundle data — never interpolated into workflow YAML — and
 // students can't edit assignments.json. See wiki/Autograders.md.
 
-// testSpec is one declarative test, of one of three types:
+// TestSpec is one declarative test, of one of three types:
 //
 //   - "io": feed Input (or InputFile) on stdin, compare stdout against
 //     Expected (or ExpectedFile) per Comparison.
@@ -30,7 +30,7 @@ import (
 //
 // Points has no omitempty so a 0-point informational test reads
 // explicitly; io-only fields and ExitCode omit when unset.
-type testSpec struct {
+type TestSpec struct {
 	Name         string `json:"name"`
 	Type         string `json:"type"`
 	Setup        string `json:"setup,omitempty"`
@@ -69,7 +69,7 @@ var comparisonModes = []string{comparisonExact, comparisonIncluded, comparisonRe
 
 // Bounds: generous for real assignments, tight enough that a hand-edited
 // assignments.json can't wedge the gradebook or blow past the
-// contents-API size ceiling (largeAssignmentsWarnBytes).
+// contents-API size ceiling (LargeAssignmentsWarnBytes).
 const (
 	maxTestsPerAssignment = 100
 	minTimeoutSeconds     = 1
@@ -98,17 +98,17 @@ func isValidComparison(s string) bool {
 	return false
 }
 
-// validateTests checks an assignment's test list on both the write path
-// (validateAssignmentEntry) and parse path (validateExistingEntry):
+// ValidateTests checks an assignment's test list on both the write path
+// (ValidateAssignmentEntry) and parse path (ValidateExistingEntry):
 // count cap, per-spec validation, and unique names (a test's name is its
 // identity in result.json and the release body).
-func validateTests(tests []testSpec) error {
+func ValidateTests(tests []TestSpec) error {
 	if len(tests) > maxTestsPerAssignment {
 		return fmt.Errorf("too many tests: %d exceeds the per-assignment cap of %d", len(tests), maxTestsPerAssignment)
 	}
 	seen := make(map[string]bool, len(tests))
 	for i, t := range tests {
-		if err := validateTestSpec(t); err != nil {
+		if err := ValidateTestSpec(t); err != nil {
 			return fmt.Errorf("tests[%d]: %w", i, err)
 		}
 		if seen[t.Name] {
@@ -119,10 +119,10 @@ func validateTests(tests []testSpec) error {
 	return nil
 }
 
-// validateTestSpec checks one test. Field applicability is strict
+// ValidateTestSpec checks one test. Field applicability is strict
 // (io-only fields rejected on run/python tests, exit-code only on run)
 // so a mistyped spec fails loudly instead of being silently ignored.
-func validateTestSpec(t testSpec) error {
+func ValidateTestSpec(t TestSpec) error {
 	if t.Name == "" {
 		return errors.New("name must not be empty")
 	}
@@ -153,7 +153,7 @@ func validateTestSpec(t testSpec) error {
 
 // validateIOFields enforces the io-test shape: valid comparison mode,
 // inline-vs-file fields mutually exclusive, no exit-code.
-func validateIOFields(t testSpec) error {
+func validateIOFields(t TestSpec) error {
 	if !isValidComparison(t.Comparison) {
 		return fmt.Errorf("comparison %q invalid for an io test: must be one of %v", t.Comparison, comparisonModes)
 	}
@@ -181,7 +181,7 @@ func validateIOFields(t testSpec) error {
 
 // validateNonIOFields rejects io-only fields on run/python tests and
 // bounds exit-code (run only).
-func validateNonIOFields(t testSpec) error {
+func validateNonIOFields(t TestSpec) error {
 	for _, f := range []struct{ name, value string }{
 		{"input", t.Input},
 		{"input-file", t.InputFile},
@@ -215,18 +215,18 @@ func validateNoControlChars(s, label string) error {
 	return nil
 }
 
-// parseTestsFile loads and validates `--tests <path>` (`-` = stdin): a
+// ParseTestsFile loads and validates `--tests <path>` (`-` = stdin): a
 // bare JSON array of test specs, the same shape as the `tests` field in
 // assignments.json. Empty path -> (nil, nil) ("flag omitted"). Mirrors
-// parseRuntimeFile, including DisallowUnknownFields so a typo'd key
+// ParseRuntimeFile, including DisallowUnknownFields so a typo'd key
 // fails loudly instead of being silently dropped.
-func parseTestsFile(path string) ([]testSpec, error) {
+func ParseTestsFile(path string) ([]TestSpec, error) {
 	return parseTestsFileFrom(path, os.Stdin)
 }
 
-// parseTestsFileFrom is the testable seam for parseTestsFile (injectable
+// parseTestsFileFrom is the testable seam for ParseTestsFile (injectable
 // stdin for the `-` path).
-func parseTestsFileFrom(path string, stdin io.Reader) ([]testSpec, error) {
+func parseTestsFileFrom(path string, stdin io.Reader) ([]TestSpec, error) {
 	if path == "" {
 		return nil, nil
 	}
@@ -248,7 +248,7 @@ func parseTestsFileFrom(path string, stdin io.Reader) ([]testSpec, error) {
 	if len(bytes.TrimSpace(data)) == 0 {
 		return nil, fmt.Errorf("--tests %s is empty", label)
 	}
-	var tests []testSpec
+	var tests []TestSpec
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&tests); err != nil {
@@ -257,15 +257,15 @@ func parseTestsFileFrom(path string, stdin io.Reader) ([]testSpec, error) {
 	if err := expectEOF(dec); err != nil {
 		return nil, fmt.Errorf("parse --tests %s: %w", label, err)
 	}
-	if err := validateTests(tests); err != nil {
+	if err := ValidateTests(tests); err != nil {
 		return nil, fmt.Errorf("--tests %s: %w", label, err)
 	}
 	return tests, nil
 }
 
-// upsertTest replaces a test by Name (position-preserving) or appends it.
+// UpsertTest replaces a test by Name (position-preserving) or appends it.
 // Returns the slice and whether an existing test was replaced.
-func upsertTest(tests []testSpec, spec testSpec) ([]testSpec, bool) {
+func UpsertTest(tests []TestSpec, spec TestSpec) ([]TestSpec, bool) {
 	for i := range tests {
 		if tests[i].Name == spec.Name {
 			tests[i] = spec
@@ -275,9 +275,9 @@ func upsertTest(tests []testSpec, spec testSpec) ([]testSpec, bool) {
 	return append(tests, spec), false
 }
 
-// removeTest drops a test by Name. Returns the slice and whether a test
+// RemoveTest drops a test by Name. Returns the slice and whether a test
 // was removed.
-func removeTest(tests []testSpec, name string) ([]testSpec, bool) {
+func RemoveTest(tests []TestSpec, name string) ([]TestSpec, bool) {
 	for i := range tests {
 		if tests[i].Name == name {
 			return append(tests[:i], tests[i+1:]...), true
@@ -286,9 +286,9 @@ func removeTest(tests []testSpec, name string) ([]testSpec, bool) {
 	return tests, false
 }
 
-// perAssignmentAutograderPath is the config-repo path of a slug's
+// PerAssignmentAutograderPath is the config-repo path of a slug's
 // hand-written entrypoint, probed by the tests-vs-autograder.py
 // conflict check.
-func perAssignmentAutograderPath(classroom, slug string) string {
+func PerAssignmentAutograderPath(classroom, slug string) string {
 	return classroom + "/autograders/" + slug + "/autograder.py"
 }

@@ -5,6 +5,8 @@ import (
 	"testing"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/foundation50/gh-teacher/internal/assignment"
 )
 
 // TestSkeletonFiles_Manifest pins every path the init skeleton
@@ -210,7 +212,7 @@ func TestSkeletonFiles_AutogradeRunner(t *testing.T) {
 	// runtime.container.user → container.options translation must use
 	// an explicit allow-list build (`emitted = {"image": image}` etc.)
 	// rather than copying unknown keys through. Mirrors Go's
-	// `containerSpec` + DisallowUnknownFields.
+	// `assignment.ContainerSpec` + DisallowUnknownFields.
 	for _, want := range []string{
 		`_RUNTIME_KEYS = {"runs-on", "container", "python", "node", "java", "go", "apt"}`,
 		`_CONTAINER_KEYS = {"image", "credentials", "user"}`,
@@ -278,8 +280,8 @@ func TestSkeletonFiles_AutogradeRunner(t *testing.T) {
 }
 
 // TestRegexParity_GoVsInlinePython enforces that the regex/allow-list
-// constants duplicated between cli/gh-teacher/runtime.go and the
-// inline Python validator in autograde-runner.yaml stay in lockstep.
+// constants duplicated between cli/gh-teacher/internal/assignment/runtime.go
+// and the inline Python validator in autograde-runner.yaml stay in lockstep.
 // Drift would let the CLI write a value the runtime workflow rejects
 // (or vice versa), surfacing only on the next student submission.
 func TestRegexParity_GoVsInlinePython(t *testing.T) {
@@ -301,11 +303,11 @@ func TestRegexParity_GoVsInlinePython(t *testing.T) {
 		goPattern string
 	}
 	pairs := []pair{
-		{"languageVersionPattern", languageVersionPattern.String()},
-		{"aptPackagePattern", aptPackagePattern.String()},
-		{"containerImagePattern", containerImagePattern.String()},
-		{"secretRefPattern", secretRefPattern.String()},
-		{"containerUserPattern", containerUserPattern.String()},
+		{"assignment.LanguageVersionPattern", assignment.LanguageVersionPattern.String()},
+		{"assignment.AptPackagePattern", assignment.AptPackagePattern.String()},
+		{"assignment.ContainerImagePattern", assignment.ContainerImagePattern.String()},
+		{"assignment.SecretRefPattern", assignment.SecretRefPattern.String()},
+		{"assignment.ContainerUserPattern", assignment.ContainerUserPattern.String()},
 	}
 	for _, p := range pairs {
 		if !strings.Contains(runner, p.goPattern) {
@@ -313,9 +315,9 @@ func TestRegexParity_GoVsInlinePython(t *testing.T) {
 		}
 	}
 
-	// allowedRunsOnLabels is a set, not a regex; assert each label
+	// assignment.AllowedRunsOnLabels is a set, not a regex; assert each label
 	// appears in the inline Python's _ALLOWED_RUNS_ON declaration.
-	for label := range allowedRunsOnLabels {
+	for label := range assignment.AllowedRunsOnLabels {
 		if !strings.Contains(runner, `"`+label+`"`) {
 			t.Errorf("inline Python validator missing allow-listed runs-on label %q", label)
 		}

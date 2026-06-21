@@ -4,6 +4,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/foundation50/gh-teacher/internal/assignment"
 )
 
 func TestParseTemplateRef_HappyPaths(t *testing.T) {
@@ -74,7 +76,7 @@ func TestNormalizeDueDate(t *testing.T) {
 		name     string
 		in       string
 		wantOut  string
-		wantMeta *dueMeta
+		wantMeta *assignment.DueMeta
 		wantErr  bool
 	}{
 		// --due is optional.
@@ -84,13 +86,13 @@ func TestNormalizeDueDate(t *testing.T) {
 			name:     "explicit offset normalizes to UTC",
 			in:       "2026-09-15T23:59:00-04:00",
 			wantOut:  "2026-09-16T03:59:00Z",
-			wantMeta: &dueMeta{Input: "2026-09-15T23:59:00-04:00", Offset: "-04:00", Source: dueSourceExplicit},
+			wantMeta: &assignment.DueMeta{Input: "2026-09-15T23:59:00-04:00", Offset: "-04:00", Source: assignment.DueSourceExplicit},
 		},
 		{
 			name:     "Z stays UTC",
 			in:       "2026-09-15T23:59:00Z",
 			wantOut:  "2026-09-15T23:59:00Z",
-			wantMeta: &dueMeta{Input: "2026-09-15T23:59:00Z", Offset: "+00:00", Source: dueSourceExplicit},
+			wantMeta: &assignment.DueMeta{Input: "2026-09-15T23:59:00Z", Offset: "+00:00", Source: assignment.DueSourceExplicit},
 		},
 		// Sub-second precision parses but is dropped on the UTC
 		// re-format -- deadlines don't need it.
@@ -98,7 +100,7 @@ func TestNormalizeDueDate(t *testing.T) {
 			name:     "sub-second precision is dropped",
 			in:       "2026-09-15T23:59:00.123Z",
 			wantOut:  "2026-09-15T23:59:00Z",
-			wantMeta: &dueMeta{Input: "2026-09-15T23:59:00.123Z", Offset: "+00:00", Source: dueSourceExplicit},
+			wantMeta: &assignment.DueMeta{Input: "2026-09-15T23:59:00.123Z", Offset: "+00:00", Source: assignment.DueSourceExplicit},
 		},
 		// Zone-less -> adopt the detected local zone, then UTC. This
 		// is the requirement-2 path; due_meta records the detection.
@@ -106,7 +108,7 @@ func TestNormalizeDueDate(t *testing.T) {
 			name:     "zone-less adopts detected local zone",
 			in:       "2026-09-15T23:59:00",
 			wantOut:  "2026-09-16T03:59:00Z",
-			wantMeta: &dueMeta{Input: "2026-09-15T23:59:00", Zone: "America/New_York", Offset: "-04:00", Source: dueSourceAuto},
+			wantMeta: &assignment.DueMeta{Input: "2026-09-15T23:59:00", Zone: "America/New_York", Offset: "-04:00", Source: assignment.DueSourceAuto},
 		},
 		// Date-only is ambiguous (which time of day?) -- still
 		// rejected; require a full timestamp.
@@ -154,7 +156,7 @@ func TestNormalizeDueDate_UnresolvableTZ(t *testing.T) {
 	if got != "2026-09-16T03:59:00Z" {
 		t.Errorf("out = %q, want 2026-09-16T03:59:00Z", got)
 	}
-	if meta == nil || meta.Source != dueSourceExplicit {
+	if meta == nil || meta.Source != assignment.DueSourceExplicit {
 		t.Errorf("meta = %#v, want explicit-offset provenance", meta)
 	}
 }
@@ -169,7 +171,7 @@ func TestResolveTemplateBranch(t *testing.T) {
 		arg         templateArg
 		isTemplate  bool
 		defaultBr   string
-		wantRef     templateRef
+		wantRef     assignment.TemplateRef
 		wantErrPart string // empty → expect success
 	}{
 		{
@@ -184,21 +186,21 @@ func TestResolveTemplateBranch(t *testing.T) {
 			arg:        templateArg{Owner: "cs50", Repo: "hello-template", Branch: "feature/foo"},
 			isTemplate: true,
 			defaultBr:  "main",
-			wantRef:    templateRef{Owner: "cs50", Repo: "hello-template", Branch: "feature/foo"},
+			wantRef:    assignment.TemplateRef{Owner: "cs50", Repo: "hello-template", Branch: "feature/foo"},
 		},
 		{
 			name:       "no @branch falls back to default_branch (master)",
 			arg:        templateArg{Owner: "cs50", Repo: "hello-template"},
 			isTemplate: true,
 			defaultBr:  "master",
-			wantRef:    templateRef{Owner: "cs50", Repo: "hello-template", Branch: "master"},
+			wantRef:    assignment.TemplateRef{Owner: "cs50", Repo: "hello-template", Branch: "master"},
 		},
 		{
 			name:       "no @branch falls back to default_branch (main)",
 			arg:        templateArg{Owner: "cs50", Repo: "hello-template"},
 			isTemplate: true,
 			defaultBr:  "main",
-			wantRef:    templateRef{Owner: "cs50", Repo: "hello-template", Branch: "main"},
+			wantRef:    assignment.TemplateRef{Owner: "cs50", Repo: "hello-template", Branch: "main"},
 		},
 		{
 			name:        "no @branch and empty default_branch → defensive error",
@@ -234,7 +236,7 @@ func TestFormatAssignmentListJSON(t *testing.T) {
 	t.Run("empty entries serialize as `[]\\n`", func(t *testing.T) {
 		// nil and empty-slice MUST both produce `[]` so downstream
 		// consumers (jq, agents) see a stable empty array, not `null`.
-		for _, in := range [][]assignmentEntry{nil, {}} {
+		for _, in := range [][]assignment.AssignmentEntry{nil, {}} {
 			got, err := formatAssignmentListJSON(in)
 			if err != nil {
 				t.Fatalf("formatAssignmentListJSON(%v): %v", in, err)
@@ -246,12 +248,12 @@ func TestFormatAssignmentListJSON(t *testing.T) {
 	})
 
 	t.Run("populated entries preserve every field and use 2-space indent", func(t *testing.T) {
-		entries := []assignmentEntry{
+		entries := []assignment.AssignmentEntry{
 			{
 				Slug:        "hello",
 				Name:        "Hello",
 				Description: "First assignment",
-				Template:    templateRef{Owner: "cs50", Repo: "hello-template", Branch: "main"},
+				Template:    assignment.TemplateRef{Owner: "cs50", Repo: "hello-template", Branch: "main"},
 				Due:         "2026-09-15T23:59:00-04:00",
 				Mode:        "individual",
 				Autograder:  "default",
@@ -288,13 +290,13 @@ func TestFormatAssignmentListJSON(t *testing.T) {
 	})
 
 	t.Run("empty autograder normalizes to \"default\"", func(t *testing.T) {
-		// Matches encodeAssignments's on-disk shape so consumers see
+		// Matches assignment.EncodeAssignments's on-disk shape so consumers see
 		// the uniform default.
-		entries := []assignmentEntry{
+		entries := []assignment.AssignmentEntry{
 			{
 				Slug:     "intro",
 				Name:     "Intro",
-				Template: templateRef{Owner: "cs50", Repo: "intro-template", Branch: "main"},
+				Template: assignment.TemplateRef{Owner: "cs50", Repo: "intro-template", Branch: "main"},
 				Mode:     "individual",
 			},
 		}

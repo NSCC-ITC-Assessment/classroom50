@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/foundation50/gh-teacher/internal/assignment"
 	"github.com/foundation50/gh-teacher/internal/configrepo"
 	"github.com/foundation50/gh-teacher/internal/validate"
 )
@@ -140,7 +141,7 @@ func TestClassroomScaffold(t *testing.T) {
 		t.Errorf("classroom.json org = %q, want %q", classroom.Org, "cs50-fall-2026")
 	}
 
-	var assignments assignmentsJSON
+	var assignments assignment.AssignmentsJSON
 	if err := json.Unmarshal([]byte(files["cs-principles/assignments.json"]), &assignments); err != nil {
 		t.Fatalf("assignments.json invalid: %v", err)
 	}
