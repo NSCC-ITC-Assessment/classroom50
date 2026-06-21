@@ -145,8 +145,8 @@ func TestSkeletonFiles_AutogradeRunner(t *testing.T) {
 	}
 
 	// === grade job ===
-	if got, _ := nested(doc, "jobs", "grade", "runs-on"); got != "${{ needs.setup.outputs.runs-on }}" {
-		t.Errorf("grade.runs-on = %v, want needs.setup.outputs.runs-on parameterization", got)
+	if got, _ := nested(doc, "jobs", "grade", "runs-on"); got != "${{ fromJSON(needs.setup.outputs.runs-on) }}" {
+		t.Errorf("grade.runs-on = %v, want fromJSON(needs.setup.outputs.runs-on) parameterization (runs-on is emitted as a JSON array to support multi-label custom runners)", got)
 	}
 	if got, _ := nested(doc, "jobs", "grade", "container"); got != "${{ fromJSON(needs.setup.outputs.container) }}" {
 		t.Errorf("grade.container = %v, want fromJSON(needs.setup.outputs.container)", got)
@@ -308,18 +308,11 @@ func TestRegexParity_GoVsInlinePython(t *testing.T) {
 		{"assignment.ContainerImagePattern", assignment.ContainerImagePattern.String()},
 		{"assignment.SecretRefPattern", assignment.SecretRefPattern.String()},
 		{"assignment.ContainerUserPattern", assignment.ContainerUserPattern.String()},
+		{"assignment.RunsOnLabelPattern", assignment.RunsOnLabelPattern.String()},
 	}
 	for _, p := range pairs {
 		if !strings.Contains(runner, p.goPattern) {
 			t.Errorf("inline Python validator missing regex literal mirrored from %s: %q", p.name, p.goPattern)
-		}
-	}
-
-	// assignment.AllowedRunsOnLabels is a set, not a regex; assert each label
-	// appears in the inline Python's _ALLOWED_RUNS_ON declaration.
-	for label := range assignment.AllowedRunsOnLabels {
-		if !strings.Contains(runner, `"`+label+`"`) {
-			t.Errorf("inline Python validator missing allow-listed runs-on label %q", label)
 		}
 	}
 }

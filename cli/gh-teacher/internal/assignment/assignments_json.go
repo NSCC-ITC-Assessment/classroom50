@@ -259,16 +259,23 @@ type TemplateRef struct {
 //
 // Two paths, mutually exclusive:
 //
-//  1. Host runner — set RunsOn (allow-listed against GitHub-hosted
-//     labels) plus optional language fields and Apt packages.
+//  1. Host runner — set RunsOn (one or more runner labels) plus
+//     optional language fields and Apt packages.
 //  2. Container image — set Container.Image; the image controls the
 //     environment, so Apt is forbidden. Language fields still apply
 //     (setup-X actions run inside the container).
 //
+// RunsOn mirrors GitHub Actions' own `runs-on`: a single label
+// ("ubuntu-latest") or an array (["self-hosted", "gpu"]) for custom /
+// self-hosted runners (issue #97). No value allow-list —
+// the teacher owns the label, as in a hand-written workflow; each is
+// only injection-checked (RunsOnLabelPattern) since it flows verbatim
+// into the workflow's `runs-on`.
+//
 // All fields optional; an absent RuntimeRef means "use defaults"
 // (ubuntu-latest + Python 3.12, no extra packages).
 type RuntimeRef struct {
-	RunsOn    string         `json:"runs-on,omitempty"`
+	RunsOn    RunsOn         `json:"runs-on,omitempty"`
 	Container *ContainerSpec `json:"container,omitempty"`
 	Python    string         `json:"python,omitempty"`
 	Node      string         `json:"node,omitempty"`
@@ -277,7 +284,61 @@ type RuntimeRef struct {
 	Apt       []string       `json:"apt,omitempty"`
 }
 
-// ContainerSpec maps to GitHub Actions' job-level `container:`
+// RunsOn models GitHub Actions' polymorphic `runs-on` (a single label
+// or an array of labels), normalized to a []string. An empty RunsOn
+// means "use the default" (ubuntu-latest) and is omitted from JSON.
+// MarshalJSON preserves the author's shape: one label round-trips as a
+// string (what teachers write), many as an array.
+type RunsOn []string
+
+func (r RunsOn) MarshalJSON() ([]byte, error) {
+	if len(r) == 1 {
+		return json.Marshal(r[0])
+	}
+	return json.Marshal([]string(r))
+}
+
+// UnmarshalJSON accepts a string, an array of strings, or null/absent
+// (meaning "use the default"). The degenerate present-but-empty shapes
+// — "" and [] — are rejected so this parser, the inline-Python
+// validator (autograde-runner.yaml), and the JSON schema (oneOf,
+// minItems:1) all agree that only an OMITTED runs-on means default,
+// upholding the invariant that a CLI-accepted value is never rejected
+// by a schema-validating client. Any other shape (number, object,
+// array-of-non-strings) is a hard error so a malformed runs-on fails
+// at parse rather than emitting a broken workflow value.
+func (r *RunsOn) UnmarshalJSON(data []byte) error {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 || string(trimmed) == "null" {
+		*r = nil
+		return nil
+	}
+	switch trimmed[0] {
+	case '"':
+		var s string
+		if err := json.Unmarshal(trimmed, &s); err != nil {
+			return err
+		}
+		if s == "" {
+			return errors.New(`runtime.runs-on must not be an empty string; omit the field to use the default (ubuntu-latest)`)
+		}
+		*r = RunsOn{s}
+		return nil
+	case '[':
+		var labels []string
+		if err := json.Unmarshal(trimmed, &labels); err != nil {
+			return fmt.Errorf("runtime.runs-on array must contain only strings: %w", err)
+		}
+		if len(labels) == 0 {
+			return errors.New(`runtime.runs-on must not be an empty array; omit the field to use the default (ubuntu-latest)`)
+		}
+		*r = RunsOn(labels)
+		return nil
+	default:
+		return fmt.Errorf("runtime.runs-on must be a label string or an array of label strings, got %s", string(trimmed))
+	}
+}
+
 // keyword. `Credentials.Password` must be a `${{ secrets.NAME }}`
 // reference at write time (raw tokens are rejected so they can't
 // land in git history) — see SecretRefPattern in runtime.go.

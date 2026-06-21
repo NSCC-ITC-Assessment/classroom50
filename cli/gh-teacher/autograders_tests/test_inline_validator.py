@@ -199,7 +199,9 @@ class TestValidatorHappyPaths:
             manifest=_manifest(),
         )
         assert rc == 0
-        assert outputs.get("runs-on") == "ubuntu-latest"
+        # runs-on is emitted as a JSON array (consumed via fromJSON) so
+        # multi-label custom runners share one code path with hosted labels.
+        assert outputs.get("runs-on") == '["ubuntu-latest"]'
         assert outputs.get("python") == "3.12"
         assert outputs.get("container") == "null"
 
@@ -214,7 +216,7 @@ class TestValidatorHappyPaths:
             }),
         )
         assert rc == 0
-        assert outputs["runs-on"] == "ubuntu-22.04"
+        assert outputs["runs-on"] == '["ubuntu-22.04"]'
         assert outputs["python"] == "3.11"
         assert outputs["apt"] == "build-essential valgrind"
         assert outputs["container"] == "null"
@@ -233,6 +235,124 @@ class TestValidatorHappyPaths:
         assert container["options"] == "--user root"
         # `user` is NOT emitted — Actions doesn't accept container.user.
         assert "user" not in container
+
+    def test_custom_runner_array_emitted_as_array(self, inline_script, tmp_path):
+        # Custom / self-hosted runner (issue #97): a runs-on
+        # array bypasses any hosted-label assumption and is emitted
+        # verbatim as the runs-on JSON array.
+        rc, _stdout, _stderr, outputs = _run_validator(
+            inline_script, tmp_path,
+            classroom50_yaml=_classroom_yaml(),
+            manifest=_manifest(runtime={
+                "runs-on": ["self-hosted", "gpu"],
+                "python": "3.12",
+            }),
+        )
+        assert rc == 0
+        assert json.loads(outputs["runs-on"]) == ["self-hosted", "gpu"]
+        assert outputs["python"] == "3.12"
+        assert outputs["container"] == "null"
+
+    def test_custom_single_label_emitted_as_array(self, inline_script, tmp_path):
+        # A single arbitrary (non-hosted) label string is accepted with
+        # no allow-list and normalized into the one-element runs-on array.
+        rc, _stdout, _stderr, outputs = _run_validator(
+            inline_script, tmp_path,
+            classroom50_yaml=_classroom_yaml(),
+            manifest=_manifest(runtime={"runs-on": "self-hosted"}),
+        )
+        assert rc == 0
+        assert json.loads(outputs["runs-on"]) == ["self-hosted"]
+
+
+# ---------------------------------------------------------------------------
+# runs-on rejection paths (mirror runtime.go ValidateRunsOn)
+# ---------------------------------------------------------------------------
+
+
+class TestRunsOnRejection:
+    def test_runs_on_label_with_metacharacters_rejected(self, inline_script, tmp_path):
+        rc, _stdout, stderr, _outputs = _run_validator(
+            inline_script, tmp_path,
+            classroom50_yaml=_classroom_yaml(),
+            manifest=_manifest(runtime={"runs-on": "self-hosted; rm -rf /"}),
+        )
+        assert rc != 0
+        assert "runtime.runs-on" in stderr
+
+    def test_runs_on_array_element_with_whitespace_rejected(self, inline_script, tmp_path):
+        rc, _stdout, stderr, _outputs = _run_validator(
+            inline_script, tmp_path,
+            classroom50_yaml=_classroom_yaml(),
+            manifest=_manifest(runtime={"runs-on": ["self hosted"]}),
+        )
+        assert rc != 0
+        assert "runtime.runs-on" in stderr
+
+    def test_too_many_runs_on_labels_rejected(self, inline_script, tmp_path):
+        rc, _stdout, stderr, _outputs = _run_validator(
+            inline_script, tmp_path,
+            classroom50_yaml=_classroom_yaml(),
+            manifest=_manifest(runtime={"runs-on": [f"l{i}" for i in range(11)]}),
+        )
+        assert rc != 0
+        assert "max 10" in stderr
+
+    def test_runs_on_wrong_type_rejected(self, inline_script, tmp_path):
+        rc, _stdout, stderr, _outputs = _run_validator(
+            inline_script, tmp_path,
+            classroom50_yaml=_classroom_yaml(),
+            manifest=_manifest(runtime={"runs-on": 123}),
+        )
+        assert rc != 0
+        assert "Traceback" not in stderr
+        assert "runtime.runs-on" in stderr
+
+    def test_empty_string_runs_on_rejected(self, inline_script, tmp_path):
+        # Degenerate present-but-empty form: rejected so the inline
+        # validator agrees with Go's UnmarshalJSON and the schema.
+        rc, _stdout, stderr, _outputs = _run_validator(
+            inline_script, tmp_path,
+            classroom50_yaml=_classroom_yaml(),
+            manifest=_manifest(runtime={"runs-on": ""}),
+        )
+        assert rc != 0
+        assert "empty string" in stderr
+
+    def test_empty_array_runs_on_rejected(self, inline_script, tmp_path):
+        # Degenerate present-but-empty form: rejected (omit runs-on to
+        # use the default). Mirrors Go + the schema's minItems:1.
+        rc, _stdout, stderr, _outputs = _run_validator(
+            inline_script, tmp_path,
+            classroom50_yaml=_classroom_yaml(),
+            manifest=_manifest(runtime={"runs-on": []}),
+        )
+        assert rc != 0
+        assert "empty array" in stderr
+
+    def test_array_with_non_string_element_rejected(self, inline_script, tmp_path):
+        rc, _stdout, stderr, _outputs = _run_validator(
+            inline_script, tmp_path,
+            classroom50_yaml=_classroom_yaml(),
+            manifest=_manifest(runtime={"runs-on": ["self-hosted", 1]}),
+        )
+        assert rc != 0
+        assert "Traceback" not in stderr
+        assert "runtime.runs-on" in stderr
+
+    def test_multi_label_array_with_windows_and_container_rejected(self, inline_script, tmp_path):
+        # The macos-/windows- container rejection must fire on any
+        # element of a multi-label array, not just a single label.
+        rc, _stdout, stderr, _outputs = _run_validator(
+            inline_script, tmp_path,
+            classroom50_yaml=_classroom_yaml(),
+            manifest=_manifest(runtime={
+                "runs-on": ["self-hosted", "windows-2022"],
+                "container": {"image": "ubuntu:24.04"},
+            }),
+        )
+        assert rc != 0
+        assert "Ubuntu hosts only" in stderr
 
 
 # ---------------------------------------------------------------------------
@@ -351,7 +471,7 @@ class TestDeclarativeTestsValidation:
             ]),
         )
         assert rc == 0
-        assert outputs.get("runs-on") == "ubuntu-latest"
+        assert outputs.get("runs-on") == '["ubuntu-latest"]'
         # Test specs are bundle data, never workflow outputs.
         joined = "\n".join(f"{k}={v}" for k, v in outputs.items())
         assert "gcc" not in joined

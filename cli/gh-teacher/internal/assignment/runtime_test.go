@@ -19,7 +19,7 @@ func TestValidateRuntime_HostPaths(t *testing.T) {
 		},
 		{
 			name:    "ubuntu-latest with python",
-			runtime: RuntimeRef{RunsOn: "ubuntu-latest", Python: "3.12"},
+			runtime: RuntimeRef{RunsOn: RunsOn{"ubuntu-latest"}, Python: "3.12"},
 		},
 		{
 			name:    "all language fields",
@@ -30,14 +30,40 @@ func TestValidateRuntime_HostPaths(t *testing.T) {
 			runtime: RuntimeRef{Apt: []string{"build-essential", "valgrind", "lib-fake.dev"}},
 		},
 		{
-			name:    "self-hosted runner rejected",
-			runtime: RuntimeRef{RunsOn: "self-hosted-grading"},
-			wantErr: "allow-list",
+			name:    "self-hosted single label accepted",
+			runtime: RuntimeRef{RunsOn: RunsOn{"self-hosted"}},
 		},
 		{
-			name:    "unknown github label rejected",
-			runtime: RuntimeRef{RunsOn: "ubuntu-30.04"},
-			wantErr: "allow-list",
+			name:    "custom multi-label runs-on accepted",
+			runtime: RuntimeRef{RunsOn: RunsOn{"self-hosted", "gpu", "linux-x64"}},
+		},
+		{
+			name:    "custom runner with language toolchain accepted",
+			runtime: RuntimeRef{RunsOn: RunsOn{"self-hosted"}, Python: "3.12"},
+		},
+		{
+			name:    "arbitrary unknown label accepted (no allow-list)",
+			runtime: RuntimeRef{RunsOn: RunsOn{"ubuntu-30.04"}},
+		},
+		{
+			name:    "runs-on label with whitespace rejected",
+			runtime: RuntimeRef{RunsOn: RunsOn{"self hosted"}},
+			wantErr: "runtime.runs-on",
+		},
+		{
+			name:    "runs-on label with shell metacharacters rejected",
+			runtime: RuntimeRef{RunsOn: RunsOn{"self-hosted; rm -rf /"}},
+			wantErr: "runtime.runs-on",
+		},
+		{
+			name:    "too many runs-on labels rejected",
+			runtime: RuntimeRef{RunsOn: RunsOn{"a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k"}},
+			wantErr: "max 10",
+		},
+		{
+			name:    "blank label in runs-on rejected",
+			runtime: RuntimeRef{RunsOn: RunsOn{""}},
+			wantErr: "runtime.runs-on",
 		},
 		{
 			name:    "python version with semicolon rejected",
@@ -99,6 +125,13 @@ func TestValidateRuntime_ContainerPaths(t *testing.T) {
 			},
 		},
 		{
+			name: "container on a self-hosted runner accepted",
+			runtime: RuntimeRef{
+				RunsOn:    RunsOn{"self-hosted", "linux"},
+				Container: &ContainerSpec{Image: "ghcr.io/cs50/grading-env:1.2"},
+			},
+		},
+		{
 			name: "image with apt rejected",
 			runtime: RuntimeRef{
 				Container: &ContainerSpec{Image: "ubuntu:24.04"},
@@ -109,7 +142,15 @@ func TestValidateRuntime_ContainerPaths(t *testing.T) {
 		{
 			name: "macos runs-on with container rejected",
 			runtime: RuntimeRef{
-				RunsOn:    "macos-latest",
+				RunsOn:    RunsOn{"macos-latest"},
+				Container: &ContainerSpec{Image: "ubuntu:24.04"},
+			},
+			wantErr: "Ubuntu hosts only",
+		},
+		{
+			name: "windows label in multi-label array with container rejected",
+			runtime: RuntimeRef{
+				RunsOn:    RunsOn{"self-hosted", "windows-2022"},
 				Container: &ContainerSpec{Image: "ubuntu:24.04"},
 			},
 			wantErr: "Ubuntu hosts only",
@@ -286,7 +327,7 @@ func TestParseRuntimeFile_HappyPath(t *testing.T) {
 		t.Fatal("got nil RuntimeRef on happy path")
 		return
 	}
-	if got.RunsOn != "ubuntu-latest" || got.Python != "3.12" {
+	if len(got.RunsOn) != 1 || got.RunsOn[0] != "ubuntu-latest" || got.Python != "3.12" {
 		t.Errorf("fields not parsed: %#v", got)
 	}
 	if len(got.Apt) != 1 || got.Apt[0] != "build-essential" {
@@ -329,7 +370,9 @@ func TestParseRuntimeFile_TrailingContentRejected(t *testing.T) {
 func TestParseRuntimeFile_ValidationFailureWrapsPath(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "runtime.json")
-	body := `{"runs-on": "self-hosted"}`
+	// A runs-on label with a space fails injection validation; the
+	// wrapped error must still name the offending file path.
+	body := `{"runs-on": "self hosted"}`
 	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 		t.Fatalf("write: %v", err)
 	}
@@ -389,7 +432,7 @@ func TestParseAssignments_RuntimeRoundTrips(t *testing.T) {
 		t.Fatal("runtime block dropped on parse")
 		return
 	}
-	if got.RunsOn != "ubuntu-latest" || got.Python != "3.12" || len(got.Apt) != 1 {
+	if len(got.RunsOn) != 1 || got.RunsOn[0] != "ubuntu-latest" || got.Python != "3.12" || len(got.Apt) != 1 {
 		t.Errorf("runtime fields not parsed: %#v", got)
 	}
 
@@ -418,16 +461,162 @@ func TestParseAssignments_RejectsInvalidRuntime(t *testing.T) {
       "mode": "individual",
       "autograder": "default",
       "runtime": {
-        "runs-on": "self-hosted-grading"
+        "runs-on": "self hosted grading"
       }
     }
   ]
 }`)
 	_, err := ParseAssignments(in)
 	if err == nil {
-		t.Fatal("expected parse to reject self-hosted runs-on, got nil")
+		t.Fatal("expected parse to reject a runs-on label with spaces, got nil")
 	}
-	if !strings.Contains(err.Error(), "allow-list") {
-		t.Errorf("err should reference allow-list, got %q", err)
+	if !strings.Contains(err.Error(), "runtime.runs-on") {
+		t.Errorf("err should reference runtime.runs-on, got %q", err)
+	}
+}
+
+func TestParseAssignments_CustomRunnerArrayRoundTrips(t *testing.T) {
+	in := []byte(`{
+  "schema": "classroom50/assignments/v1",
+  "assignments": [
+    {
+      "slug": "heavy",
+      "name": "Heavy",
+      "template": { "owner": "cs50", "repo": "heavy-template", "branch": "main" },
+      "mode": "individual",
+      "autograder": "default",
+      "runtime": {
+        "runs-on": ["self-hosted", "gpu"],
+        "python": "3.12"
+      }
+    }
+  ]
+}`)
+	file, err := ParseAssignments(in)
+	if err != nil {
+		t.Fatalf("ParseAssignments: %v", err)
+	}
+	rt := file.Assignments[0].Runtime
+	if rt == nil {
+		t.Fatal("runtime block dropped on parse")
+		return
+	}
+	if len(rt.RunsOn) != 2 || rt.RunsOn[0] != "self-hosted" || rt.RunsOn[1] != "gpu" {
+		t.Errorf("runs-on labels not parsed: %#v", rt.RunsOn)
+	}
+
+	encoded, err := EncodeAssignments(file)
+	if err != nil {
+		t.Fatalf("EncodeAssignments: %v", err)
+	}
+	// A multi-label runs-on must re-encode as a JSON array.
+	if !strings.Contains(string(encoded), `"runs-on": [`) {
+		t.Errorf("multi-label runs-on should re-encode as a JSON array, got:\n%s", encoded)
+	}
+	again, err := ParseAssignments(encoded)
+	if err != nil {
+		t.Fatalf("re-parse: %v", err)
+	}
+	if len(again.Assignments[0].Runtime.RunsOn) != 2 {
+		t.Fatal("runs-on labels dropped on re-encode")
+	}
+}
+
+func TestParseAssignments_SingleLabelRunsOnEncodesAsString(t *testing.T) {
+	// A single-label runs-on must round-trip as a JSON string (not a
+	// one-element array), matching what teachers write and GitHub
+	// Actions' own canonical form.
+	in := []byte(`{
+  "schema": "classroom50/assignments/v1",
+  "assignments": [
+    {
+      "slug": "hello",
+      "name": "Hello",
+      "template": { "owner": "cs50", "repo": "hello-template", "branch": "main" },
+      "mode": "individual",
+      "autograder": "default",
+      "runtime": { "runs-on": "self-hosted" }
+    }
+  ]
+}`)
+	file, err := ParseAssignments(in)
+	if err != nil {
+		t.Fatalf("ParseAssignments: %v", err)
+	}
+	if got := file.Assignments[0].Runtime.RunsOn; len(got) != 1 || got[0] != "self-hosted" {
+		t.Errorf("runs-on not parsed: %#v", got)
+	}
+	encoded, err := EncodeAssignments(file)
+	if err != nil {
+		t.Fatalf("EncodeAssignments: %v", err)
+	}
+	if !strings.Contains(string(encoded), `"runs-on": "self-hosted"`) {
+		t.Errorf("single-label runs-on should re-encode as a JSON string, got:\n%s", encoded)
+	}
+}
+
+// TestParseAssignments_RejectsDegenerateRunsOn pins the three-surface
+// alignment: an omitted runs-on means default, but the present-but-
+// empty forms ("" and []) are rejected at parse time, matching the
+// inline-Python validator and the schema (oneOf, minItems:1).
+func TestParseAssignments_RejectsDegenerateRunsOn(t *testing.T) {
+	cases := []struct {
+		name    string
+		runsOn  string
+		wantErr string
+	}{
+		{"empty string", `""`, "empty string"},
+		{"empty array", `[]`, "empty array"},
+		{"array with non-string element", `[1]`, "only strings"},
+		{"wrong type number", `123`, "label string or an array"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			in := []byte(`{
+  "schema": "classroom50/assignments/v1",
+  "assignments": [
+    {
+      "slug": "hello",
+      "name": "Hello",
+      "template": { "owner": "cs50", "repo": "hello-template", "branch": "main" },
+      "mode": "individual",
+      "autograder": "default",
+      "runtime": { "runs-on": ` + tc.runsOn + ` }
+    }
+  ]
+}`)
+			_, err := ParseAssignments(in)
+			if err == nil {
+				t.Fatalf("expected parse to reject runs-on %s, got nil", tc.runsOn)
+			}
+			if !strings.Contains(err.Error(), tc.wantErr) {
+				t.Errorf("err for runs-on %s should contain %q, got %q", tc.runsOn, tc.wantErr, err)
+			}
+		})
+	}
+}
+
+// TestParseAssignments_OmittedRunsOnIsDefault confirms the one valid
+// "use the default" shape: runs-on absent entirely (not "" or []).
+func TestParseAssignments_OmittedRunsOnIsDefault(t *testing.T) {
+	in := []byte(`{
+  "schema": "classroom50/assignments/v1",
+  "assignments": [
+    {
+      "slug": "hello",
+      "name": "Hello",
+      "template": { "owner": "cs50", "repo": "hello-template", "branch": "main" },
+      "mode": "individual",
+      "autograder": "default",
+      "runtime": { "python": "3.12" }
+    }
+  ]
+}`)
+	file, err := ParseAssignments(in)
+	if err != nil {
+		t.Fatalf("ParseAssignments: %v", err)
+	}
+	if got := file.Assignments[0].Runtime.RunsOn; len(got) != 0 {
+		t.Errorf("omitted runs-on should yield an empty RunsOn, got %#v", got)
 	}
 }

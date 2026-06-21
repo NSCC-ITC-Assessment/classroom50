@@ -8,34 +8,24 @@ import (
 	"io"
 	"os"
 	"regexp"
+	"strings"
 )
 
-// AllowedRunsOnLabels and the *Pattern regexes below are exported only
+// RunsOnLabelPattern and the *Pattern regexes below are exported only
 // for the autograde-runner regex-parity test (init_skeleton_test.go's
 // TestRegexParity_GoVsInlinePython), which asserts these literals match
 // the inline-Python validator in autograde-runner.yaml. Production
 // callers must NOT match these directly — go through ValidateRuntime /
 // ValidateContainer, which are the trust boundary.
 //
-// AllowedRunsOnLabels: the GitHub-hosted runner labels the runner
-// will accept in `runtime.runs-on`. Self-hosted labels are rejected
-// because student repos are untrusted callers — letting an
-// attacker-controlled assignments.json land jobs on a self-hosted
-// runner with elevated access would defeat the runner-isolation
-// model. Teachers needing self-hosted should fork the runner
-// workflow and set runs-on directly there, opting in explicitly.
-var AllowedRunsOnLabels = map[string]bool{
-	"ubuntu-latest":  true,
-	"ubuntu-24.04":   true,
-	"ubuntu-22.04":   true,
-	"ubuntu-20.04":   true,
-	"macos-latest":   true,
-	"macos-14":       true,
-	"macos-13":       true,
-	"windows-latest": true,
-	"windows-2022":   true,
-	"windows-2019":   true,
-}
+// RunsOnLabelPattern bounds each `runtime.runs-on` label. It mirrors
+// GitHub Actions' `runs-on`: any hosted label OR any custom/self-hosted
+// label. There is deliberately NO value allow-list — the teacher owns
+// the label, as in a hand-written workflow. The pattern is purely an
+// anti-injection gate: the label flows verbatim into the workflow's
+// `runs-on:`, so whitespace, quotes, and shell/YAML metacharacters are
+// rejected (alphanumerics plus `-_.`, leading alnum, length-capped).
+var RunsOnLabelPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
 
 // LanguageVersionPattern: shared shape for python/node/java/go
 // version fields. Permissive enough for `3.12`, `20`, `1.23.4`,
@@ -130,25 +120,24 @@ func parseRuntimeFileFrom(path string, stdin io.Reader) (*RuntimeRef, error) {
 // assignments.json can't smuggle a value the CLI would have
 // rejected at write time.
 func ValidateRuntime(r RuntimeRef) error {
+	if err := ValidateRunsOn(r.RunsOn); err != nil {
+		return err
+	}
 	if r.Container != nil {
-		// Container path: image runs on a Linux host. RunsOn is
-		// either empty (defaults to ubuntu-latest in the runner) or
-		// an explicit ubuntu label. Apt is forbidden — the image
-		// owns its packages.
-		if r.RunsOn != "" && r.RunsOn != "ubuntu-latest" &&
-			r.RunsOn != "ubuntu-24.04" && r.RunsOn != "ubuntu-22.04" &&
-			r.RunsOn != "ubuntu-20.04" {
-			return fmt.Errorf("runtime.runs-on %q invalid with container: GitHub Actions runs containers on Ubuntu hosts only", r.RunsOn)
+		// GitHub-hosted containers run on Ubuntu only, so reject a
+		// recognized macOS/Windows hosted label up front; a custom /
+		// self-hosted label passes (the teacher owns OS matching). Apt
+		// is forbidden — the image owns its packages.
+		for _, label := range r.RunsOn {
+			if isNonUbuntuHostedLabel(label) {
+				return fmt.Errorf("runtime.runs-on %q invalid with container: GitHub Actions runs containers on Ubuntu hosts only", label)
+			}
 		}
 		if len(r.Apt) > 0 {
 			return errors.New("runtime.apt is not allowed when runtime.container is set: install packages in the container image instead")
 		}
 		if err := ValidateContainer(*r.Container); err != nil {
 			return err
-		}
-	} else if r.RunsOn != "" {
-		if !AllowedRunsOnLabels[r.RunsOn] {
-			return fmt.Errorf("runtime.runs-on %q is not in the allow-list of GitHub-hosted runner labels (one of: ubuntu-latest, ubuntu-24.04, ubuntu-22.04, ubuntu-20.04, macos-latest, macos-14, macos-13, windows-latest, windows-2022, windows-2019)", r.RunsOn)
 		}
 	}
 
@@ -172,6 +161,34 @@ func ValidateRuntime(r RuntimeRef) error {
 		}
 	}
 	return nil
+}
+
+// ValidateRunsOn injection-checks each label and caps the count. An
+// empty RunsOn is valid here — it means runs-on was omitted, which the
+// runner defaults to ubuntu-latest; the degenerate "" and [] forms are
+// rejected earlier by RunsOn.UnmarshalJSON. Blank labels are rejected
+// by RunsOnLabelPattern. No value allow-list (see RunsOnLabelPattern).
+func ValidateRunsOn(r RunsOn) error {
+	if len(r) == 0 {
+		return nil
+	}
+	if len(r) > 10 {
+		return fmt.Errorf("runtime.runs-on has %d labels (max 10)", len(r))
+	}
+	for i, label := range r {
+		if !RunsOnLabelPattern.MatchString(label) {
+			return fmt.Errorf("runtime.runs-on[%d] %q must match %s (a GitHub runner label: alphanumerics plus '._-', no whitespace or metacharacters)", i, label, RunsOnLabelPattern.String())
+		}
+	}
+	return nil
+}
+
+// isNonUbuntuHostedLabel reports whether label is a recognized
+// GitHub-hosted macOS/Windows label — the only labels we know won't run
+// a Linux container. Custom/self-hosted labels are unknown, so they
+// pass (the teacher owns OS matching).
+func isNonUbuntuHostedLabel(label string) bool {
+	return strings.HasPrefix(label, "macos-") || strings.HasPrefix(label, "windows-")
 }
 
 // ValidateContainer enforces image-string sanity, credential shape,

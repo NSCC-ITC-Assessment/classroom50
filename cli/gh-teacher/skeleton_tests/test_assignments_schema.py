@@ -90,6 +90,21 @@ class TestSchemaAccepts:
         entry = _entry(runtime={"container": {"image": "x"}, "runs-on": "ubuntu-22.04"})
         assert _errors(_manifest(entry)) == []
 
+    def test_custom_runner_labels(self):
+        # Custom / self-hosted runner (issue #97): runs-on
+        # accepts an array of labels, no value allow-list.
+        entry = _entry(runtime={"runs-on": ["self-hosted", "gpu"], "python": "3.12"})
+        assert _errors(_manifest(entry)) == []
+
+    def test_custom_single_label_runs_on(self):
+        # A single arbitrary label is accepted as a string.
+        entry = _entry(runtime={"runs-on": "self-hosted"})
+        assert _errors(_manifest(entry)) == []
+
+    def test_container_on_custom_runner(self):
+        entry = _entry(runtime={"runs-on": ["self-hosted"], "container": {"image": "cs50/cli:latest"}})
+        assert _errors(_manifest(entry)) == []
+
     def test_go_parity_timeout_zero_and_optional_points(self):
         # Go accepts both shapes (0 = default timeout; missing points = 0),
         # so the schema must too — a hand-edited file the CLI accepts
@@ -209,10 +224,24 @@ class TestSchemaRejects:
         entry = _entry(runtime={"container": {"image": "x"}, "apt": ["gcc"]})
         assert _errors(_manifest(entry)) != []
 
-    def test_non_ubuntu_runs_on_forbidden_with_container(self):
-        # Mirrors runtime.go: containers run on Ubuntu hosts only.
+    def test_non_ubuntu_runs_on_with_container_passes_schema(self):
+        # The Ubuntu-only-with-container rule is enforced by the
+        # authoritative validators (runtime.go + the inline validator),
+        # not the JSON Schema — clients should rely on those. The schema
+        # only forbids apt-with-container.
         entry = _entry(runtime={"container": {"image": "x"}, "runs-on": "windows-latest"})
-        assert _errors(_manifest(entry)) != []
+        assert _errors(_manifest(entry)) == []
+
+    @pytest.mark.parametrize("runs_on", [
+        "self hosted",            # whitespace
+        "self-hosted; rm -rf /",  # shell metacharacters
+        [],                       # empty array
+        ["bad label"],            # whitespace in array element
+        ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k"],  # >10 labels
+        123,                      # wrong type
+    ])
+    def test_bad_runs_on(self, runs_on):
+        assert _errors(_manifest(_entry(runtime={"runs-on": runs_on}))) != []
 
     @pytest.mark.parametrize("due", [
         # Mirrors validateDueDate in assignments_json.go: date-only
