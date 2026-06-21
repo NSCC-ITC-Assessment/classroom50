@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/foundation50/gh-teacher/internal/orgpolicy"
 	"github.com/foundation50/gh-teacher/internal/ui"
 )
 
@@ -30,8 +31,8 @@ type initSummary struct {
 	// not apply via the API (plan-gated or enterprise-pinned), each with
 	// the exact GitHub-UI instruction to set it by hand. Derived from the
 	// authoritative read-back, so it reflects the real residual state.
-	LockdownManualSteps []manualStep `json:"lockdown_manual_steps"`
-	FeedbackPRReady     bool         `json:"feedback_pr_ready"`
+	LockdownManualSteps []orgpolicy.ManualStep `json:"lockdown_manual_steps"`
+	FeedbackPRReady     bool                   `json:"feedback_pr_ready"`
 	// ServiceToken describes how the CLASSROOM50_SERVICE_TOKEN ended up
 	// configured this run ("configured from CLASSROOM50_SERVICE_TOKEN",
 	// "already configured", or "configured (prompted)") so a re-run is
@@ -42,7 +43,7 @@ type initSummary struct {
 	// them. Surfaced as structured data (not just stderr prose) so an
 	// orchestrating agent can branch on "manual steps pending" — the
 	// TECH_DEBT #018 ask.
-	ManualHardeningRequired []manualStep `json:"manual_hardening_required"`
+	ManualHardeningRequired []orgpolicy.ManualStep `json:"manual_hardening_required"`
 	// Notes are plan- or policy-specific informational caveats that are
 	// NOT action items — e.g. on Team/Free, member public-repo creation
 	// can't be locked off (it's coupled to the private-repo creation the
@@ -60,11 +61,8 @@ type repoSummary struct {
 	Created bool   `json:"created"`
 }
 
-// manualStep is one API-less org setting the teacher must apply by hand.
-type manualStep struct {
-	Setting string `json:"setting"`
-	URL     string `json:"url"`
-}
+// manualStep moved to internal/orgpolicy (orgpolicy.ManualStep); it's
+// shared by init's summary rendering and audit's unreadable list.
 
 // newInitSummary returns a summary with all slices initialized (so JSON
 // emits [] not null) and the static manual-hardening checklist
@@ -72,8 +70,8 @@ type manualStep struct {
 func newInitSummary(org string) *initSummary {
 	return &initSummary{
 		Org:                     org,
-		LockdownManualSteps:     []manualStep{},
-		ManualHardeningRequired: manualHardeningSteps(org),
+		LockdownManualSteps:     []orgpolicy.ManualStep{},
+		ManualHardeningRequired: orgpolicy.ManualHardeningSteps(org),
 		Notes:                   []string{},
 		Preflight:               []preflightCheck{},
 		Warnings:                []string{},
@@ -95,22 +93,10 @@ func (s *initSummary) addNote(format string, a ...any) {
 	s.Notes = append(s.Notes, fmt.Sprintf(format, a...))
 }
 
-// manualHardeningSteps is the canonical list of the four member-privilege
-// settings with no REST API (single-sourced here so the human reminder
-// and the JSON array can't drift). Each instruction is verb-first and
-// imperative so the teacher knows the exact action to take; the verb
-// matches the GitHub control — "Uncheck" for the two checkboxes, "Set"
-// for the two dropdowns — with the section name in parentheses for
-// orientation on the Member privileges page.
-func manualHardeningSteps(org string) []manualStep {
-	url := fmt.Sprintf("https://github.com/organizations/%s/settings/member_privileges", org)
-	return []manualStep{
-		{Setting: `Set "App access requests" to "Members only" (or "Disable app access requests")`, URL: url},
-		{Setting: `Uncheck "Allow repository admins to install GitHub Apps for their repositories" (under "GitHub Apps")`, URL: url},
-		{Setting: `Set "Projects base permissions" to "No access"`, URL: url},
-		{Setting: `Uncheck "Allow repository administrators to rename branches protected by organization rules" (under "Branch renames")`, URL: url},
-	}
-}
+// manualHardeningSteps moved to internal/orgpolicy
+// (orgpolicy.ManualHardeningSteps): the canonical API-less hardening
+// checklist, single-sourced so init's reminder and audit's unreadable
+// list can't drift.
 
 // finalize computes the overall Ready flag from the recorded state. Ready
 // means: not a dry run, the lockdown invariant holds, and a config repo

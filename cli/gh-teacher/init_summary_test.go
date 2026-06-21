@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/foundation50/gh-teacher/internal/orgpolicy"
 	"github.com/foundation50/gh-teacher/internal/ui"
 )
 
@@ -82,7 +83,7 @@ func TestInitSummary_IncompleteLockdownNotReady(t *testing.T) {
 	s.Plan = "enterprise"
 	s.ConfigRepo = repoSummary{Name: "classroom50", URL: "https://github.com/enterprise-org/classroom50"}
 	s.LockdownComplete = false
-	s.LockdownManualSteps = []manualStep{{
+	s.LockdownManualSteps = []orgpolicy.ManualStep{{
 		Setting: `uncheck "Allow members to invite outside collaborators to repositories for this organization"`,
 		URL:     "https://github.com/organizations/enterprise-org/settings/member_privileges",
 	}}
@@ -140,7 +141,7 @@ func TestInitSummary_RenderHuman_IncompleteListsActions(t *testing.T) {
 	s.Plan = "enterprise"
 	s.ConfigRepo = repoSummary{URL: "https://github.com/ent/classroom50"}
 	s.LockdownComplete = false
-	s.LockdownManualSteps = []manualStep{{
+	s.LockdownManualSteps = []orgpolicy.ManualStep{{
 		Setting: `uncheck "Allow members to delete or transfer repositories for this organization"`,
 		URL:     "https://github.com/organizations/ent/settings/member_privileges",
 	}}

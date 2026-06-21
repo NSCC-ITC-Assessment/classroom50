@@ -11,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/foundation50/gh-teacher/internal/githubapi"
+	"github.com/foundation50/gh-teacher/internal/orgpolicy"
 	"github.com/foundation50/gh-teacher/internal/ui"
 )
 
@@ -128,7 +129,7 @@ type auditReport struct {
 	// ManualUnreadable lists the web-UI-only settings GitHub exposes no
 	// REST API to read; audit can't confirm them and asks the teacher to
 	// eyeball them.
-	ManualUnreadable []manualStep `json:"manual_unreadable"`
+	ManualUnreadable []orgpolicy.ManualStep `json:"manual_unreadable"`
 	// SettingsURL is the org member-privileges page every item lives on.
 	SettingsURL string `json:"settings_url"`
 }
@@ -155,7 +156,7 @@ func buildAuditReport(client githubapi.Client, org, plan string) auditReport {
 		Plan:             plan,
 		Enforced:         []auditSetting{},
 		Unenforced:       []auditSetting{},
-		ManualUnreadable: manualHardeningSteps(org),
+		ManualUnreadable: orgpolicy.ManualHardeningSteps(org),
 		SettingsURL:      settingsURL,
 	}
 
@@ -167,14 +168,14 @@ func buildAuditReport(client githubapi.Client, org, plan string) auditReport {
 	}
 	report.ReadOK = true
 
-	verdicts, criticalMissed := classifyOrgDefaults(live, plan)
+	verdicts, criticalMissed := orgpolicy.ClassifyDefaults(live, plan)
 	for _, v := range verdicts {
-		as := auditSetting{Field: v.setting.field, Desc: v.setting.desc, Critical: v.setting.critical}
-		if v.enforced {
+		as := auditSetting{Field: v.Setting.Field, Desc: v.Setting.Desc, Critical: v.Setting.Critical}
+		if v.Enforced {
 			report.Enforced = append(report.Enforced, as)
 			continue
 		}
-		as.Fix = v.setting.manualFix
+		as.Fix = v.Setting.ManualFix
 		report.Unenforced = append(report.Unenforced, as)
 	}
 	report.LockdownComplete = !criticalMissed

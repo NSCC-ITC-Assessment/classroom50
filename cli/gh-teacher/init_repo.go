@@ -13,6 +13,7 @@ import (
 	"github.com/foundation50/gh-teacher/internal/cliutil"
 	"github.com/foundation50/gh-teacher/internal/configrepo"
 	"github.com/foundation50/gh-teacher/internal/githubapi"
+	"github.com/foundation50/gh-teacher/internal/orgpolicy"
 )
 
 // plansThatSupportPrivatePages: GitHub plan slugs that allow Pages
@@ -22,252 +23,6 @@ var plansThatSupportPrivatePages = map[string]bool{
 	"business":      true,
 	"business_plus": true,
 	"enterprise":    true,
-}
-
-// orgMemberDefaultSetting is one org-level member policy, kept
-// per-field so the 403/422 fallback can retry and warn about each
-// independently.
-type orgMemberDefaultSetting struct {
-	field string // JSON field on PATCH /orgs/{org}
-	value any    // desired value
-	desc  string // human description for success/warning lines
-	// manualFix: a UI state the teacher can actually reach -- plans
-	// gate the member-privileges page and some checkbox combos don't
-	// exist on every plan.
-	manualFix string
-	// critical marks the lockdown fields whose absence re-opens the
-	// org-wide repo-admin danger that makes the founder-admin grant in
-	// `gh student accept` safe (#112). If any of these is rejected, the
-	// "repo-admin is defanged org-wide" invariant does NOT hold and init
-	// must say so loudly rather than reporting a clean success. The
-	// enabling fields (private-repo / Pages creation) are deliberately
-	// non-critical: a rejected `members_can_create_public_pages` on a
-	// non-Enterprise plan is expected and harmless, not a safety gap.
-	critical bool
-	// enterpriseOnly marks settings whose member-privileges toggle only
-	// exists on GitHub Enterprise Cloud. On Team/Free orgs (the primary
-	// audience) GitHub doesn't expose these — the API silently ignores
-	// the PATCH and the settings page has no such control — so init skips
-	// them entirely on non-enterprise plans (it neither attempts, verifies,
-	// nor lists them in the manual checklist), avoiding doomed writes and
-	// noise the teacher can't act on. They stay in the canonical list so
-	// an Enterprise-Cloud org still gets them. The Enterprise-only ones:
-	//   - members_can_create_internal_repositories (internal visibility is
-	//     an Enterprise feature).
-	//   - members_can_view_dependency_insights (no Team control).
-	//   - members_can_invite_outside_collaborators (Team has no such
-	//     toggle; only owners invite outside collaborators).
-	//   - members_can_create_public_repositories=false ("private repos
-	//     only"): on Team/Free GitHub couples public+private into a single
-	//     "all or none" choice — the legacy members_allowed_repository_
-	//     creation_type has no Team-valid "private" value, and the UI
-	//     auto-checks Public when you check Private. Since the student flow
-	//     REQUIRES members_can_create_private_repositories=true (gh student
-	//     accept creates the private repo as the student), forcing public
-	//     off is impossible on those plans without also breaking private
-	//     creation. Restricting members to private-only is documented as a
-	//     GitHub Enterprise Cloud-only capability, so this lockdown is
-	//     attempted only there.
-	enterpriseOnly bool
-}
-
-// orgMemberDefaultSettings returns the org-level member policies to apply
-// for the given plan, filtering out enterpriseOnly settings on
-// non-enterprise plans (Team/Free don't expose those toggles, so trying
-// to set/verify/report them is wasted effort and confusing noise). Pass
-// the org plan slug from preflight; an empty/unknown plan is treated as
-// non-enterprise (the conservative default — we only include the
-// Enterprise-only fields when we're sure the org is on Enterprise Cloud).
-func orgMemberDefaultSettings(plan string) []orgMemberDefaultSetting {
-	all := allOrgMemberDefaultSettings()
-	if plan == "enterprise" {
-		return all
-	}
-	filtered := make([]orgMemberDefaultSetting, 0, len(all))
-	for _, s := range all {
-		if s.enterpriseOnly {
-			continue
-		}
-		filtered = append(filtered, s)
-	}
-	return filtered
-}
-
-// allOrgMemberDefaultSettings: the full canonical list of org-level
-// member policies, in apply order. The intent (issue #112) is a
-// least-privilege org where the only member capability is private-repo
-// creation; every other member privilege and dangerous repo-admin
-// capability is locked to org owners. Because `gh student accept` now
-// keeps the founder as repo `admin` (so a group founder can add
-// teammates), these org-level locks are what defang that admin org-wide
-// (no delete/transfer/visibility-change/etc.). orgMemberDefaultSettings
-// filters this by plan for actual use.
-//
-// Notable entries:
-//   - default_repository_permission "none": new members get no implicit
-//     read access to other repos.
-//   - members_can_create_repositories true: master switch. On Team/Free
-//     the granular public/private booleans are slaved to it (true => both
-//     on, false => both off), so it must be true for the student flow to
-//     create private repos. Sending only the private boolean without this
-//     leaves BOTH off ("members can create no repositories").
-//   - members_can_create_private_repositories true: the one allowed
-//     member capability — gh student accept needs it.
-//   - members_can_create_public_repositories false (enterpriseOnly):
-//     "private repos only" exists only on GitHub Enterprise Cloud. On
-//     Team/Free, public and private are coupled into one "all or none"
-//     choice, and the student flow needs private creation ON — so init
-//     can't lock public off there and skips the field on those plans.
-//   - members_can_create_pages / _public_pages true: ENFORCED so the
-//     classroom50 config repo can publish its *public* Pages site (the
-//     unauthenticated assignments.json fetch the student flow depends
-//     on). init enforces, not just allows, these — re-running init
-//     resets a teacher who tightened Pages back to the working state.
-//     members_can_create_private_pages stays false (never needed).
-//   - everything else false: locks the member privilege / repo-admin
-//     power to org owners.
-//
-// The four web-UI-only member privileges with no REST field (app
-// access requests, repo-admin GitHub App installs, Projects base
-// permissions, branch renames) are NOT here — they can't be PATCHed;
-// init prints a manual-hardening reminder for them instead.
-func allOrgMemberDefaultSettings() []orgMemberDefaultSetting {
-	return []orgMemberDefaultSetting{
-		{
-			field:     "default_repository_permission",
-			value:     "none",
-			desc:      `base repository permission "none"`,
-			manualFix: `set "Base permissions" to "No permission"`,
-			critical:  true,
-		},
-		{
-			// Master repo-creation switch. On Team/Free the granular
-			// public/private booleans are NOT independently settable —
-			// GitHub slaves them to this field: true => members may
-			// create repos (both public and private, since "private
-			// only" is Enterprise Cloud-only), false => members may
-			// create none. The student flow needs members to create
-			// their private repo (gh student accept), so this must be
-			// true. Sending only members_can_create_private_repositories
-			// without this leaves BOTH checkboxes off ("members can
-			// create no repositories"). On Enterprise Cloud the
-			// public-repo lockdown below narrows this to private-only.
-			field:     "members_can_create_repositories",
-			value:     true,
-			desc:      "member repo creation enabled",
-			manualFix: `under "Repository creation", allow members to create repositories`,
-			critical:  true,
-		},
-		{
-			field:     "members_can_create_private_repositories",
-			value:     true,
-			desc:      "private repo creation enabled",
-			manualFix: `under "Repository creation", check "Private" — without it, gh student accept can't create student repos`,
-		},
-		{
-			field:          "members_can_create_public_repositories",
-			value:          false,
-			desc:           "public repo creation disabled",
-			manualFix:      `under "Repository creation", restrict members to private repositories only (GitHub Enterprise Cloud only)`,
-			critical:       true,
-			enterpriseOnly: true,
-		},
-		{
-			field:          "members_can_create_internal_repositories",
-			value:          false,
-			desc:           "internal repo creation disabled",
-			manualFix:      `under "Repository creation", uncheck "Internal" if your plan offers it`,
-			critical:       true,
-			enterpriseOnly: true,
-		},
-		{
-			// Enforced TRUE: the classroom50 config repo publishes a
-			// public Pages site (the unauthenticated assignments.json
-			// fetch). Re-running init resets this to allowed so a teacher
-			// who tightened it can't accidentally break the student flow.
-			field:     "members_can_create_pages",
-			value:     true,
-			desc:      "Pages creation enabled (required for the public config-repo site)",
-			manualFix: `check "Allow members to publish Pages sites"`,
-		},
-		{
-			// Enforced TRUE for the same reason: the config-repo Pages
-			// site must be allowed to publish *publicly*. On non-Enterprise
-			// plans this per-visibility control doesn't exist and the field
-			// is rejected (the per-field fallback warns); on Enterprise
-			// Cloud it's what keeps the public site allowed.
-			field:     "members_can_create_public_pages",
-			value:     true,
-			desc:      "public Pages creation enabled (required for the public config-repo site)",
-			manualFix: `under "Pages creation", select "Public"`,
-		},
-		{
-			// Private Pages are never needed; keep this one locked.
-			field:     "members_can_create_private_pages",
-			value:     false,
-			desc:      "private Pages creation disabled",
-			manualFix: `under "Pages creation", deselect "Private"`,
-			critical:  true,
-		},
-		{
-			field:     "members_can_delete_repositories",
-			value:     false,
-			desc:      "member repo deletion/transfer disabled",
-			manualFix: `uncheck "Allow members to delete or transfer repositories for this organization"`,
-			critical:  true,
-		},
-		{
-			field:     "members_can_change_repo_visibility",
-			value:     false,
-			desc:      "member repo visibility change disabled",
-			manualFix: `uncheck "Allow members to change repository visibilities for this organization"`,
-			critical:  true,
-		},
-		{
-			field:     "members_can_delete_issues",
-			value:     false,
-			desc:      "member issue deletion disabled",
-			manualFix: `uncheck "Allow members to delete issues for this organization"`,
-			critical:  true,
-		},
-		{
-			field:     "readers_can_create_discussions",
-			value:     false,
-			desc:      "discussion creation by read-access members disabled",
-			manualFix: `uncheck "Allow users with read access to create discussions"`,
-			critical:  true,
-		},
-		{
-			field:     "members_can_create_teams",
-			value:     false,
-			desc:      "member team creation disabled",
-			manualFix: `uncheck "Allow members to create teams"`,
-			critical:  true,
-		},
-		{
-			field:          "members_can_view_dependency_insights",
-			value:          false,
-			desc:           "member dependency-insights viewing disabled",
-			manualFix:      `uncheck "Allow members to view dependency insights"`,
-			critical:       true,
-			enterpriseOnly: true,
-		},
-		{
-			field:     "members_can_fork_private_repositories",
-			value:     false,
-			desc:      "forking of private repos disabled",
-			manualFix: `uncheck "Allow forking of private repositories"`,
-			critical:  true,
-		},
-		{
-			field:          "members_can_invite_outside_collaborators",
-			value:          false,
-			desc:           "member-invited outside collaborators disabled",
-			manualFix:      `uncheck "Allow members to invite outside collaborators to repositories for this organization"`,
-			critical:       true,
-			enterpriseOnly: true,
-		},
-	}
 }
 
 // applyOrgMemberDefaults applies the policies in one combined PATCH
@@ -283,10 +38,10 @@ func allOrgMemberDefaultSettings() []orgMemberDefaultSetting {
 // explicit "lockdown INCOMPLETE" warning when complete=false so a
 // half-locked org never hides behind a clean success line.
 func applyOrgMemberDefaults(client githubapi.Client, out, errOut io.Writer, org, plan string) (complete bool, unenforced []unenforcedSetting, err error) {
-	settings := orgMemberDefaultSettings(plan)
+	settings := orgpolicy.MemberDefaultSettings(plan)
 	combined := make(map[string]any, len(settings))
 	for _, s := range settings {
-		combined[s.field] = s.value
+		combined[s.Field] = s.Value
 	}
 	body, err := json.Marshal(combined)
 	if err != nil {
@@ -334,37 +89,9 @@ type unenforcedSetting struct {
 	critical  bool
 }
 
-// orgDefaultVerdict is one setting's live-classification result, produced
-// by classifyOrgDefaults. It carries the source setting (so callers can
-// read field/desc/manualFix/critical) plus whether the live org value
-// matched the desired lockdown value. Both init's read-back
-// (verifyOrgDefaults) and audit's report (buildAuditReport) derive their
-// own output structs from this single classification so the
-// "compare live[field] to desired, track critical" logic lives in one
-// place.
-type orgDefaultVerdict struct {
-	setting  orgMemberDefaultSetting
-	enforced bool
-}
-
-// classifyOrgDefaults compares each in-scope (plan-filtered) member-default
-// setting against the live org values and reports per-setting whether it's
-// enforced, plus whether any *critical* setting is unenforced. It is the
-// single source of truth for interpreting a GET /orgs/{org} response
-// against the desired lockdown — shared by init's verifyOrgDefaults and
-// audit's buildAuditReport so the two can't drift.
-func classifyOrgDefaults(live map[string]any, plan string) (verdicts []orgDefaultVerdict, criticalMissed bool) {
-	settings := orgMemberDefaultSettings(plan)
-	verdicts = make([]orgDefaultVerdict, 0, len(settings))
-	for _, s := range settings {
-		enforced := orgFieldMatches(live[s.field], s.value)
-		verdicts = append(verdicts, orgDefaultVerdict{setting: s, enforced: enforced})
-		if !enforced && s.critical {
-			criticalMissed = true
-		}
-	}
-	return verdicts, criticalMissed
-}
+// orgDefaultVerdict, classifyOrgDefaults and orgFieldMatches moved to
+// internal/orgpolicy (the shared policy/classification seam consumed by
+// both init's verifyOrgDefaults and audit's buildAuditReport).
 
 // verifyOrgDefaults reads the org back and returns every member-default
 // policy whose live value still doesn't match what init wants —
@@ -384,12 +111,12 @@ func verifyOrgDefaults(client githubapi.Client, errOut io.Writer, org, plan stri
 		return true, nil
 	}
 
-	verdicts, criticalMissed := classifyOrgDefaults(live, plan)
+	verdicts, criticalMissed := orgpolicy.ClassifyDefaults(live, plan)
 	for _, v := range verdicts {
-		if v.enforced {
+		if v.Enforced {
 			continue
 		}
-		unenforced = append(unenforced, unenforcedSetting{field: v.setting.field, manualFix: v.setting.manualFix, critical: v.setting.critical})
+		unenforced = append(unenforced, unenforcedSetting{field: v.Setting.Field, manualFix: v.Setting.ManualFix, critical: v.Setting.Critical})
 	}
 	return !criticalMissed, unenforced
 }
@@ -417,14 +144,6 @@ func unenforcedCause(plan string) string {
 	}
 }
 
-// orgFieldMatches compares a desired lockdown value against the value
-// GitHub returned for that field. JSON decoding renders booleans as
-// bool and strings as string, so a direct compare works for both the
-// bool toggles and the one string field (default_repository_permission).
-func orgFieldMatches(live, desired any) bool {
-	return live == desired
-}
-
 // isSecondaryRateLimit reports whether err is GitHub's secondary
 // rate-limit response. GitHub surfaces it as a 403 (occasionally 429)
 // whose message mentions a secondary rate limit / abuse detection —
@@ -446,15 +165,15 @@ func isSecondaryRateLimit(err error) bool {
 }
 
 // orgMemberDefaultsSummary renders the applied policies straight from
-// orgMemberDefaultSettings(plan) so the combined-PATCH success line can't
-// drift from the canonical slice (it previously hand-listed the
+// orgpolicy.MemberDefaultSettings(plan) so the combined-PATCH success
+// line can't drift from the canonical slice (it previously hand-listed the
 // policies in prose and silently fell out of sync). Reports the policy
 // count and joins each setting's `desc`.
 func orgMemberDefaultsSummary(plan string) string {
-	settings := orgMemberDefaultSettings(plan)
+	settings := orgpolicy.MemberDefaultSettings(plan)
 	descs := make([]string, 0, len(settings))
 	for _, s := range settings {
-		descs = append(descs, s.desc)
+		descs = append(descs, s.Desc)
 	}
 	return fmt.Sprintf("%d policies: %s", len(settings), strings.Join(descs, "; "))
 }
@@ -471,10 +190,10 @@ func orgMemberDefaultsSummary(plan string) string {
 func applyOrgMemberDefaultsPerField(client githubapi.Client, out, errOut io.Writer, org, plan string) (complete bool, unenforced []unenforcedSetting, err error) {
 	path := fmt.Sprintf("orgs/%s", url.PathEscape(org))
 	settingsURL := fmt.Sprintf("https://github.com/organizations/%s/settings/member_privileges", org)
-	settings := orgMemberDefaultSettings(plan)
+	settings := orgpolicy.MemberDefaultSettings(plan)
 	var applied []string
 	for i, s := range settings {
-		body, encErr := json.Marshal(map[string]any{s.field: s.value})
+		body, encErr := json.Marshal(map[string]any{s.Field: s.Value})
 		if encErr != nil {
 			return false, nil, fmt.Errorf("encode body: %w", encErr)
 		}
@@ -506,7 +225,7 @@ func applyOrgMemberDefaultsPerField(client githubapi.Client, out, errOut io.Writ
 			reportPartialMemberDefaults(errOut, org, settings, applied, i, settingsURL)
 			return false, nil, fmt.Errorf("PATCH %s: unexpected status %d", path, resp.StatusCode)
 		}
-		applied = append(applied, s.desc)
+		applied = append(applied, s.Desc)
 	}
 	if len(applied) > 0 {
 		_, _ = fmt.Fprintf(out, "%s: org member defaults set (%s)\n", org, strings.Join(applied, ", "))
@@ -524,10 +243,10 @@ func applyOrgMemberDefaultsPerField(client githubapi.Client, out, errOut io.Writ
 // landed and the ones at index failedIdx onward that were never
 // attempted — so a teacher (or a script parsing stderr) can reconcile
 // manually or re-run init rather than assuming a clean failure.
-func reportPartialMemberDefaults(errOut io.Writer, org string, settings []orgMemberDefaultSetting, applied []string, failedIdx int, settingsURL string) {
+func reportPartialMemberDefaults(errOut io.Writer, org string, settings []orgpolicy.MemberDefaultSetting, applied []string, failedIdx int, settingsURL string) {
 	notAttempted := make([]string, 0, len(settings)-failedIdx)
 	for _, s := range settings[failedIdx:] {
-		notAttempted = append(notAttempted, s.desc)
+		notAttempted = append(notAttempted, s.Desc)
 	}
 	appliedList := "none"
 	if len(applied) > 0 {

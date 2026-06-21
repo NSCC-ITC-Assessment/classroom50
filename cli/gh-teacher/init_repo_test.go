@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/foundation50/gh-teacher/internal/githubtest"
+	"github.com/foundation50/gh-teacher/internal/orgpolicy"
 )
 
 func TestEnsureClassroomRulesets_CreatesBoth(t *testing.T) {
@@ -310,8 +311,8 @@ func TestApplyOrgMemberDefaults_HappyPath(t *testing.T) {
 			// verification confirms the lockdown took effect.
 			getCall++
 			live := map[string]any{}
-			for _, s := range orgMemberDefaultSettings("team") {
-				live[s.field] = s.value
+			for _, s := range orgpolicy.MemberDefaultSettings("team") {
+				live[s.Field] = s.Value
 			}
 			w.WriteHeader(http.StatusOK)
 			_ = json.NewEncoder(w).Encode(live)
@@ -393,13 +394,13 @@ func TestApplyOrgMemberDefaults_HappyPath(t *testing.T) {
 			t.Errorf("combined PATCH field %s = %v (present=%v), want true", f, v, ok)
 		}
 	}
-	// The success line is derived from orgMemberDefaultSettings(plan)
+	// The success line is derived from orgpolicy.MemberDefaultSettings(plan)
 	// (orgMemberDefaultsSummary), so assert every policy's desc appears
 	// — this is what catches a hand-written prose summary drifting out
 	// of sync with the canonical slice.
-	for _, s := range orgMemberDefaultSettings("team") {
-		if !strings.Contains(out.String(), s.desc) {
-			t.Errorf("success line missing policy %q, got: %q", s.desc, out.String())
+	for _, s := range orgpolicy.MemberDefaultSettings("team") {
+		if !strings.Contains(out.String(), s.Desc) {
+			t.Errorf("success line missing policy %q, got: %q", s.Desc, out.String())
 		}
 	}
 	if !strings.Contains(out.String(), "locked down") {
@@ -432,11 +433,11 @@ func TestApplyOrgMemberDefaults_ForbiddenWarnsButSucceeds(t *testing.T) {
 			// unenforced.
 			getCall++
 			live := map[string]any{}
-			for _, s := range orgMemberDefaultSettings("enterprise") {
-				if b, ok := s.value.(bool); ok {
-					live[s.field] = !b
+			for _, s := range orgpolicy.MemberDefaultSettings("enterprise") {
+				if b, ok := s.Value.(bool); ok {
+					live[s.Field] = !b
 				} else {
-					live[s.field] = "unchanged"
+					live[s.Field] = "unchanged"
 				}
 			}
 			w.WriteHeader(http.StatusOK)
@@ -461,7 +462,7 @@ func TestApplyOrgMemberDefaults_ForbiddenWarnsButSucceeds(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
-	n := len(orgMemberDefaultSettings("enterprise"))
+	n := len(orgpolicy.MemberDefaultSettings("enterprise"))
 	if patchCall != n+1 {
 		t.Errorf("PATCH calls = %d, want %d (combined + one per field)", patchCall, n+1)
 	}
@@ -527,8 +528,8 @@ func TestApplyOrgMemberDefaults_UnprocessableFallsBackPerField(t *testing.T) {
 			// value; the rejected field stays at the OPPOSITE (still
 			// un-locked) so the read-back flags exactly it.
 			live := map[string]any{}
-			for _, s := range orgMemberDefaultSettings("enterprise") {
-				live[s.field] = s.value
+			for _, s := range orgpolicy.MemberDefaultSettings("enterprise") {
+				live[s.Field] = s.Value
 			}
 			live[rejectedField] = true // rejected → stayed un-locked
 			w.WriteHeader(http.StatusOK)
@@ -567,7 +568,7 @@ func TestApplyOrgMemberDefaults_UnprocessableFallsBackPerField(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
-	if want := len(orgMemberDefaultSettings("enterprise")) + 1; len(bodies) != want {
+	if want := len(orgpolicy.MemberDefaultSettings("enterprise")) + 1; len(bodies) != want {
 		t.Fatalf("PATCH calls = %d, want %d (combined + one per field)", len(bodies), want)
 	}
 	for _, fields := range bodies[1:] {
@@ -658,8 +659,8 @@ func TestApplyOrgMemberDefaults_SilentNoOpDetectedByReadBack(t *testing.T) {
 		case http.MethodGet:
 			getCall++
 			live := map[string]any{}
-			for _, s := range orgMemberDefaultSettings("enterprise") {
-				live[s.field] = s.value
+			for _, s := range orgpolicy.MemberDefaultSettings("enterprise") {
+				live[s.Field] = s.Value
 			}
 			// Enterprise keeps this one at the opposite of what we asked
 			// despite the 200 on PATCH.
@@ -716,8 +717,8 @@ func TestApplyOrgMemberDefaults_SilentNoOpTeamPlanWording(t *testing.T) {
 			_, _ = w.Write([]byte(`{}`))
 		case http.MethodGet:
 			live := map[string]any{}
-			for _, s := range orgMemberDefaultSettings("team") {
-				live[s.field] = s.value
+			for _, s := range orgpolicy.MemberDefaultSettings("team") {
+				live[s.Field] = s.Value
 			}
 			live[pinnedField] = true // unchanged despite 200
 			w.WriteHeader(http.StatusOK)
@@ -742,46 +743,6 @@ func TestApplyOrgMemberDefaults_SilentNoOpTeamPlanWording(t *testing.T) {
 	}
 	if unenforced[0].manualFix == "" {
 		t.Errorf("unenforced entry should carry a manualFix instruction: %+v", unenforced[0])
-	}
-}
-
-func TestOrgMemberDefaultSettings_PlanFilter(t *testing.T) {
-	enterpriseOnlyFields := map[string]bool{
-		"members_can_create_public_repositories":   true,
-		"members_can_create_internal_repositories": true,
-		"members_can_view_dependency_insights":     true,
-		"members_can_invite_outside_collaborators": true,
-	}
-
-	// Enterprise gets the full canonical set, including the
-	// enterprise-only fields.
-	ent := orgMemberDefaultSettings("enterprise")
-	full := allOrgMemberDefaultSettings()
-	if len(ent) != len(full) {
-		t.Errorf("enterprise plan should get all %d settings, got %d", len(full), len(ent))
-	}
-	entHas := map[string]bool{}
-	for _, s := range ent {
-		entHas[s.field] = true
-	}
-	for f := range enterpriseOnlyFields {
-		if !entHas[f] {
-			t.Errorf("enterprise plan should include enterprise-only field %s", f)
-		}
-	}
-
-	// Team/Free/unknown plans must exclude the enterprise-only fields
-	// (Team doesn't expose those toggles).
-	for _, plan := range []string{"team", "free", ""} {
-		got := orgMemberDefaultSettings(plan)
-		if len(got) != len(full)-len(enterpriseOnlyFields) {
-			t.Errorf("plan %q should drop %d enterprise-only settings; got %d of %d", plan, len(enterpriseOnlyFields), len(got), len(full))
-		}
-		for _, s := range got {
-			if enterpriseOnlyFields[s.field] {
-				t.Errorf("plan %q must not include enterprise-only field %s", plan, s.field)
-			}
-		}
 	}
 }
 
@@ -852,41 +813,6 @@ func TestApplyOrgMemberDefaults_ReadBackFailureIsNonBlocking(t *testing.T) {
 	}
 	if !strings.Contains(errOut.String(), "couldn't read the org back") {
 		t.Errorf("a read-back failure should warn that verification couldn't run: %q", errOut.String())
-	}
-}
-
-func TestManualHardeningSteps(t *testing.T) {
-	steps := manualHardeningSteps("cs50-fall-2026")
-	if len(steps) != 4 {
-		t.Fatalf("manualHardeningSteps = %d steps, want 4", len(steps))
-	}
-	url := "https://github.com/organizations/cs50-fall-2026/settings/member_privileges"
-	// Lists the four web-UI-only settings that init can't PATCH, each
-	// pointing at the org member-privileges page.
-	var joined string
-	for _, s := range steps {
-		joined += s.Setting + "\n"
-		if s.URL != url {
-			t.Errorf("step %q URL = %q, want %q", s.Setting, s.URL, url)
-		}
-	}
-	for _, want := range []string{
-		"App access requests",
-		"GitHub Apps",
-		"Projects base permissions",
-		"Branch renames",
-	} {
-		if !strings.Contains(joined, want) {
-			t.Errorf("manual hardening steps missing %q:\n%s", want, joined)
-		}
-	}
-	// Each instruction must be verb-first/imperative so the teacher
-	// knows the exact action (the verb matches the GitHub control:
-	// "Uncheck" for checkboxes, "Set" for dropdowns).
-	for _, s := range steps {
-		if !strings.HasPrefix(s.Setting, "Uncheck ") && !strings.HasPrefix(s.Setting, "Set ") {
-			t.Errorf("manual hardening step should start with an action verb (Uncheck/Set): %q", s.Setting)
-		}
 	}
 }
 

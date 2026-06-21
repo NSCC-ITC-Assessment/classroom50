@@ -11,6 +11,7 @@ import (
 
 	"github.com/foundation50/gh-teacher/internal/configrepo"
 	"github.com/foundation50/gh-teacher/internal/githubapi"
+	"github.com/foundation50/gh-teacher/internal/orgpolicy"
 	"github.com/foundation50/gh-teacher/internal/ui"
 )
 
@@ -185,7 +186,7 @@ func initCmd() *cobra.Command {
 			// "do this by hand" list instead of three overlapping warnings.
 			settingsURL := fmt.Sprintf("https://github.com/organizations/%s/settings/member_privileges", org)
 			for _, item := range unenforced {
-				summary.LockdownManualSteps = append(summary.LockdownManualSteps, manualStep{Setting: item.manualFix, URL: settingsURL})
+				summary.LockdownManualSteps = append(summary.LockdownManualSteps, orgpolicy.ManualStep{Setting: item.manualFix, URL: settingsURL})
 			}
 			if !lockdownComplete {
 				// The org-level locks are what defang the repo-admin that

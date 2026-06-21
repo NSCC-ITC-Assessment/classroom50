@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/foundation50/gh-teacher/internal/githubtest"
+	"github.com/foundation50/gh-teacher/internal/orgpolicy"
 	"github.com/foundation50/gh-teacher/internal/ui"
 )
 
@@ -18,8 +19,8 @@ import (
 // simulate drift.
 func orgLiveFromSettings(plan string) map[string]any {
 	live := map[string]any{}
-	for _, s := range orgMemberDefaultSettings(plan) {
-		live[s.field] = s.value
+	for _, s := range orgpolicy.MemberDefaultSettings(plan) {
+		live[s.Field] = s.Value
 	}
 	return live
 }
@@ -46,7 +47,7 @@ func TestBuildAuditReport_AllEnforced(t *testing.T) {
 	if len(report.Unenforced) != 0 {
 		t.Errorf("Unenforced = %+v, want none", report.Unenforced)
 	}
-	if want := len(orgMemberDefaultSettings("team")); len(report.Enforced) != want {
+	if want := len(orgpolicy.MemberDefaultSettings("team")); len(report.Enforced) != want {
 		t.Errorf("Enforced = %d, want %d (all in-scope settings)", len(report.Enforced), want)
 	}
 	// The four web-UI-only settings are always surfaced as unreadable.
@@ -183,7 +184,7 @@ func TestAuditReport_RenderHumanShowsAllThreeSections(t *testing.T) {
 			Field: "members_can_delete_repositories", Desc: "member repo deletion/transfer disabled",
 			Critical: true, Fix: `uncheck "Allow members to delete or transfer repositories for this organization"`,
 		}},
-		ManualUnreadable: manualHardeningSteps("cs50"),
+		ManualUnreadable: orgpolicy.ManualHardeningSteps("cs50"),
 		SettingsURL:      "https://github.com/organizations/cs50/settings/member_privileges",
 	}
 
@@ -216,7 +217,7 @@ func TestAuditReport_RenderJSONStable(t *testing.T) {
 		LockdownComplete: true,
 		Enforced:         []auditSetting{},
 		Unenforced:       []auditSetting{},
-		ManualUnreadable: manualHardeningSteps("cs50"),
+		ManualUnreadable: orgpolicy.ManualHardeningSteps("cs50"),
 		SettingsURL:      "https://github.com/organizations/cs50/settings/member_privileges",
 	}
 	var buf bytes.Buffer
