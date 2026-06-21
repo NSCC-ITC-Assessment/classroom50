@@ -106,7 +106,7 @@ func commitSkeleton(client githubapi.Client, in io.Reader, out, errOut io.Writer
 
 	// Let auto_init's commit propagate first. Best-effort: the retry
 	// below still covers a ref slow past the poll budget.
-	if err := waitForStableBranch(client, owner, repo, defaultBranch); err != nil {
+	if err := githubapi.WaitForStableBranch(client, owner, repo, defaultBranch); err != nil {
 		_, _ = fmt.Fprintf(errOut, "Warning: %s/%s: %s slow to propagate (%v); proceeding with retries\n",
 			owner, repo, defaultBranch, err)
 	}

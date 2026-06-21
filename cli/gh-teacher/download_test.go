@@ -12,9 +12,11 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/foundation50/classroom50-cli-shared/contract"
 	"github.com/foundation50/gh-teacher/internal/assignment"
 	"github.com/foundation50/gh-teacher/internal/configrepo"
 	"github.com/foundation50/gh-teacher/internal/githubtest"
+	scoresschema "github.com/foundation50/gh-teacher/internal/scores"
 )
 
 func TestAssignmentRepoName(t *testing.T) {
@@ -37,7 +39,7 @@ func TestAssignmentRepoName(t *testing.T) {
 
 func TestAssignmentRegistered(t *testing.T) {
 	file := assignment.AssignmentsJSON{
-		Schema: assignmentsSchemaV1,
+		Schema: contract.AssignmentsSchemaV1,
 		Assignments: []assignment.AssignmentEntry{
 			{Slug: "hello"},
 			{Slug: "Goodbye"},
@@ -64,7 +66,7 @@ func TestAssignmentRegistered(t *testing.T) {
 
 func TestAssignmentIsGroup(t *testing.T) {
 	file := assignment.AssignmentsJSON{
-		Schema: assignmentsSchemaV1,
+		Schema: contract.AssignmentsSchemaV1,
 		Assignments: []assignment.AssignmentEntry{
 			{Slug: "solo", Mode: "individual"},
 			{Slug: "team", Mode: "group"},
@@ -91,9 +93,9 @@ func TestAssignmentIsGroup(t *testing.T) {
 }
 
 func TestCreditedUsernames(t *testing.T) {
-	scores := scoresJSON{
-		Schema: scoresSchemaV1,
-		Assignments: map[string]assignmentBucket{
+	scores := scoresschema.File{
+		Schema: scoresschema.SchemaV1,
+		Assignments: map[string]scoresschema.AssignmentBucket{
 			"project": {
 				Type: "group",
 				Entries: []map[string]any{
@@ -350,9 +352,9 @@ func TestWriteScoresCSV(t *testing.T) {
 	// but isn't on the roster → must NOT appear in csv. A different
 	// assignment bucket must NOT appear. The per-submission detail lives in
 	// each entry's `submissions` list; an individual entry credits its owner.
-	scores := scoresJSON{
-		Schema: scoresSchemaV1,
-		Assignments: map[string]assignmentBucket{
+	scores := scoresschema.File{
+		Schema: scoresschema.SchemaV1,
+		Assignments: map[string]scoresschema.AssignmentBucket{
 			"hello": {
 				Type: "individual",
 				Entries: []map[string]any{
@@ -444,9 +446,9 @@ func TestWriteScoresCSV_GroupFanOut(t *testing.T) {
 		{Username: "carol"}, // joined alice's repo
 		{Username: "dan"},   // not in the group — no score
 	}
-	scores := scoresJSON{
-		Schema: scoresSchemaV1,
-		Assignments: map[string]assignmentBucket{
+	scores := scoresschema.File{
+		Schema: scoresschema.SchemaV1,
+		Assignments: map[string]scoresschema.AssignmentBucket{
 			"project": {
 				Type: "group",
 				Entries: []map[string]any{
@@ -500,7 +502,7 @@ func TestWriteScoresCSV_EmptyRoster(t *testing.T) {
 	// expected artifact even on a brand-new class.
 	dir := t.TempDir()
 	path := filepath.Join(dir, "scores.csv")
-	if err := writeScoresCSV(path, scoresJSON{Schema: scoresSchemaV1}, "hello", nil); err != nil {
+	if err := writeScoresCSV(path, scoresschema.File{Schema: scoresschema.SchemaV1}, "hello", nil); err != nil {
 		t.Fatalf("writeScoresCSV: %v", err)
 	}
 	got, err := os.ReadFile(path)
@@ -539,9 +541,9 @@ func TestWriteScoresCSV_NeutralizesFormulaInjection(t *testing.T) {
 	// formula-injection payload in a string field. writeScoresCSV must
 	// neutralize it (leading-quote) so opening scores.csv in a spreadsheet
 	// can't execute it.
-	scores := scoresJSON{
-		Schema: scoresSchemaV1,
-		Assignments: map[string]assignmentBucket{
+	scores := scoresschema.File{
+		Schema: scoresschema.SchemaV1,
+		Assignments: map[string]scoresschema.AssignmentBucket{
 			"hello": {
 				Type: "individual",
 				Entries: []map[string]any{

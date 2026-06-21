@@ -1,4 +1,4 @@
-package main
+package classroom
 
 import (
 	"bytes"
@@ -266,7 +266,7 @@ func copyOneTemplate(client githubapi.Client, errOut io.Writer, targetOrg, templ
 	// before downstream `gh student accept` runs against it —
 	// otherwise students hit transient 409 "Git Repository is
 	// empty" from the contents/git-data APIs.
-	if err := waitForStableBranch(client, targetOrg, targetName, branch); err != nil {
+	if err := githubapi.WaitForStableBranch(client, targetOrg, targetName, branch); err != nil {
 		_, _ = fmt.Fprintf(errOut, "Generated %s/%s for %q but branch %q did not stabilize: %v — students may need to retry `gh student accept` shortly.\n",
 			targetOrg, targetName, a.Slug, branch, err)
 		// Non-fatal: the repo exists and is marked as a template;
@@ -280,12 +280,6 @@ func copyOneTemplate(client githubapi.Client, errOut io.Writer, targetOrg, templ
 		Template:      assignment.TemplateRef{Owner: targetOrg, Repo: targetName, Branch: branch},
 		TargetPrivate: a.StarterCodeRepo.Private,
 	}, nil
-}
-
-// waitForStableBranch polls until a freshly-templated branch's ref
-// propagates. Thin wrapper over the shared ghutil helper.
-func waitForStableBranch(client githubapi.Client, owner, repo, branch string) error {
-	return githubapi.WaitForStableBranch(client, owner, repo, branch)
 }
 
 // splitOwnerRepo splits a `<owner>/<repo>` full-name into its parts.

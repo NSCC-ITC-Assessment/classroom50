@@ -1,4 +1,17 @@
-package main
+// Package classroom implements the `gh teacher classroom` command group:
+// managing classroom directories inside the <org>/classroom50 config repo
+// (add/list/edit/remove) plus the `classroom migrate` subcommand that
+// imports an existing GitHub Classroom into the config repo. It is an
+// extracted command package (mirrors internal/auth, internal/remove,
+// internal/roster, internal/member, internal/invite, and
+// internal/teardown): only NewCmd is exported; the subcommand factories,
+// run* orchestration, the classroomScaffold writer, and the migrate
+// plumbing are package-private. The four-file config-repo scaffold lands
+// through the race-safe internal/configwrite seam. It depends only on the
+// internal/* substrate seams (assignment, configrepo, configwrite,
+// githubapi, output, scores, validate, cliutil) plus the shared contract
+// package, never on package main.
+package classroom
 
 import (
 	"bufio"
@@ -16,24 +29,32 @@ import (
 	"github.com/foundation50/gh-teacher/internal/configwrite"
 	"github.com/foundation50/gh-teacher/internal/githubapi"
 	"github.com/foundation50/gh-teacher/internal/output"
+	"github.com/foundation50/gh-teacher/internal/scores"
 	"github.com/foundation50/gh-teacher/internal/validate"
 )
 
-// Schema sentinels for the four scaffolded files. Schema-aware
-// readers MUST branch on this field first so newer files don't
-// crash older readers. assignmentsSchemaV1 is single-sourced in the
-// shared contract package (it's the one shared Go<->Go); the
-// classroom/scores sentinels are teacher-written only.
+// Schema sentinels for the scaffolded files. Schema-aware readers MUST
+// branch on this field first so newer files don't crash older readers.
+// assignmentsSchemaV1 is single-sourced in the shared contract package
+// (it's the one shared Go<->Go); the classroom sentinel is
+// teacher-written only. The scores.json sentinel lives in
+// internal/scores (scores.SchemaV1) since the download command shares it.
 const (
 	classroomSchemaV1   = "classroom50/classroom/v1"
 	assignmentsSchemaV1 = contract.AssignmentsSchemaV1
-	scoresSchemaV1      = "classroom50/scores/v1"
 )
 
 // studentsCSVHeader derives from configrepo.RosterColumns so they can't drift.
 var studentsCSVHeader = strings.Join(configrepo.RosterColumns, ",") + "\n"
 
-func classroomCmd() *cobra.Command {
+// defaultAutograderName is the sentinel meaning "use the universal
+// default autograder". Single-sourced from the shared contract package;
+// the migrate path stamps it onto imported assignments that don't name
+// their own autograder. (The autograder command keeps its own copy of
+// this const; both are single-sourced from the same contract constant.)
+const defaultAutograderName = contract.DefaultAutograderName
+
+func NewCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "classroom",
 		Short: "Manage classroom directories inside the config repo",
@@ -522,28 +543,6 @@ func confirmClassroomRemove(in io.Reader, out io.Writer, shortName string) error
 	return nil
 }
 
-// configrepo.ClassroomJSON / scoresJSON pin the on-disk scaffold shapes;
-// assignments.json's typed shape lives in assignments_json.go.
-// MigratedFrom omits cleanly when absent.
-// scoresJSON: the gradebook written by `collect-scores.yaml`'s
-// collect_scores.py. The root `assignments` map is keyed by assignment
-// slug; each value is an assignmentBucket (`{type, entries}`). The map is
-// non-nil (`{}`, not null) at scaffold time so the collect script sees a
-// well-formed file on first run.
-type scoresJSON struct {
-	Schema      string                      `json:"schema"`
-	Assignments map[string]assignmentBucket `json:"assignments"`
-}
-
-// assignmentBucket: one assignment's gradebook — its mode (`type`) plus
-// the per-repo entries. Each entry decodes as a tolerant map[string]any
-// (download reads only a handful of well-known keys: owner,
-// member_usernames, submissions).
-type assignmentBucket struct {
-	Type    string           `json:"type"`
-	Entries []map[string]any `json:"entries"`
-}
-
 // classroomScaffold returns destination-path → content for the
 // four-file scaffold. A nil `entries` is normalized to an empty
 // slice so assignments.json marshals as `[]` (not the `null` Go
@@ -577,11 +576,11 @@ func classroomScaffold(org, shortName, name, term string, entries []assignment.A
 		return nil, fmt.Errorf("encode assignments.json: %w", err)
 	}
 
-	scores := scoresJSON{
-		Schema:      scoresSchemaV1,
-		Assignments: map[string]assignmentBucket{},
+	emptyScores := scores.File{
+		Schema:      scores.SchemaV1,
+		Assignments: map[string]scores.AssignmentBucket{},
 	}
-	scoresBytes, err := output.JSONPretty(scores)
+	scoresBytes, err := output.JSONPretty(emptyScores)
 	if err != nil {
 		return nil, fmt.Errorf("encode scores.json: %w", err)
 	}

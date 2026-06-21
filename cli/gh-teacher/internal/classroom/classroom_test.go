@@ -1,4 +1,4 @@
-package main
+package classroom
 
 import (
 	"encoding/json"
@@ -7,6 +7,7 @@ import (
 
 	"github.com/foundation50/gh-teacher/internal/assignment"
 	"github.com/foundation50/gh-teacher/internal/configrepo"
+	"github.com/foundation50/gh-teacher/internal/scores"
 	"github.com/foundation50/gh-teacher/internal/validate"
 )
 
@@ -159,18 +160,18 @@ func TestClassroomScaffold(t *testing.T) {
 		t.Errorf("assignments.json should serialize the empty list as [], got:\n%s", files["cs-principles/assignments.json"])
 	}
 
-	var scores scoresJSON
-	if err := json.Unmarshal([]byte(files["cs-principles/scores.json"]), &scores); err != nil {
+	var sc scores.File
+	if err := json.Unmarshal([]byte(files["cs-principles/scores.json"]), &sc); err != nil {
 		t.Fatalf("scores.json invalid: %v", err)
 	}
-	if scores.Schema != scoresSchemaV1 {
-		t.Errorf("scores.json schema = %q, want %q", scores.Schema, scoresSchemaV1)
+	if sc.Schema != scores.SchemaV1 {
+		t.Errorf("scores.json schema = %q, want %q", sc.Schema, scores.SchemaV1)
 	}
-	if scores.Assignments == nil {
+	if sc.Assignments == nil {
 		t.Errorf("scores.json Assignments must be a non-nil empty map so it marshals to {}, not null; collect-scores.yaml needs the field present from scaffold time")
 	}
-	if len(scores.Assignments) != 0 {
-		t.Errorf("scores.json should start empty, got %d assignment buckets", len(scores.Assignments))
+	if len(sc.Assignments) != 0 {
+		t.Errorf("scores.json should start empty, got %d assignment buckets", len(sc.Assignments))
 	}
 	// `{}` not `null` on the wire -- assignments is keyed by
 	// assignment slug, and collect_scores.py adds buckets without

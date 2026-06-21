@@ -23,6 +23,7 @@ import (
 	"github.com/foundation50/gh-teacher/internal/configrepo"
 	"github.com/foundation50/gh-teacher/internal/githubapi"
 	"github.com/foundation50/gh-teacher/internal/orgrepos"
+	scoresschema "github.com/foundation50/gh-teacher/internal/scores"
 )
 
 // dirTimestampFormat: filesystem-safe and lexicographically sortable.
@@ -483,18 +484,18 @@ func repoExistsOnOrg(client githubapi.Client, org, repo string) (bool, error) {
 // loadScores reads scores.json at `ref`. Absent file → empty
 // (non-nil) container so a fresh classroom still produces a
 // roster-shaped scores.csv with every row blank.
-func loadScores(client githubapi.Client, org, classroom, ref string) (scoresJSON, error) {
+func loadScores(client githubapi.Client, org, classroom, ref string) (scoresschema.File, error) {
 	path := scoresFilePath(classroom)
 	data, ok, err := configrepo.ReadFileContents(client, org, configrepo.ConfigRepoName, path, ref)
 	if err != nil {
-		return scoresJSON{}, err
+		return scoresschema.File{}, err
 	}
 	if !ok {
-		return scoresJSON{Schema: scoresSchemaV1, Assignments: map[string]assignmentBucket{}}, nil
+		return scoresschema.File{Schema: scoresschema.SchemaV1, Assignments: map[string]scoresschema.AssignmentBucket{}}, nil
 	}
 	scores, err := parseScores(data)
 	if err != nil {
-		return scoresJSON{}, fmt.Errorf("%s/%s/%s: %w", org, configrepo.ConfigRepoName, path, err)
+		return scoresschema.File{}, fmt.Errorf("%s/%s/%s: %w", org, configrepo.ConfigRepoName, path, err)
 	}
 	return scores, nil
 }
@@ -510,25 +511,25 @@ func scoresFilePath(classroom string) string {
 // compatibility is intentionally dropped), so a non-canonical file errors
 // loudly. Entries stay as map[string]any -- download reads only a handful
 // of well-known keys (owner, member_usernames, submissions).
-func parseScores(data []byte) (scoresJSON, error) {
+func parseScores(data []byte) (scoresschema.File, error) {
 	if len(bytes.TrimSpace(data)) == 0 {
-		return scoresJSON{Schema: scoresSchemaV1, Assignments: map[string]assignmentBucket{}}, nil
+		return scoresschema.File{Schema: scoresschema.SchemaV1, Assignments: map[string]scoresschema.AssignmentBucket{}}, nil
 	}
 	var raw struct {
 		Schema      string          `json:"schema"`
 		Assignments json.RawMessage `json:"assignments"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
-		return scoresJSON{}, fmt.Errorf("parse: %w", err)
+		return scoresschema.File{}, fmt.Errorf("parse: %w", err)
 	}
-	if raw.Schema != scoresSchemaV1 {
-		return scoresJSON{}, fmt.Errorf("schema mismatch: got %q, want %q (this CLI handles only v1)", raw.Schema, scoresSchemaV1)
+	if raw.Schema != scoresschema.SchemaV1 {
+		return scoresschema.File{}, fmt.Errorf("schema mismatch: got %q, want %q (this CLI handles only v1)", raw.Schema, scoresschema.SchemaV1)
 	}
 	assignments, err := decodeAssignments(raw.Assignments)
 	if err != nil {
-		return scoresJSON{}, err
+		return scoresschema.File{}, err
 	}
-	return scoresJSON{Schema: raw.Schema, Assignments: assignments}, nil
+	return scoresschema.File{Schema: raw.Schema, Assignments: assignments}, nil
 }
 
 // decodeAssignments decodes the root `assignments` field as the canonical
@@ -537,20 +538,20 @@ func parseScores(data []byte) (scoresJSON, error) {
 // backward compatibility with pre-canonical scores.json is intentionally
 // dropped, so a non-canonical file errors loudly. Mirrors
 // normalize_assignments in collect_scores.py.
-func decodeAssignments(raw json.RawMessage) (map[string]assignmentBucket, error) {
+func decodeAssignments(raw json.RawMessage) (map[string]scoresschema.AssignmentBucket, error) {
 	trimmed := bytes.TrimSpace(raw)
 	if len(trimmed) == 0 || string(trimmed) == "null" {
-		return map[string]assignmentBucket{}, nil
+		return map[string]scoresschema.AssignmentBucket{}, nil
 	}
 	if trimmed[0] != '{' {
 		return nil, fmt.Errorf("assignments must be an object keyed by assignment slug, got %s", string(trimmed))
 	}
-	var m map[string]assignmentBucket
+	var m map[string]scoresschema.AssignmentBucket
 	if err := json.Unmarshal(trimmed, &m); err != nil {
 		return nil, fmt.Errorf("parse assignments: %w", err)
 	}
 	if m == nil {
-		m = map[string]assignmentBucket{}
+		m = map[string]scoresschema.AssignmentBucket{}
 	}
 	// Validate each bucket's `type` so the Go reader rejects the same
 	// non-canonical shapes Python's normalize_assignments does (parity):
@@ -571,7 +572,7 @@ func decodeAssignments(raw json.RawMessage) (map[string]assignmentBucket, error)
 // blank line so teachers see the whole class at a glance. Per-test
 // breakdowns are intentionally omitted — that detail lives in the
 // per-repo result.json / results.json.
-func writeScoresCSV(path string, scores scoresJSON, assignment string, roster []configrepo.RosterRow) error {
+func writeScoresCSV(path string, scores scoresschema.File, assignment string, roster []configrepo.RosterRow) error {
 	entries := entriesForAssignment(scores, assignment)
 	// Map each credited student (lowercased) -> their gradebook entry.
 	// Group entries credit every member in member_usernames; individual
@@ -695,7 +696,7 @@ func submissionRecords(entry map[string]any) []map[string]any {
 // The lookup is case-insensitive -- `assignment add` lowercases slugs on
 // write and the CLI lowercases its argument, but a hand-edited scores.json
 // key might not match exactly.
-func entriesForAssignment(scores scoresJSON, assignment string) []map[string]any {
+func entriesForAssignment(scores scoresschema.File, assignment string) []map[string]any {
 	if bucket, ok := scores.Assignments[assignment]; ok {
 		return bucket.Entries
 	}
@@ -711,7 +712,7 @@ func entriesForAssignment(scores scoresJSON, assignment string) []map[string]any
 // have a gradebook entry for the assignment in scores.json. Used so a
 // group teammate who was fanned a score (but owns no derived repo) is not
 // mistaken for a non-participant.
-func creditedUsernames(scores scoresJSON, assignment string) map[string]struct{} {
+func creditedUsernames(scores scoresschema.File, assignment string) map[string]struct{} {
 	out := make(map[string]struct{})
 	for _, entry := range entriesForAssignment(scores, assignment) {
 		for _, u := range entryCreditedUsernames(entry) {

@@ -1,4 +1,4 @@
-package main
+package classroom
 
 import (
 	"bytes"
@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/foundation50/gh-teacher/internal/assignment"
+	"github.com/foundation50/gh-teacher/internal/githubapi"
 	"github.com/foundation50/gh-teacher/internal/githubtest"
 )
 
@@ -242,7 +243,7 @@ func TestWaitForStableBranch_HappyPath(t *testing.T) {
 		_, _ = io.WriteString(w, `{"commit":{"sha":"abc"}}`)
 	}))
 	defer server.Close()
-	if err := waitForStableBranch(githubtest.NewTestClient(t, server), "o", "r", "main"); err != nil {
+	if err := githubapi.WaitForStableBranch(githubtest.NewTestClient(t, server), "o", "r", "main"); err != nil {
 		t.Errorf("waitForStableBranch: %v", err)
 	}
 }
