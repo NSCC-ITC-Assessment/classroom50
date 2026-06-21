@@ -34,8 +34,19 @@ source:
 		if cfg.Classroom != "cs-principles" || cfg.Assignment != "hello" {
 			t.Errorf("got %+v, want classroom=cs-principles assignment=hello", cfg)
 		}
-		if cfg.Source.Owner != "cs50" || cfg.Source.Repo != "hello-template" || cfg.Source.Branch != "main" {
+		if cfg.Source == nil ||
+			cfg.Source.Owner != "cs50" || cfg.Source.Repo != "hello-template" || cfg.Source.Branch != "main" {
 			t.Errorf("source = %+v, want cs50/hello-template@main", cfg.Source)
+		}
+	})
+
+	t.Run("template-less config (no source) round-trips", func(t *testing.T) {
+		cfg, err := ReadConfig(write(t, "classroom: cs-principles\nassignment: solo\n"))
+		if err != nil {
+			t.Fatalf("ReadConfig(template-less): %v", err)
+		}
+		if cfg.Source != nil {
+			t.Errorf("Source = %+v, want nil for a template-less config", cfg.Source)
 		}
 	})
 
@@ -60,8 +71,8 @@ source:
 	}{
 		{"missing classroom", "assignment: hello\nsource:\n  owner: o\n  repo: r\n  branch: main\n", "missing classroom"},
 		{"missing assignment", "classroom: c\nsource:\n  owner: o\n  repo: r\n  branch: main\n", "missing assignment"},
-		{"missing source owner", "classroom: c\nassignment: a\nsource:\n  repo: r\n  branch: main\n", "missing source"},
-		{"missing source branch", "classroom: c\nassignment: a\nsource:\n  owner: o\n  repo: r\n", "missing source"},
+		{"incomplete source owner", "classroom: c\nassignment: a\nsource:\n  repo: r\n  branch: main\n", "incomplete source"},
+		{"incomplete source branch", "classroom: c\nassignment: a\nsource:\n  owner: o\n  repo: r\n", "incomplete source"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

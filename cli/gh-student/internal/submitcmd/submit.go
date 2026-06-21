@@ -133,23 +133,28 @@ func submitAssignment(_ context.Context, client githubapi.Client, verbose bool, 
 		return err
 	}
 
-	if verbose {
-		_, _ = fmt.Fprintf(out, "Fetching latest instructor .gitignore and .github from %s/%s@%s\n",
-			config.Source.Owner,
-			config.Source.Repo,
-			config.Source.Branch,
-		)
-	}
+	if config.Source != nil {
+		if verbose {
+			_, _ = fmt.Fprintf(out, "Fetching latest instructor .gitignore and .github from %s/%s@%s\n",
+				config.Source.Owner,
+				config.Source.Repo,
+				config.Source.Branch,
+			)
+		}
 
-	if err := fetchRepoPath(client, workTree, config.Source.Owner, config.Source.Repo, config.Source.Branch, ".gitignore"); err != nil {
-		if !classroomcfg.IsHTTPNotFound(err) {
-			return fmt.Errorf("fetch instructor .gitignore: %w", err)
+		if err := fetchRepoPath(client, workTree, config.Source.Owner, config.Source.Repo, config.Source.Branch, ".gitignore"); err != nil {
+			if !classroomcfg.IsHTTPNotFound(err) {
+				return fmt.Errorf("fetch instructor .gitignore: %w", err)
+			}
 		}
-	}
-	if err := fetchRepoPath(client, workTree, config.Source.Owner, config.Source.Repo, config.Source.Branch, ".github"); err != nil {
-		if !classroomcfg.IsHTTPNotFound(err) {
-			return fmt.Errorf("fetch instructor .github: %w", err)
+		if err := fetchRepoPath(client, workTree, config.Source.Owner, config.Source.Repo, config.Source.Branch, ".github"); err != nil {
+			if !classroomcfg.IsHTTPNotFound(err) {
+				return fmt.Errorf("fetch instructor .github: %w", err)
+			}
 		}
+	} else if verbose {
+		// Template-less assignment: no source repo to refresh from.
+		_, _ = fmt.Fprintln(out, "No template source recorded; skipping instructor .gitignore/.github refresh")
 	}
 
 	if verbose {

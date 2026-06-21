@@ -60,11 +60,14 @@ func acceptCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "accept <org> <classroom> <assignment>",
 		Short: "Accept an assignment from an organization's classroom",
-		Long: "Accept an assignment by creating a private copy of the template\n" +
-			"repo at <org>/<classroom>-<assignment>-<username> (lowercased).\n" +
-			"The template repo (which may live outside <org>) is looked up in\n" +
-			"the published assignments.json on the classroom's GitHub Pages\n" +
-			"site (no token required).\n\n" +
+		Long: "Accept an assignment by creating a private repo at\n" +
+			"<org>/<classroom>-<assignment>-<username> (lowercased). The\n" +
+			"assignment is looked up in the published assignments.json on the\n" +
+			"classroom's GitHub Pages site (no token required).\n\n" +
+			"If the assignment has a template repo (which may live outside\n" +
+			"<org>), the new repo is a private copy generated from it. If it\n" +
+			"has no template, an empty private repo is created carrying only\n" +
+			"the autograder workflow shim.\n\n" +
 			"The autograder workflow shim is dropped at\n" +
 			"`.github/workflows/autograde.yaml` in the new repo. For the\n" +
 			"default autograder it's the universal shim embedded in this\n" +
@@ -227,7 +230,11 @@ func acceptAssignment(cmd *cobra.Command, client githubapi.Client, out io.Writer
 	if err := checkAcceptableMode(assignment, entry.Mode); err != nil {
 		return err
 	}
-	if entry.Template.Owner == "" || entry.Template.Repo == "" || entry.Template.Branch == "" {
+	// A template, when present, must be complete. A template-less
+	// assignment (no template block) is accepted as an empty repo
+	// carrying only the autograder shim — see the hasTemplate fork below.
+	hasTemplate := entry.HasTemplate()
+	if entry.Template != nil && !hasTemplate {
 		return fmt.Errorf("assignment %q has an incomplete template ref (owner=%q repo=%q branch=%q) — ask your instructor to re-run `gh teacher assignment add`",
 			assignment, entry.Template.Owner, entry.Template.Repo, entry.Template.Branch)
 	}
@@ -249,9 +256,30 @@ func acceptAssignment(cmd *cobra.Command, client githubapi.Client, out io.Writer
 		shim = workflow.Content
 	}
 
-	// 3) Create the assignment repo. Already-exists → short-circuit
-	//    and leave the existing repo alone.
-	htmlURL, fullName, alreadyExisted, err := createTemplatedPrivateAssignmentRepoInOrg(client, out, username, classroom, assignment, org, entry.Template)
+	// 3) Create the assignment repo. A templated assignment generates
+	//    from the template; a template-less one creates an empty
+	//    auto-init'd repo. Already-exists → short-circuit and leave the
+	//    existing repo alone.
+	var (
+		htmlURL        string
+		fullName       string
+		alreadyExisted bool
+		commitBranch   string
+		cfgSource      *classroomcfg.Source
+	)
+	if hasTemplate {
+		htmlURL, fullName, alreadyExisted, err = createTemplatedPrivateAssignmentRepoInOrg(client, out, username, classroom, assignment, org, *entry.Template)
+		commitBranch = entry.Template.Branch
+		cfgSource = &classroomcfg.Source{
+			Owner:  entry.Template.Owner,
+			Repo:   entry.Template.Repo,
+			Branch: entry.Template.Branch,
+		}
+	} else {
+		var defaultBranch string
+		htmlURL, fullName, defaultBranch, alreadyExisted, err = createEmptyPrivateAssignmentRepoInOrg(client, out, username, classroom, assignment, org)
+		commitBranch = defaultBranch
+	}
 	if err != nil {
 		return err
 	}
@@ -271,18 +299,14 @@ func acceptAssignment(cmd *cobra.Command, client githubapi.Client, out io.Writer
 
 	// 5) Write .classroom50.yaml + the autograde workflow in one
 	//    Tree commit. classroomcfg.DropFiles waits out GitHub's
-	//    post-template-generation replication lag.
+	//    post-creation replication lag.
 	repoName := reponame.Name(classroom, assignment, username)
 	cfg := classroomcfg.Config{
 		Classroom:  classroom,
 		Assignment: assignment,
-		Source: classroomcfg.Source{
-			Owner:  entry.Template.Owner,
-			Repo:   entry.Template.Repo,
-			Branch: entry.Template.Branch,
-		},
+		Source:     cfgSource,
 	}
-	if err := classroomcfg.DropFiles(client, org, repoName, entry.Template.Branch, cfg, shim); err != nil {
+	if err := classroomcfg.DropFiles(client, org, repoName, commitBranch, cfg, shim); err != nil {
 		return err
 	}
 	if verbose {
@@ -346,10 +370,11 @@ func getAuthedUsername(client githubapi.Client) (string, error) {
 }
 
 type GeneratedRepo struct {
-	Name     string `json:"name"`
-	FullName string `json:"full_name"`
-	HTMLURL  string `json:"html_url"`
-	Private  bool   `json:"private"`
+	Name          string `json:"name"`
+	FullName      string `json:"full_name"`
+	HTMLURL       string `json:"html_url"`
+	Private       bool   `json:"private"`
+	DefaultBranch string `json:"default_branch"`
 
 	HasIssues   bool `json:"has_issues"`
 	HasProjects bool `json:"has_projects"`
@@ -421,6 +446,84 @@ func createTemplatedPrivateAssignmentRepoInOrg(client githubapi.Client, out io.W
 	}
 
 	return updated.HTMLURL, updated.FullName, false, nil
+}
+
+// createEmptyPrivateAssignmentRepoInOrg creates an empty private repo for
+// a template-less assignment via POST /orgs/{org}/repos with
+// auto_init:true (mirroring gh-teacher's ensureConfigRepo). auto_init is
+// load-bearing: it gives the repo an initial commit + default branch so
+// the shared WaitForStableBranch poll and the fresh-repo Tree-commit
+// retry both work unchanged. Returns the repo's default_branch so the
+// caller commits the shim onto the right ref. issues/projects/wiki are
+// disabled like the templated path. 422-already-exists →
+// alreadyExisted=true and the PATCH is skipped so re-runs don't disturb
+// an existing repo.
+func createEmptyPrivateAssignmentRepoInOrg(client githubapi.Client, out io.Writer, username, classroom, assignment, org string) (htmlURL, fullName, defaultBranch string, alreadyExisted bool, err error) {
+	newRepoName := reponame.Name(classroom, assignment, username)
+	createBody, err := json.Marshal(map[string]any{
+		"name":      newRepoName,
+		"private":   true,
+		"auto_init": true,
+	})
+	if err != nil {
+		return "", "", "", false, fmt.Errorf("error encoding json for empty repo: %w", err)
+	}
+
+	createPath := fmt.Sprintf("orgs/%s/repos", url.PathEscape(org))
+
+	var created GeneratedRepo
+	if err := client.Post(createPath, bytes.NewReader(createBody), &created); err != nil {
+		if httpErr, ok := errors.AsType[*githubapi.HTTPError](err); ok && httpErr.StatusCode == http.StatusUnprocessableEntity && is422AlreadyExists(httpErr) {
+			getPath := fmt.Sprintf("repos/%s/%s", url.PathEscape(org), url.PathEscape(newRepoName))
+			if getErr := client.Get(getPath, &created); getErr != nil {
+				return "", "", "", false, fmt.Errorf("POST %s returned 422 and follow-up GET %s failed: %w", createPath, getPath, getErr)
+			}
+			return created.HTMLURL, created.FullName, defaultBranchOrMain(created.DefaultBranch), true, nil
+		}
+		return "", "", "", false, fmt.Errorf("POST %s: %w", createPath, err)
+	}
+
+	patchBody, err := json.Marshal(map[string]any{
+		"has_issues":   false,
+		"has_projects": false,
+		"has_wiki":     false,
+	})
+	if err != nil {
+		return "", "", "", false, fmt.Errorf("patch body encode error: %w", err)
+	}
+
+	patchPath := fmt.Sprintf("repos/%s/%s", url.PathEscape(org), url.PathEscape(newRepoName))
+
+	var updated GeneratedRepo
+	if err := client.Patch(patchPath, bytes.NewReader(patchBody), &updated); err != nil {
+		return "", "", "", false, fmt.Errorf("created %s/%s, but failed to disable issues/projects/wiki: %w", org, newRepoName, err)
+	}
+
+	if verbose {
+		_, _ = fmt.Fprintf(
+			out,
+			"created empty private repo %s (template-less), with issues/projects/wiki disabled: %s\n",
+			updated.FullName,
+			updated.HTMLURL,
+		)
+	}
+
+	return updated.HTMLURL, updated.FullName, defaultBranchOrMain(updated.DefaultBranch), false, nil
+}
+
+// defaultBranchOrMain guards against an empty default_branch in the
+// create/GET response. The templated path takes its branch from the
+// (HasTemplate-guaranteed non-empty) template ref; the empty-repo path
+// has no such guarantee, so an empty value here would flow into
+// WaitForStableBranch("") and 404-loop to an opaque "did not stabilize"
+// failure, leaving a created-but-shimless repo. "main" is GitHub's
+// default for an auto_init repo and matches what `gh student submit`
+// pushes to.
+func defaultBranchOrMain(branch string) string {
+	if branch == "" {
+		return "main"
+	}
+	return branch
 }
 
 // inviteUserAsAdmin keeps username as a repo `admin` collaborator. PUT

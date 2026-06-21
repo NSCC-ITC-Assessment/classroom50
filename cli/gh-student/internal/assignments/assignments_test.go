@@ -9,6 +9,27 @@ import (
 	"testing"
 )
 
+func TestHasTemplate(t *testing.T) {
+	cases := []struct {
+		name string
+		tmpl *TemplateRef
+		want bool
+	}{
+		{"nil template (template-less)", nil, false},
+		{"complete template", &TemplateRef{Owner: "cs50", Repo: "hello", Branch: "main"}, true},
+		{"missing branch", &TemplateRef{Owner: "cs50", Repo: "hello"}, false},
+		{"missing owner", &TemplateRef{Repo: "hello", Branch: "main"}, false},
+		{"empty non-nil", &TemplateRef{}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := (Entry{Template: tc.tmpl}).HasTemplate(); got != tc.want {
+				t.Errorf("HasTemplate() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestPagesAssignmentsURL(t *testing.T) {
 	// Public contract: publish-pages publishes
 	// `<classroom>/assignments.json` at
@@ -169,7 +190,8 @@ func TestFetchAssignmentEntry_HappyPath(t *testing.T) {
 	if entry.Mode != "individual" {
 		t.Errorf("Mode = %q, want %q", entry.Mode, "individual")
 	}
-	if entry.Template.Owner != "cs50" || entry.Template.Repo != "hello-template" || entry.Template.Branch != "main" {
+	if entry.Template == nil ||
+		entry.Template.Owner != "cs50" || entry.Template.Repo != "hello-template" || entry.Template.Branch != "main" {
 		t.Errorf("Template = %#v, want cs50/hello-template@main", entry.Template)
 	}
 }

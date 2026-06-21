@@ -36,12 +36,12 @@ const PagesFetchTimeout = 15 * time.Second
 // fields the student CLI needs are typed; unrecognized fields decode
 // silently so future shape additions work without a flag day.
 type Entry struct {
-	Slug         string      `json:"slug"`
-	Name         string      `json:"name"`
-	Mode         string      `json:"mode"`
-	MaxGroupSize int         `json:"max_group_size,omitempty"`
-	Template     TemplateRef `json:"template"`
-	Autograder   string      `json:"autograder"`
+	Slug         string       `json:"slug"`
+	Name         string       `json:"name"`
+	Mode         string       `json:"mode"`
+	MaxGroupSize int          `json:"max_group_size,omitempty"`
+	Template     *TemplateRef `json:"template,omitempty"`
+	Autograder   string       `json:"autograder"`
 }
 
 // defaultAutograderName is the fallback when Entry.Autograder is empty.
@@ -57,9 +57,17 @@ func (e Entry) ResolveAutograder() string {
 	return e.Autograder
 }
 
+// HasTemplate reports whether the assignment has a complete starter-repo
+// template. A template-less assignment (Template nil) is accepted as an
+// empty repo carrying only the autograder shim.
+func (e Entry) HasTemplate() bool {
+	return e.Template != nil &&
+		e.Template.Owner != "" && e.Template.Repo != "" && e.Template.Branch != ""
+}
+
 // TemplateRef: assignment starter-code source. All three fields are
-// always populated by `gh teacher assignment add` (which fills
-// `default_branch` when `@branch` is omitted).
+// populated by `gh teacher assignment add` when a template is supplied;
+// a template-less assignment omits the block entirely (Template is nil).
 type TemplateRef struct {
 	Owner  string `json:"owner"`
 	Repo   string `json:"repo"`

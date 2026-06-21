@@ -31,19 +31,21 @@ const AutogradeWorkflowPath = ".github/workflows/autograde.yaml"
 // Config is the on-disk shape of `.classroom50.yaml`. classroom +
 // assignment identify the submission; source.* records the template repo
 // so `gh student submit` can re-fetch the latest instructor `.gitignore`
-// / `.github/` on each push.
+// / `.github/` on each push. source is omitted for a template-less
+// assignment (nothing to re-fetch).
 //
 // The runner derives its config-repo coordinates from the calling repo's
 // org (security-pinned at workflow runtime) and the classroom slug, so no
 // `config:` block is needed on disk.
 type Config struct {
-	Classroom  string `yaml:"classroom"`
-	Assignment string `yaml:"assignment"`
-	Source     Source `yaml:"source"`
+	Classroom  string  `yaml:"classroom"`
+	Assignment string  `yaml:"assignment"`
+	Source     *Source `yaml:"source,omitempty"`
 }
 
 // Source: source.* block (template repo). Submit reads instructor-side
-// `.gitignore` / `.github/` from here.
+// `.gitignore` / `.github/` from here. Absent for a template-less
+// assignment.
 type Source struct {
 	Owner  string `yaml:"owner"`
 	Repo   string `yaml:"repo"`
@@ -152,8 +154,10 @@ func IsHTTPNotFound(err error) bool {
 }
 
 // ReadConfig reads and validates a `.classroom50.yaml` at path. The
-// classroom/assignment identity and the full source.* template block must
-// all be present (submit and invite both rely on them).
+// classroom/assignment identity is always required. The source.* template
+// block is optional (a template-less assignment has none); when present,
+// all three fields must be set so submit's instructor-file refresh has a
+// complete ref.
 func ReadConfig(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -171,8 +175,9 @@ func ReadConfig(path string) (*Config, error) {
 	if config.Assignment == "" {
 		return nil, fmt.Errorf("missing assignment in %s", path)
 	}
-	if config.Source.Owner == "" || config.Source.Repo == "" || config.Source.Branch == "" {
-		return nil, fmt.Errorf("missing source.owner/source.repo/source.branch: %s", path)
+	if config.Source != nil &&
+		(config.Source.Owner == "" || config.Source.Repo == "" || config.Source.Branch == "") {
+		return nil, fmt.Errorf("incomplete source.owner/source.repo/source.branch (omit the whole source block for a template-less assignment): %s", path)
 	}
 
 	return &config, nil

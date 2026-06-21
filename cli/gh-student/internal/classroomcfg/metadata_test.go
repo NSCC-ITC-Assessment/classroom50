@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -21,7 +22,7 @@ func TestRenderClassroomMetadata_Shape(t *testing.T) {
 	cfg := Config{
 		Classroom:  "cs-principles",
 		Assignment: "hello",
-		Source: Source{
+		Source: &Source{
 			Owner:  "cs50",
 			Repo:   "hello-template",
 			Branch: "main",
@@ -67,8 +68,29 @@ func TestRenderClassroomMetadata_Shape(t *testing.T) {
 	if err := yaml.Unmarshal(out, &round); err != nil {
 		t.Fatalf("round-trip parse: %v", err)
 	}
-	if round != cfg {
+	if !reflect.DeepEqual(round, cfg) {
 		t.Errorf("round-trip mismatch:\n got: %#v\nwant: %#v", round, cfg)
+	}
+}
+
+func TestRenderClassroomMetadata_TemplateLessOmitsSource(t *testing.T) {
+	// A template-less assignment carries no Source: the rendered
+	// `.classroom50.yaml` must omit the `source:` block entirely
+	// (the feature's on-disk shape), and round-trip back to nil Source.
+	cfg := Config{Classroom: "cs-principles", Assignment: "solo"}
+	out, err := Render(cfg)
+	if err != nil {
+		t.Fatalf("Render(template-less): %v", err)
+	}
+	if strings.Contains(string(out), "source:") {
+		t.Errorf("rendered metadata must omit the source block for a template-less assignment, got:\n%s", out)
+	}
+	var round Config
+	if err := yaml.Unmarshal(out, &round); err != nil {
+		t.Fatalf("round-trip parse: %v", err)
+	}
+	if round.Source != nil {
+		t.Errorf("round-tripped Source = %+v, want nil", round.Source)
 	}
 }
 
@@ -79,7 +101,7 @@ func TestRenderClassroomMetadata_PreservesNumericLookingSlugs(t *testing.T) {
 	cfg := Config{
 		Classroom:  "2026",
 		Assignment: "hello",
-		Source:     Source{Owner: "cs50", Repo: "hello-template", Branch: "main"},
+		Source:     &Source{Owner: "cs50", Repo: "hello-template", Branch: "main"},
 	}
 	out, err := Render(cfg)
 	if err != nil {
