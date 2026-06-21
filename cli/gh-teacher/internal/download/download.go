@@ -42,16 +42,13 @@ const dirTimestampFormat = "2006_01_02_T_15_04_05"
 
 // Cross-binary contract with collect_scores.py and
 // autograde-runner.yaml (which creates the submit-tag releases):
-// asset name, submit-tag prefix, per-asset size cap, and the
-// fallback window when /releases/latest points at a non-submit tag.
-// Keep aligned with `RESULT_ASSET_NAME`, `SUBMIT_TAG_PREFIX`,
-// `MAX_RESULT_BYTES`, and `MAX_RELEASES_FALLBACK` in
-// skeleton/dotgithub/scripts/collect_scores.py.
+// asset name, submit-tag prefix, and per-asset size cap. Keep aligned
+// with `RESULT_ASSET_NAME`, `SUBMIT_TAG_PREFIX`, and `MAX_RESULT_BYTES`
+// in skeleton/dotgithub/scripts/collect_scores.py.
 const (
-	resultAssetName     = "result.json"
-	submitTagPrefix     = "submit/"
-	maxResultBytes      = 10 * 1024 * 1024
-	maxReleasesFallback = 30
+	resultAssetName = "result.json"
+	submitTagPrefix = "submit/"
+	maxResultBytes  = 10 * 1024 * 1024
 )
 
 // resultsAssetName: the per-repo history file written alongside the
@@ -901,27 +898,11 @@ type releaseAsset struct {
 	URL  string `json:"url"`
 }
 
-// latestRelease GETs /repos/{owner}/{repo}/releases/latest. 404 →
-// (zero, false, nil). Other HTTP errors propagate.
-func latestRelease(client githubapi.Client, owner, repo string) (release, bool, error) {
-	path := fmt.Sprintf("repos/%s/%s/releases/latest",
-		url.PathEscape(owner), url.PathEscape(repo))
-	var rel release
-	if err := client.Get(path, &rel); err != nil {
-		if cliutil.IsHTTPStatus(err, http.StatusNotFound) {
-			return release{}, false, nil
-		}
-		return release{}, false, fmt.Errorf("GET %s: %w", path, err)
-	}
-	return rel, true, nil
-}
-
 // listAllSubmitReleases returns every submit-tag release for a repo,
-// newest first, walking the full /releases pagination. Unlike
-// latestSubmitRelease (single newest), this is the "collect all
-// submissions" walk: a student who pushed N times has N submit-tag
-// releases, and all N are returned. Non-submit releases (e.g. a
-// student's hand-created tag) are filtered out. Mirrors
+// newest first, walking the full /releases pagination. This is the
+// "collect all submissions" walk: a student who pushed N times has N
+// submit-tag releases, and all N are returned. Non-submit releases
+// (e.g. a student's hand-created tag) are filtered out. Mirrors
 // `all_submit_releases` in collect_scores.py.
 func listAllSubmitReleases(client githubapi.Client, owner, repo string) ([]release, error) {
 	all, err := githubapi.PaginateAll[release](client, allReleasesPerPage, allReleasesPagesMax,
@@ -930,8 +911,7 @@ func listAllSubmitReleases(client githubapi.Client, owner, repo string) ([]relea
 				url.PathEscape(owner), url.PathEscape(repo), allReleasesPerPage, page)
 		}, func(path string, err error) error {
 			// A repo with no releases (or not accepted yet) 404s; treat
-			// it as "no submissions" rather than a hard failure, matching
-			// latestRelease's 404 handling.
+			// it as "no submissions" rather than a hard failure.
 			if cliutil.IsHTTPStatus(err, http.StatusNotFound) {
 				return errNoReleases
 			}
@@ -956,50 +936,6 @@ func listAllSubmitReleases(client githubapi.Client, owner, repo string) ([]relea
 // or repo not accepted) so listAllSubmitReleases can map it to an
 // empty result instead of a hard error.
 var errNoReleases = errors.New("no releases")
-
-// latestSubmitRelease returns the newest submit-tag release.
-// Fast path: one call to /releases/latest. When the latest is a
-// non-submit tag (e.g. a student created their own release), scan
-// a bounded recent-releases window so the actual submission isn't
-// hidden. Mirrors `latest_submit_release_or_none` in collect_scores.py.
-func latestSubmitRelease(client githubapi.Client, owner, repo string) (release, bool, error) {
-	rel, ok, err := latestRelease(client, owner, repo)
-	if err != nil || !ok {
-		return rel, ok, err
-	}
-	if strings.HasPrefix(rel.TagName, submitTagPrefix) {
-		return rel, true, nil
-	}
-	recent, err := listRecentReleases(client, owner, repo, maxReleasesFallback)
-	if err != nil {
-		return release{}, false, err
-	}
-	for _, r := range recent {
-		if strings.HasPrefix(r.TagName, submitTagPrefix) {
-			return r, true, nil
-		}
-	}
-	return release{}, false, nil
-}
-
-// listRecentReleases returns up to `limit` releases (newest first)
-// from /releases?per_page=N. Caller bounds the window — releases
-// older than that are irrelevant to the submit-tag fallback.
-func listRecentReleases(client githubapi.Client, owner, repo string, limit int) ([]release, error) {
-	if limit < 1 {
-		limit = 1
-	}
-	if limit > 100 {
-		limit = 100
-	}
-	path := fmt.Sprintf("repos/%s/%s/releases?per_page=%d",
-		url.PathEscape(owner), url.PathEscape(repo), limit)
-	var releases []release
-	if err := client.Get(path, &releases); err != nil {
-		return nil, fmt.Errorf("GET %s: %w", path, err)
-	}
-	return releases, nil
-}
 
 // selectResultAsset returns the result.json asset URL. Empty when
 // absent; error when the release carries more than one. Matches

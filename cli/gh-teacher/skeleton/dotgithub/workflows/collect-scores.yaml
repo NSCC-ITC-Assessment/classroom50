@@ -2,9 +2,9 @@ name: Collect Scores
 
 # Teacher-triggered workflow. Iterates the (student, assignment)
 # Cartesian product from <classroom>/students.csv ×
-# <classroom>/assignments.json, asks GitHub for each expected
-# `<classroom>-<assignment>-<username>` repo's latest release, and
-# downloads `result.json` from it. Single-writer by design — no
+# <classroom>/assignments.json, pages through each expected
+# `<classroom>-<assignment>-<username>` repo's `submit/*` releases, and
+# downloads `result.json` from each. Single-writer by design — no
 # concurrent ingest, no per-student dispatch event, no broad
 # cross-repo write secret.
 
@@ -40,7 +40,7 @@ jobs:
         env:
           # Read-only PAT scoped to `Contents: read` on
           # <classroom>-* student repos. Required for the
-          # per-repo `releases/latest` + `result.json` asset
+          # per-repo `releases` + `result.json` asset
           # downloads. Rotated via
           # `gh teacher rotate-service-token <org>`.
           CLASSROOM50_SERVICE_TOKEN: ${{ secrets.CLASSROOM50_SERVICE_TOKEN }}

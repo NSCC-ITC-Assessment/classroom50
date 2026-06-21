@@ -2,8 +2,8 @@
 """Teacher-triggered scores collector.
 
 Walks roster × assignment manifest: for each (student, assignment)
-pair, fetches the canonical `<classroom>-<assignment>-<username>`
-repo's latest release, validates the `result.json` asset, and
+pair, pages through the canonical `<classroom>-<assignment>-<username>`
+repo's `submit/*` releases, validates each `result.json` asset, and
 upserts into `<classroom>/scores.json`.
 
 `scores.json` is keyed by assignment slug under the root `assignments`
@@ -82,10 +82,6 @@ RESULT_ASSET_NAME = "result.json"
 # 10 MiB bounds a hostile asset without rejecting any plausible
 # submission.
 MAX_RESULT_BYTES = 10 * 1024 * 1024
-
-# When `/releases/latest` points at a non-submit release, scan a
-# bounded window for the newest submit-tag release.
-MAX_RELEASES_FALLBACK = 30
 
 # Roster header written by `gh teacher classroom add`. Mirrors
 # rosterColumns in cli/gh-teacher/students_csv.go.
@@ -1005,12 +1001,11 @@ def all_submit_releases(
     """Return EVERY submit-tag release for a repo, newest first, walking
     the full /releases pagination.
 
-    Unlike latest_submit_release_or_none (which returns the single newest
-    submission), this collects the complete submission history: a student
-    who pushed N times to `main` has N submit/* releases, and all N are
-    returned. Non-submit releases (e.g. a student's hand-created tag) are
-    filtered out. A 404 (no releases yet, or repo not accepted) yields an
-    empty list, matching latest_release_or_none's 404 handling.
+    This collects the complete submission history: a student who pushed N
+    times to `main` has N submit/* releases, and all N are returned.
+    Non-submit releases (e.g. a student's hand-created tag) are filtered
+    out. A 404 (no releases yet, or repo not accepted) yields an empty
+    list.
 
     Pagination follows GitHub's authoritative `Link: rel="next"` header
     (host-pinned to api_url so the bearer token can't be pivoted off-host),
@@ -1057,70 +1052,6 @@ def all_submit_releases(
         f"repos/{owner}/{repo}/releases: too many releases to enumerate "
         f"(hit the {max_pages}-page cap)"
     )
-
-
-def latest_submit_release_or_none(
-    api_url: str, owner: str, repo: str, token: str
-) -> dict[str, Any] | None:
-    """Return the newest submit-tag release for a repo, or None.
-    Fast path: one call to `/releases/latest`. When latest is a
-    non-submit release, scan a bounded recent-releases window so a
-    student's hand-created release doesn't hide their submission.
-    """
-    latest = latest_release_or_none(api_url, owner, repo, token)
-    if latest is None:
-        return None
-    tag = latest.get("tag_name") or ""
-    if tag.startswith(SUBMIT_TAG_PREFIX):
-        return latest
-
-    for release in list_recent_releases(api_url, owner, repo, token, limit=MAX_RELEASES_FALLBACK):
-        tag = release.get("tag_name") or ""
-        if tag.startswith(SUBMIT_TAG_PREFIX):
-            return release
-    return None
-
-
-def latest_release_or_none(
-    api_url: str, owner: str, repo: str, token: str
-) -> dict[str, Any] | None:
-    """GET /repos/{owner}/{repo}/releases/latest. 404 → None
-    (covers both "no releases yet" and "repo not accepted yet"; the
-    nightly run shouldn't fail because one student isn't
-    participating). Other HTTP errors propagate so the workflow
-    fails loudly.
-    """
-    url = f"{_repo_url(api_url, owner, repo)}/releases/latest"
-    try:
-        body = _http_get(url, token, accept="application/vnd.github+json")
-    except urllib.error.HTTPError as exc:
-        if exc.code == 404:
-            return None
-        raise
-    release = json.loads(body.decode("utf-8"))
-    if not isinstance(release, dict):
-        raise ValueError(f"GET {url}: expected JSON object, got {type(release).__name__}")
-    return release
-
-
-def list_recent_releases(
-    api_url: str, owner: str, repo: str, token: str, *, limit: int
-) -> list[dict[str, Any]]:
-    """Up to `limit` most recent releases (newest first). Used as a
-    bounded fallback when `/releases/latest` is a non-submit tag.
-    """
-    per_page = max(1, min(limit, 100))
-    url = f"{_repo_url(api_url, owner, repo)}/releases?per_page={per_page}"
-    body = _http_get(url, token, accept="application/vnd.github+json")
-    releases = json.loads(body.decode("utf-8"))
-    if not isinstance(releases, list):
-        raise ValueError(f"GET {url}: expected JSON array, got {type(releases).__name__}")
-    for i, release in enumerate(releases):
-        if not isinstance(release, dict):
-            raise ValueError(
-                f"GET {url}: expected release object at index {i}, got {type(release).__name__}"
-            )
-    return releases
 
 
 def _next_page_link(link_header: str | None) -> str | None:

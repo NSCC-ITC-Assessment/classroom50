@@ -1417,34 +1417,6 @@ class TestErrorClassification:
 
 
 class TestReleaseLookup:
-    def test_latest_submit_release_uses_direct_latest_when_submit_tag(self, monkeypatch):
-        calls = []
-
-        def fake_http_get(url, token, *, accept, max_bytes=None):
-            calls.append(url)
-            return json.dumps({"tag_name": "submit/2026-06-01T14-32-05Z"}).encode()
-
-        monkeypatch.setattr(cs, "_http_get", fake_http_get)
-        release = cs.latest_submit_release_or_none("https://api.github.com", "org", "repo", "token")
-        assert release["tag_name"].startswith("submit/")
-        assert calls == ["https://api.github.com/repos/org/repo/releases/latest"]
-
-    def test_latest_submit_release_falls_back_when_latest_is_non_submit(self, monkeypatch):
-        def fake_http_get(url, token, *, accept, max_bytes=None):
-            if url.endswith("/releases/latest"):
-                return json.dumps({"tag_name": "manual-release"}).encode()
-            assert url.endswith("/releases?per_page=30")
-            return json.dumps(
-                [
-                    {"tag_name": "manual-release"},
-                    {"tag_name": "submit/2026-06-01T14-32-05Z"},
-                ]
-            ).encode()
-
-        monkeypatch.setattr(cs, "_http_get", fake_http_get)
-        release = cs.latest_submit_release_or_none("https://api.github.com", "org", "repo", "token")
-        assert release["tag_name"] == "submit/2026-06-01T14-32-05Z"
-
     def test_collect_classroom_warns_and_skips_malformed_latest_release(self, monkeypatch, capsys):
         # One malformed release listing is a per-repo
         # failure, not a run-killer like auth/network errors.
