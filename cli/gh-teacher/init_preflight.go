@@ -13,6 +13,7 @@ import (
 	"github.com/foundation50/gh-teacher/internal/cliutil"
 	"github.com/foundation50/gh-teacher/internal/configrepo"
 	"github.com/foundation50/gh-teacher/internal/githubapi"
+	"github.com/foundation50/gh-teacher/internal/servicetoken"
 	"github.com/foundation50/gh-teacher/internal/ui"
 	"github.com/foundation50/gh-teacher/internal/validate"
 )
@@ -88,7 +89,7 @@ func runPreflight(client githubapi.Client, org string, tok tokenSource) prefligh
 	// TTY) isn't falsely blocked. A repo-not-found / error here means
 	// first-time setup, so a token is required. The result is carried on
 	// the preflight so the provisioning step doesn't re-fetch it.
-	res.SecretExists, _ = serviceSecretExists(client, org, configrepo.ConfigRepoName)
+	res.SecretExists, _ = servicetoken.SecretExists(client, org, configrepo.ConfigRepoName)
 	res.Checks = append(res.Checks, checkTokenAvailability(tok, res.SecretExists))
 
 	for _, c := range res.Checks {
@@ -224,7 +225,7 @@ func checkOwnership(client githubapi.Client, org, login string) preflightCheck {
 }
 
 // checkTokenAvailability catches the "no service token AND no way to
-// prompt for one" case before init mutates anything. readServiceToken
+// prompt for one" case before init mutates anything. servicetoken.ReadToken
 // reads the env var, else a piped stdin line, else a hidden stderr
 // prompt; if the env is unset, stdin is a TTY (so it won't read a piped
 // line), and stderr is NOT a TTY, the prompt path errors — but only
@@ -238,7 +239,7 @@ func checkTokenAvailability(tok tokenSource, secretExists bool) preflightCheck {
 		c.Detail = "already configured (re-run leaves it untouched)"
 	case tok.envSet:
 		c.Status = preflightOK
-		c.Detail = envServiceToken + " is set"
+		c.Detail = servicetoken.EnvServiceToken + " is set"
 	case tok.stdinPiped:
 		c.Status = preflightOK
 		c.Detail = "token will be read from piped stdin"
@@ -247,7 +248,7 @@ func checkTokenAvailability(tok tokenSource, secretExists bool) preflightCheck {
 		c.Detail = "token will be prompted interactively"
 	default:
 		c.Status = preflightFail
-		c.Detail = fmt.Sprintf("no %s set and no interactive terminal to prompt on; set %s in the environment before re-running", envServiceToken, envServiceToken)
+		c.Detail = fmt.Sprintf("no %s set and no interactive terminal to prompt on; set %s in the environment before re-running", servicetoken.EnvServiceToken, servicetoken.EnvServiceToken)
 	}
 	return c
 }
@@ -256,7 +257,7 @@ func checkTokenAvailability(tok tokenSource, secretExists bool) preflightCheck {
 // availability check. stdinPiped means stdin is a pipe/file (readable as
 // one line), distinct from stdinTTY (interactive).
 func currentTokenSource() tokenSource {
-	envSet := strings.TrimSpace(os.Getenv(envServiceToken)) != ""
+	envSet := strings.TrimSpace(os.Getenv(servicetoken.EnvServiceToken)) != ""
 	stdinTTY := ghauth.IsCharDevice(os.Stdin)
 	return tokenSource{
 		envSet:     envSet,

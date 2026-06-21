@@ -1,4 +1,4 @@
-package main
+package servicetoken
 
 import (
 	"crypto/rand"
@@ -38,7 +38,7 @@ func TestServiceSecretExists(t *testing.T) {
 			t.Cleanup(server.Close)
 			client := githubtest.NewTestClient(t, server)
 
-			got, err := serviceSecretExists(client, "o", "classroom50")
+			got, err := SecretExists(client, "o", "classroom50")
 			if got != tc.want {
 				t.Errorf("exists = %v, want %v", got, tc.want)
 			}
@@ -79,7 +79,7 @@ func TestValidateServiceToken(t *testing.T) {
 			t.Cleanup(server.Close)
 			client := githubtest.NewTestClient(t, server)
 
-			err := validateServiceTokenWithClient(client, "cs50")
+			err := validateTokenWithClient(client, "cs50")
 			if tc.wantErr && err == nil {
 				t.Fatalf("expected an error for status %d", tc.status)
 			}
@@ -137,7 +137,7 @@ func TestProvisionServiceSecret_PutStatus(t *testing.T) {
 			t.Cleanup(server.Close)
 			client := githubtest.NewTestClient(t, server)
 
-			err := provisionServiceSecret(client, io.Discard, "o", "classroom50", []byte("ghp_test"), "stored")
+			err := ProvisionSecret(client, io.Discard, "o", "classroom50", []byte("ghp_test"), "stored")
 			if tc.wantErr {
 				if err == nil {
 					t.Fatalf("status %d should be rejected by the 201/204 assertion", tc.putStatus)

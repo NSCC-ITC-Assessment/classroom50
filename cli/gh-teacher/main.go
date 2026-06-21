@@ -21,6 +21,7 @@ import (
 	"github.com/foundation50/gh-teacher/internal/member"
 	"github.com/foundation50/gh-teacher/internal/remove"
 	"github.com/foundation50/gh-teacher/internal/roster"
+	"github.com/foundation50/gh-teacher/internal/servicetoken"
 	"github.com/foundation50/gh-teacher/internal/teardown"
 )
 
@@ -45,7 +46,7 @@ func main() {
 	root.AddCommand(auth.NewLogoutCmd())
 	root.AddCommand(initCmd())
 	root.AddCommand(auditCmd())
-	root.AddCommand(rotateServiceTokenCmd())
+	root.AddCommand(servicetoken.NewRotateCmd())
 	root.AddCommand(classroom.NewCmd())
 	root.AddCommand(roster.NewCmd())
 	root.AddCommand(assignmentCmd())
