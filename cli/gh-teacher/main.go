@@ -7,13 +7,14 @@ import (
 	"syscall"
 
 	// Embed the IANA tz database so LoadLocation (due-date timezone
-	// detection in assignment.go) works on hosts without system
+	// detection in internal/assignmentcmd) works on hosts without system
 	// zoneinfo -- otherwise a named $TZ silently falls back to
 	// time.Local and deadlines normalize to the wrong instant.
 	_ "time/tzdata"
 
 	"github.com/spf13/cobra"
 
+	"github.com/foundation50/gh-teacher/internal/assignmentcmd"
 	"github.com/foundation50/gh-teacher/internal/audit"
 	"github.com/foundation50/gh-teacher/internal/auth"
 	"github.com/foundation50/gh-teacher/internal/classroom"
@@ -50,7 +51,7 @@ func main() {
 	root.AddCommand(servicetoken.NewRotateCmd())
 	root.AddCommand(classroom.NewCmd())
 	root.AddCommand(roster.NewCmd())
-	root.AddCommand(assignmentCmd())
+	root.AddCommand(assignmentcmd.NewCmd())
 	root.AddCommand(autograderCmd())
 	root.AddCommand(invite.NewCmd())
 	root.AddCommand(remove.NewCmd())

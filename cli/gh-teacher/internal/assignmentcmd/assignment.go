@@ -1,4 +1,16 @@
-package main
+// Package assignmentcmd implements the `gh teacher assignment` command
+// group: add / list / remove assignment entries in a classroom's
+// assignments.json, plus the `assignment test` subgroup for declarative
+// test specs. It is an extracted command package (mirrors internal/audit,
+// internal/teardown, internal/download): only NewCmd is exported; the
+// per-subcommand orchestration, template/due-date parsing, and the
+// configwrite build callbacks are package-private. It is distinct from
+// internal/assignment, the pure data layer it consumes for parsing and
+// validating the manifest. Depends on the internal/* substrate seams
+// (assignment data layer, autograder, cliutil, configrepo, configwrite,
+// githubapi, output, validate) plus the shared contract package, never
+// on package main.
+package assignmentcmd
 
 import (
 	"errors"
@@ -23,7 +35,7 @@ import (
 	"github.com/foundation50/gh-teacher/internal/validate"
 )
 
-func assignmentCmd() *cobra.Command {
+func NewCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "assignment",
 		Short: "Manage assignments inside the config repo",
