@@ -300,7 +300,7 @@ func TestRunAssignmentAdd_WithTestsPersists(t *testing.T) {
 	tests := []assignment.TestSpec{{Name: "compiles", Type: "run", Run: "true", Points: 1}}
 	var stdout, stderr bytes.Buffer
 	err := runAssignmentAdd(client, &stdout, &stderr, "o", "cs-principles", "hello", "Hello", "",
-		templateArg{Owner: "cs50", Repo: "hello-template"}, "", nil, "individual", 0, "default", nil, tests, false)
+		&templateArg{Owner: "cs50", Repo: "hello-template"}, "", nil, "individual", 0, "default", nil, tests, false)
 	if err != nil {
 		t.Fatalf("runAssignmentAdd: %v", err)
 	}
@@ -316,13 +316,63 @@ func TestRunAssignmentAdd_GroupModePersists(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 	err := runAssignmentAdd(client, &stdout, &stderr, "o", "cs-principles", "hello", "Hello", "",
-		templateArg{Owner: "cs50", Repo: "hello-template"}, "", nil, "group", 3, "default", nil, nil, false)
+		&templateArg{Owner: "cs50", Repo: "hello-template"}, "", nil, "group", 3, "default", nil, nil, false)
 	if err != nil {
 		t.Fatalf("runAssignmentAdd(group): %v", err)
 	}
 	entry := decodeCommitted(t, fix).Assignments[0]
 	if entry.Mode != "group" || entry.MaxGroupSize != 3 {
 		t.Errorf("committed entry = mode %q max_group_size %d, want group/3", entry.Mode, entry.MaxGroupSize)
+	}
+}
+
+// TestRunAssignmentAdd_TemplateLessPersists drives the headline feature:
+// `assignment add` with no --template (tmpl == nil). It must skip the
+// template-repo probe, commit an entry with a nil Template, and print
+// "no template".
+func TestRunAssignmentAdd_TemplateLessPersists(t *testing.T) {
+	server, fix := newTestCmdServer(t, helloAssignments(""), false)
+	client := githubtest.NewTestClient(t, server)
+
+	var stdout, stderr bytes.Buffer
+	err := runAssignmentAdd(client, &stdout, &stderr, "o", "cs-principles", "solo", "Solo", "",
+		nil, "", nil, "individual", 0, "default", nil, nil, false)
+	if err != nil {
+		t.Fatalf("runAssignmentAdd(template-less): %v", err)
+	}
+	committed := decodeCommitted(t, fix)
+	idx, ok := assignment.FindAssignment(committed.Assignments, "solo")
+	if !ok {
+		t.Fatalf("entry %q not committed", "solo")
+	}
+	if committed.Assignments[idx].Template != nil {
+		t.Errorf("committed Template = %+v, want nil for a template-less add", committed.Assignments[idx].Template)
+	}
+	if !strings.Contains(stdout.String(), "no template") {
+		t.Errorf("stdout = %q, want it to mention \"no template\"", stdout.String())
+	}
+}
+
+// TestRunAssignmentAdd_DropsTemplateWarns: re-adding a previously
+// templated assignment without --template lands the (now template-less)
+// entry but warns loudly that the template was dropped.
+func TestRunAssignmentAdd_DropsTemplateWarns(t *testing.T) {
+	// Seed an existing templated `hello` entry, then re-add it with tmpl=nil.
+	server, fix := newTestCmdServer(t, helloAssignments(""), false)
+	client := githubtest.NewTestClient(t, server)
+
+	var stdout, stderr bytes.Buffer
+	err := runAssignmentAdd(client, &stdout, &stderr, "o", "cs-principles", "hello", "Hello", "",
+		nil, "", nil, "individual", 0, "default", nil, nil, false)
+	if err != nil {
+		t.Fatalf("runAssignmentAdd(re-add template-less): %v", err)
+	}
+	entry := decodeCommitted(t, fix).Assignments[0]
+	if entry.Template != nil {
+		t.Errorf("committed Template = %+v, want nil after template-less re-add", entry.Template)
+	}
+	if !strings.Contains(stderr.String(), "dropped its template") {
+		t.Errorf("stderr = %q, want a dropped-template warning", stderr.String())
 	}
 }
 
@@ -333,7 +383,7 @@ func TestRunAssignmentAdd_TestsRejectedWithAutograder(t *testing.T) {
 	tests := []assignment.TestSpec{{Name: "compiles", Type: "run", Run: "true", Points: 1}}
 	var stdout, stderr bytes.Buffer
 	err := runAssignmentAdd(client, &stdout, &stderr, "o", "cs-principles", "hello", "Hello", "",
-		templateArg{Owner: "cs50", Repo: "hello-template"}, "", nil, "individual", 0, "default", nil, tests, false)
+		&templateArg{Owner: "cs50", Repo: "hello-template"}, "", nil, "individual", 0, "default", nil, tests, false)
 	if err == nil || !strings.Contains(err.Error(), "mutually exclusive") {
 		t.Fatalf("expected mutual-exclusion error, got %v", err)
 	}
@@ -356,7 +406,7 @@ func TestRunAssignmentAdd_ReplaceWithoutTestsWarns(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 	err := runAssignmentAdd(client, &stdout, &stderr, "o", "cs-principles", "hello", "Hello", "",
-		templateArg{Owner: "cs50", Repo: "hello-template"}, "", nil, "individual", 0, "default", nil, nil, false)
+		&templateArg{Owner: "cs50", Repo: "hello-template"}, "", nil, "individual", 0, "default", nil, nil, false)
 	if err != nil {
 		t.Fatalf("runAssignmentAdd: %v", err)
 	}
@@ -377,7 +427,7 @@ func TestRunAssignmentAdd_ExplicitEmptyTestsClearsSilently(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 	err := runAssignmentAdd(client, &stdout, &stderr, "o", "cs-principles", "hello", "Hello", "",
-		templateArg{Owner: "cs50", Repo: "hello-template"}, "", nil, "individual", 0, "default", nil, []assignment.TestSpec{}, false)
+		&templateArg{Owner: "cs50", Repo: "hello-template"}, "", nil, "individual", 0, "default", nil, []assignment.TestSpec{}, false)
 	if err != nil {
 		t.Fatalf("runAssignmentAdd: %v", err)
 	}
@@ -642,7 +692,7 @@ func TestRunAssignmentAdd_RejectsOutOfOrgPrivateTemplate(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 	err := runAssignmentAdd(client, &stdout, &stderr, "o", "cs-principles", "hello", "Hello", "",
-		templateArg{Owner: "some-teacher", Repo: "hello-template"}, "", nil, "individual", 0, "default", nil, nil, false)
+		&templateArg{Owner: "some-teacher", Repo: "hello-template"}, "", nil, "individual", 0, "default", nil, nil, false)
 	if err == nil || !strings.Contains(err.Error(), "private and outside the org") {
 		t.Fatalf("expected out-of-org private rejection, got %v", err)
 	}
@@ -664,7 +714,7 @@ func TestRunAssignmentAdd_GrantsTeamReadForInOrgPrivateTemplate(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 	err := runAssignmentAdd(client, &stdout, &stderr, "o", "cs-principles", "hello", "Hello", "",
-		templateArg{Owner: "o", Repo: "hello-template"}, "", nil, "individual", 0, "default", nil, nil, false)
+		&templateArg{Owner: "o", Repo: "hello-template"}, "", nil, "individual", 0, "default", nil, nil, false)
 	if err != nil {
 		t.Fatalf("runAssignmentAdd: %v", err)
 	}
@@ -689,7 +739,7 @@ func TestRunAssignmentAdd_SkipsGrantWhenTeamAlreadyHasAccess(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 	err := runAssignmentAdd(client, &stdout, &stderr, "o", "cs-principles", "hello", "Hello", "",
-		templateArg{Owner: "o", Repo: "hello-template"}, "", nil, "individual", 0, "default", nil, nil, false)
+		&templateArg{Owner: "o", Repo: "hello-template"}, "", nil, "individual", 0, "default", nil, nil, false)
 	if err != nil {
 		t.Fatalf("runAssignmentAdd: %v", err)
 	}
@@ -750,7 +800,7 @@ func TestRunAssignmentAdd_InOrgPrivateNoTeamErrors(t *testing.T) {
 
 	var stdout, stderr bytes.Buffer
 	err := runAssignmentAdd(client, &stdout, &stderr, "o", "cs-principles", "hello", "Hello", "",
-		templateArg{Owner: "o", Repo: "hello-template"}, "", nil, "individual", 0, "default", nil, nil, false)
+		&templateArg{Owner: "o", Repo: "hello-template"}, "", nil, "individual", 0, "default", nil, nil, false)
 	if err == nil || !strings.Contains(err.Error(), "has no team to grant read") {
 		t.Fatalf("expected actionable no-team error, got %v", err)
 	}

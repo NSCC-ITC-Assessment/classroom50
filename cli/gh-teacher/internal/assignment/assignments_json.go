@@ -100,7 +100,7 @@ type AssignmentEntry struct {
 	Slug         string           `json:"slug"`
 	Name         string           `json:"name"`
 	Description  string           `json:"description,omitempty"`
-	Template     TemplateRef      `json:"template"`
+	Template     *TemplateRef     `json:"template,omitempty"`
 	Due          string           `json:"due,omitempty"`
 	DueMeta      *DueMeta         `json:"due_meta,omitempty"`
 	Mode         string           `json:"mode"`
@@ -242,8 +242,11 @@ type MigratedFromRef struct {
 
 // TemplateRef is the assignment's starter-code source. Three
 // explicit fields (not "owner/repo@branch") so consumers don't
-// re-parse. Branch is always populated; `assignment add` resolves
-// the template's `default_branch` when `@branch` is omitted.
+// re-parse. Branch is always populated when present; `assignment add`
+// resolves the template's `default_branch` when `@branch` is omitted.
+// Optional: a template-less assignment omits the block entirely
+// (AssignmentEntry.Template is nil), and `gh student accept` then
+// creates an empty repo carrying only the autograder shim.
 type TemplateRef struct {
 	Owner  string `json:"owner"`
 	Repo   string `json:"repo"`
@@ -353,6 +356,14 @@ func ParseAssignments(data []byte) (AssignmentsJSON, error) {
 	if err := expectEOF(dec); err != nil {
 		return AssignmentsJSON{}, fmt.Errorf("parse assignments.json: %w", err)
 	}
+	// An explicit `"template": null` decodes to a nil *TemplateRef, which
+	// the validators treat as "template-less" — but the JSON Schema (the
+	// GUI's contract) types `template` as an object and rejects null. Keep
+	// the two contracts in lockstep: a template-less assignment OMITS the
+	// key; explicit null is rejected on this path too.
+	if err := rejectExplicitNullTemplates(data); err != nil {
+		return AssignmentsJSON{}, fmt.Errorf("parse assignments.json: %w", err)
+	}
 	// Callers depend on Assignments marshaling as `[]`, not `null`.
 	// Empty Autograder normalizes to "default" so downstream
 	// consumers see a uniform shape.
@@ -368,6 +379,31 @@ func ParseAssignments(data []byte) (AssignmentsJSON, error) {
 		}
 	}
 	return file, nil
+}
+
+// rejectExplicitNullTemplates fails when any assignment carries an
+// explicit `"template": null`. The struct decode collapses both
+// `null` and an absent key to a nil *TemplateRef, but the JSON Schema
+// types `template` as an object and rejects null — so accepting null
+// here would be a CLI/GUI divergence. A template-less assignment must
+// omit the key entirely.
+func rejectExplicitNullTemplates(data []byte) error {
+	var raw struct {
+		Assignments []map[string]json.RawMessage `json:"assignments"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		// The strict decode already ran and succeeded; a re-parse
+		// failure here would be surprising, but surface it rather
+		// than silently skipping the check.
+		return fmt.Errorf("re-scan for null template: %w", err)
+	}
+	for i, entry := range raw.Assignments {
+		tmpl, present := entry["template"]
+		if present && string(bytes.TrimSpace(tmpl)) == "null" {
+			return fmt.Errorf("assignments[%d]: template must be an object or omitted, not null", i)
+		}
+	}
+	return nil
 }
 
 // EncodeAssignments serializes via output.JSONPretty (2-space indent,
@@ -456,11 +492,15 @@ func ValidateAssignmentEntry(entry AssignmentEntry) error {
 	if !IsValidAssignmentMode(entry.Mode) {
 		return fmt.Errorf("invalid mode %q: must be one of %v", entry.Mode, AssignmentModes)
 	}
-	if entry.Template.Owner == "" || entry.Template.Repo == "" {
-		return errors.New("template owner/repo must not be empty")
-	}
-	if entry.Template.Branch == "" {
-		return errors.New("template branch must not be empty")
+	// Template is optional. When present (non-nil), all three fields
+	// must be set; a template-less assignment omits the block entirely.
+	if entry.Template != nil {
+		if entry.Template.Owner == "" || entry.Template.Repo == "" {
+			return errors.New("template owner/repo must not be empty")
+		}
+		if entry.Template.Branch == "" {
+			return errors.New("template branch must not be empty")
+		}
 	}
 	if err := ValidateDueDate(entry.Due); err != nil {
 		return err
@@ -524,11 +564,15 @@ func ValidateExistingEntry(entry AssignmentEntry) error {
 	if !IsValidAssignmentMode(entry.Mode) {
 		return fmt.Errorf("entry %q has invalid mode %q (must be one of %v)", entry.Slug, entry.Mode, AssignmentModes)
 	}
-	if entry.Template.Owner == "" || entry.Template.Repo == "" {
-		return fmt.Errorf("entry %q has empty template owner/repo", entry.Slug)
-	}
-	if entry.Template.Branch == "" {
-		return fmt.Errorf("entry %q has empty template branch", entry.Slug)
+	// Template is optional. A nil block is a valid template-less
+	// assignment; when present, all three fields must round-trip.
+	if entry.Template != nil {
+		if entry.Template.Owner == "" || entry.Template.Repo == "" {
+			return fmt.Errorf("entry %q has empty template owner/repo", entry.Slug)
+		}
+		if entry.Template.Branch == "" {
+			return fmt.Errorf("entry %q has empty template branch", entry.Slug)
+		}
 	}
 	if err := ValidateDueDate(entry.Due); err != nil {
 		return fmt.Errorf("entry %q: %w", entry.Slug, err)

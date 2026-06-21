@@ -155,9 +155,6 @@ func assignmentAddCmd() *cobra.Command {
 				return errors.New("--name is required")
 			}
 			templateVal := strings.TrimSpace(template)
-			if templateVal == "" {
-				return errors.New("--template is required (e.g. --template cs50/hello-template or --template cs50/hello-template@main)")
-			}
 			modeVal, err := validateModeAndSizeFlags(mode, maxGroupSize, cmd.Flags().Changed("max-group-size"))
 			if err != nil {
 				return err
@@ -173,9 +170,17 @@ func assignmentAddCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			tmplArg, err := parseTemplateRef(templateVal)
-			if err != nil {
-				return err
+			// --template is optional. When omitted, the assignment has no
+			// starter repo and `gh student accept` creates an empty repo
+			// carrying only the autograder shim. When present, parse +
+			// (later) validate it.
+			var tmplArg *templateArg
+			if templateVal != "" {
+				parsed, err := parseTemplateRef(templateVal)
+				if err != nil {
+					return err
+				}
+				tmplArg = &parsed
 			}
 			runtime, err := assignment.ParseRuntimeFile(strings.TrimSpace(runtimeFile))
 			if err != nil {
@@ -197,7 +202,7 @@ func assignmentAddCmd() *cobra.Command {
 	}
 
 	cmd.Flags().StringVar(&name, "name", "", `Display name written into the assignment entry (e.g. "Hello") (required)`)
-	cmd.Flags().StringVar(&template, "template", "", "Template repo as <owner>/<repo> or <owner>/<repo>@<branch> (required)")
+	cmd.Flags().StringVar(&template, "template", "", "Optional template repo as <owner>/<repo> or <owner>/<repo>@<branch>. Omit for a template-less assignment (students get an empty repo with just the autograder shim).")
 	cmd.Flags().StringVar(&description, "description", "", "Optional one-line description")
 	cmd.Flags().StringVar(&due, "due", "", "Optional due date (e.g. 2026-09-15T23:59:00-04:00); stored as UTC. Omit the offset to use the machine's local timezone")
 	cmd.Flags().StringVar(&mode, "mode", assignment.ModeIndividual, "Assignment mode: `individual` (default) or `group`. Group mode requires --max-group-size.")
@@ -407,25 +412,37 @@ func validateModeAndSizeFlags(mode string, maxGroupSize int, sizeProvided bool) 
 	return modeVal, nil
 }
 
-func runAssignmentAdd(client githubapi.Client, out, errOut io.Writer, org, classroom, slug, name, description string, tmpl templateArg, due string, dueMetaVal *assignment.DueMeta, mode string, maxGroupSize int, autograder string, runtime *assignment.RuntimeRef, tests []assignment.TestSpec, feedbackPR bool) error {
+func runAssignmentAdd(client githubapi.Client, out, errOut io.Writer, org, classroom, slug, name, description string, tmpl *templateArg, due string, dueMetaVal *assignment.DueMeta, mode string, maxGroupSize int, autograder string, runtime *assignment.RuntimeRef, tests []assignment.TestSpec, feedbackPR bool) error {
 	branch, err := configrepo.ResolveConfigRepoBranch(client, org)
 	if err != nil {
 		return err
 	}
 
-	resolved, templatePrivate, err := validateTemplateRepo(client, tmpl)
-	if err != nil {
-		return err
-	}
+	// Template is optional. When present, validate it and decide the
+	// private-access grant; when absent, the assignment is template-less
+	// and `gh student accept` will create an empty shim-only repo.
+	var (
+		resolved        *assignment.TemplateRef
+		templatePrivate bool
+		inOrg           bool
+	)
+	if tmpl != nil {
+		ref, private, err := validateTemplateRepo(client, *tmpl)
+		if err != nil {
+			return err
+		}
+		templatePrivate = private
 
-	// Private-template access matrix: a private template outside the org
-	// can't be shared with the
-	// classroom team, so students could never generate from it — reject
-	// up front rather than letting every `gh student accept` 404 later.
-	inOrg := templateInOrg(resolved.Owner, org)
-	if templatePrivate && !inOrg {
-		return fmt.Errorf("template `%s/%s` is private and outside the org %s — students can't be granted access to it, so `gh student accept` would fail. Copy it into %s and reference the copy, or make the template public",
-			resolved.Owner, resolved.Repo, org, org)
+		// Private-template access matrix: a private template outside the org
+		// can't be shared with the
+		// classroom team, so students could never generate from it — reject
+		// up front rather than letting every `gh student accept` 404 later.
+		inOrg = templateInOrg(ref.Owner, org)
+		if templatePrivate && !inOrg {
+			return fmt.Errorf("template `%s/%s` is private and outside the org %s — students can't be granted access to it, so `gh student accept` would fail. Copy it into %s and reference the copy, or make the template public",
+				ref.Owner, ref.Repo, org, org)
+		}
+		resolved = &ref
 	}
 
 	entry := assignment.AssignmentEntry{
@@ -450,9 +467,11 @@ func runAssignmentAdd(client githubapi.Client, out, errOut io.Writer, org, class
 		action          string
 		lastEncodedSize int
 		droppedTests    int
+		droppedTemplate *assignment.TemplateRef
 	)
 	build := func(parentSHA string) (map[string]string, error) {
 		droppedTests = 0
+		droppedTemplate = nil
 		// Verify the autograder shim exists at parent SHA before
 		// writing — otherwise the assignment lands successfully and
 		// every student's accept 404s on the Pages fetch later. The
@@ -496,6 +515,14 @@ func runAssignmentAdd(client githubapi.Client, out, errOut io.Writer, org, class
 		if idx, ok := assignment.FindAssignment(file.Assignments, slug); ok && entry.Tests == nil {
 			droppedTests = len(file.Assignments[idx].Tests)
 		}
+		// Same wholesale-replace footgun for the template: re-running add
+		// without --template on a previously-templated assignment would
+		// silently drop its starter-repo binding. Detect it for a loud
+		// post-commit warning (the upsert still applies — consistent with
+		// every other field — but the teacher should know).
+		if idx, ok := assignment.FindAssignment(file.Assignments, slug); ok && entry.Template == nil && file.Assignments[idx].Template != nil {
+			droppedTemplate = file.Assignments[idx].Template
+		}
 		updated, replaced := assignment.UpsertAssignment(file.Assignments, entry)
 		if replaced {
 			action = "updated"
@@ -519,9 +546,13 @@ func runAssignmentAdd(client githubapi.Client, out, errOut io.Writer, org, class
 		return err
 	}
 
-	_, _ = fmt.Fprintf(out, "%s/%s/%s: %s %s (template %s/%s@%s, autograder %s)\n",
+	templateDesc := "no template"
+	if resolved != nil {
+		templateDesc = fmt.Sprintf("template %s/%s@%s", resolved.Owner, resolved.Repo, resolved.Branch)
+	}
+	_, _ = fmt.Fprintf(out, "%s/%s/%s: %s %s (%s, autograder %s)\n",
 		org, configrepo.ConfigRepoName, assignmentsFilePath(classroom), action, slug,
-		resolved.Owner, resolved.Repo, resolved.Branch, entry.Autograder)
+		templateDesc, entry.Autograder)
 
 	// In-org private template: grant the classroom team read so rostered
 	// students can generate from it (public templates need no grant; the
@@ -530,7 +561,7 @@ func runAssignmentAdd(client githubapi.Client, out, errOut io.Writer, org, class
 	// read from classroom.json (authoritative); a classroom with no team
 	// (pre-feature) gets an actionable message rather than a 404 against
 	// a guessed slug.
-	if templatePrivate && inOrg {
+	if resolved != nil && templatePrivate && inOrg {
 		team, ok, err := configrepo.ResolveClassroomTeam(client, org, classroom, branch)
 		if err != nil {
 			return fmt.Errorf("assignment committed, but reading the classroom team failed: %w", err)
@@ -552,6 +583,12 @@ func runAssignmentAdd(client githubapi.Client, out, errOut io.Writer, org, class
 		_, _ = fmt.Fprintf(errOut,
 			"Warning: replacing %q dropped its %d declarative test(s) — `assignment add` rewrites the whole entry. Pass --tests to keep them, or re-add with `gh teacher assignment test add`.\n",
 			slug, droppedTests)
+	}
+	if droppedTemplate != nil {
+		_, _ = fmt.Fprintf(errOut,
+			"Warning: replacing %q dropped its template %s/%s@%s — `assignment add` rewrites the whole entry, and you re-ran it without --template. The assignment is now template-less (students get an empty shim-only repo). Pass --template %s/%s@%s to keep it.\n",
+			slug, droppedTemplate.Owner, droppedTemplate.Repo, droppedTemplate.Branch,
+			droppedTemplate.Owner, droppedTemplate.Repo, droppedTemplate.Branch)
 	}
 	// Heads-up if the encoded file is approaching the GitHub
 	// contents-API behavior change (~1 MiB encoded → encoding:"none",

@@ -36,13 +36,94 @@ func TestParseAssignments_Canonical(t *testing.T) {
 	want := AssignmentEntry{
 		Slug:       "hello",
 		Name:       "Hello",
-		Template:   TemplateRef{Owner: "cs50", Repo: "hello-template", Branch: "main"},
+		Template:   &TemplateRef{Owner: "cs50", Repo: "hello-template", Branch: "main"},
 		Due:        "2026-09-15T23:59:00-04:00",
 		Mode:       "individual",
 		Autograder: "default",
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("entry mismatch:\n got: %#v\nwant: %#v", got, want)
+	}
+}
+
+func TestParseAssignments_TemplateLess(t *testing.T) {
+	// An assignment with no template repo is valid: the `template`
+	// block is omitted entirely and parses to a nil Template. (At
+	// accept time gh-student creates an empty shim-only repo for it.)
+	in := []byte(`{
+  "schema": "classroom50/assignments/v1",
+  "assignments": [
+    {
+      "slug": "hello",
+      "name": "Hello",
+      "mode": "individual",
+      "autograder": "default"
+    }
+  ]
+}`)
+	file, err := ParseAssignments(in)
+	if err != nil {
+		t.Fatalf("ParseAssignments (template-less): %v", err)
+	}
+	if len(file.Assignments) != 1 {
+		t.Fatalf("expected 1 assignment, got %d", len(file.Assignments))
+	}
+	if got := file.Assignments[0].Template; got != nil {
+		t.Errorf("Template = %+v, want nil for a template-less assignment", got)
+	}
+}
+
+func TestEncodeAssignments_TemplateLessOmitsKey(t *testing.T) {
+	// A nil Template must serialize with the `template` key ABSENT
+	// (omitempty), and re-parse back to nil — the omitempty contract the
+	// schema's optional-template relies on.
+	file := AssignmentsJSON{
+		Schema: contract.AssignmentsSchemaV1,
+		Assignments: []AssignmentEntry{{
+			Slug: "solo", Name: "Solo", Mode: "individual", Autograder: "default",
+		}},
+	}
+	data, err := EncodeAssignments(file)
+	if err != nil {
+		t.Fatalf("EncodeAssignments: %v", err)
+	}
+	if strings.Contains(string(data), "\"template\"") {
+		t.Errorf("encoded output contains a template key, want it omitted:\n%s", data)
+	}
+	round, err := ParseAssignments(data)
+	if err != nil {
+		t.Fatalf("ParseAssignments(round-trip): %v", err)
+	}
+	if round.Assignments[0].Template != nil {
+		t.Errorf("round-tripped Template = %+v, want nil", round.Assignments[0].Template)
+	}
+}
+
+func TestParseAssignments_RejectsPartialAndNullTemplate(t *testing.T) {
+	// Parse path must reject a present-but-incomplete template and an
+	// explicit null, keeping the CLI in lockstep with the JSON schema.
+	cases := []struct {
+		name        string
+		template    string
+		wantErrPart string
+	}{
+		{"partial: empty branch", `{"owner":"cs50","repo":"hello-template","branch":""}`, "branch"},
+		{"partial: missing repo", `{"owner":"cs50","repo":"","branch":"main"}`, "template"},
+		{"explicit null", `null`, "null"},
+		{"empty object", `{}`, "template"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			in := []byte(`{"schema":"classroom50/assignments/v1","assignments":[{"slug":"hello","name":"Hello","template":` +
+				tc.template + `,"mode":"individual","autograder":"default"}]}`)
+			_, err := ParseAssignments(in)
+			if err == nil {
+				t.Fatalf("expected error containing %q, got nil", tc.wantErrPart)
+			}
+			if !strings.Contains(err.Error(), tc.wantErrPart) {
+				t.Errorf("err = %q, want substring %q", err.Error(), tc.wantErrPart)
+			}
+		})
 	}
 }
 
@@ -368,11 +449,6 @@ func TestParseAssignments_Rejects(t *testing.T) {
 			wantErrPart: "empty name",
 		},
 		{
-			name:        "entry missing template",
-			in:          `{"schema":"classroom50/assignments/v1","assignments":[{"slug":"hello","name":"Hello","mode":"individual","autograder":"default"}]}`,
-			wantErrPart: "template",
-		},
-		{
 			// `group` is now schema-legal; only arbitrary
 			// strings trip the validator.
 			name:        "entry with unsupported mode",
@@ -446,7 +522,7 @@ func TestEncodeAssignments_RoundTrip(t *testing.T) {
 				Slug:        "hello",
 				Name:        "Hello",
 				Description: "First assignment",
-				Template:    TemplateRef{Owner: "cs50", Repo: "hello-template", Branch: "main"},
+				Template:    &TemplateRef{Owner: "cs50", Repo: "hello-template", Branch: "main"},
 				Due:         "2026-09-15T23:59:00-04:00",
 				Mode:        "individual",
 				Autograder:  "default",
@@ -476,7 +552,7 @@ func TestEncodeAssignments_NormalizesEmptyAutograder(t *testing.T) {
 			{
 				Slug:     "hello",
 				Name:     "Hello",
-				Template: TemplateRef{Owner: "cs50", Repo: "hello-template", Branch: "main"},
+				Template: &TemplateRef{Owner: "cs50", Repo: "hello-template", Branch: "main"},
 				Mode:     "individual",
 			},
 		},
@@ -505,7 +581,7 @@ func TestEncodeAssignments_OmitsOptionalEmptyFields(t *testing.T) {
 			{
 				Slug:       "hello",
 				Name:       "Hello",
-				Template:   TemplateRef{Owner: "cs50", Repo: "hello-template", Branch: "main"},
+				Template:   &TemplateRef{Owner: "cs50", Repo: "hello-template", Branch: "main"},
 				Mode:       "individual",
 				Autograder: "default",
 			},
@@ -654,12 +730,30 @@ func TestValidateAssignmentEntry_HappyPath(t *testing.T) {
 	entry := AssignmentEntry{
 		Slug:       "hello",
 		Name:       "Hello",
-		Template:   TemplateRef{Owner: "cs50", Repo: "hello-template", Branch: "main"},
+		Template:   &TemplateRef{Owner: "cs50", Repo: "hello-template", Branch: "main"},
 		Mode:       "individual",
 		Autograder: "default",
 	}
 	if err := ValidateAssignmentEntry(entry); err != nil {
 		t.Errorf("ValidateAssignmentEntry: %v", err)
+	}
+}
+
+// TestValidateAssignmentEntry_TemplateLess: an entry with no template
+// (nil Template) is valid on both the write and parse paths — it's a
+// template-less assignment, accepted as an empty shim-only repo.
+func TestValidateAssignmentEntry_TemplateLess(t *testing.T) {
+	entry := AssignmentEntry{
+		Slug:       "hello",
+		Name:       "Hello",
+		Mode:       "individual",
+		Autograder: "default",
+	}
+	if err := ValidateAssignmentEntry(entry); err != nil {
+		t.Errorf("ValidateAssignmentEntry(template-less): %v", err)
+	}
+	if err := ValidateExistingEntry(entry); err != nil {
+		t.Errorf("ValidateExistingEntry(template-less): %v", err)
 	}
 }
 
@@ -669,7 +763,7 @@ func TestValidateAssignmentEntry_GroupMode(t *testing.T) {
 	entry := AssignmentEntry{
 		Slug:         "team-project",
 		Name:         "Team Project",
-		Template:     TemplateRef{Owner: "cs50", Repo: "team-project-template", Branch: "main"},
+		Template:     &TemplateRef{Owner: "cs50", Repo: "team-project-template", Branch: "main"},
 		Mode:         "group",
 		MaxGroupSize: 4,
 		Autograder:   "default",
@@ -684,7 +778,7 @@ func TestValidateAssignmentEntry_GroupMode(t *testing.T) {
 func TestValidateAssignmentEntry_GroupModeRequiresSize(t *testing.T) {
 	groupNoSize := AssignmentEntry{
 		Slug: "team", Name: "Team",
-		Template:   TemplateRef{Owner: "cs50", Repo: "t", Branch: "main"},
+		Template:   &TemplateRef{Owner: "cs50", Repo: "t", Branch: "main"},
 		Mode:       "group",
 		Autograder: "default",
 	}
@@ -699,7 +793,7 @@ func TestValidateAssignmentEntry_GroupModeRequiresSize(t *testing.T) {
 
 	individualWithSize := AssignmentEntry{
 		Slug: "solo", Name: "Solo",
-		Template:     TemplateRef{Owner: "cs50", Repo: "t", Branch: "main"},
+		Template:     &TemplateRef{Owner: "cs50", Repo: "t", Branch: "main"},
 		Mode:         "individual",
 		MaxGroupSize: 3,
 		Autograder:   "default",
@@ -713,7 +807,7 @@ func TestValidateAssignmentEntry_Rejects(t *testing.T) {
 	base := AssignmentEntry{
 		Slug:       "hello",
 		Name:       "Hello",
-		Template:   TemplateRef{Owner: "cs50", Repo: "hello-template", Branch: "main"},
+		Template:   &TemplateRef{Owner: "cs50", Repo: "hello-template", Branch: "main"},
 		Mode:       "individual",
 		Autograder: "default",
 	}
@@ -751,6 +845,13 @@ func TestValidateAssignmentEntry_Rejects(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			entry := base
+			// base.Template is a pointer shared across subtests; clone it
+			// so a mutation case (e.g. clearing Template.Owner) doesn't
+			// corrupt the shared base for later subtests.
+			if base.Template != nil {
+				tpl := *base.Template
+				entry.Template = &tpl
+			}
 			tc.mutate(&entry)
 			err := ValidateAssignmentEntry(entry)
 			if err == nil {
@@ -767,7 +868,7 @@ func TestValidateAssignmentEntry_DueMeta(t *testing.T) {
 	base := AssignmentEntry{
 		Slug:       "hello",
 		Name:       "Hello",
-		Template:   TemplateRef{Owner: "cs50", Repo: "hello-template", Branch: "main"},
+		Template:   &TemplateRef{Owner: "cs50", Repo: "hello-template", Branch: "main"},
 		Mode:       "individual",
 		Autograder: "default",
 		Due:        "2026-09-16T03:59:00Z",

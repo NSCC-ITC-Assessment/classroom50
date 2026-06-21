@@ -218,7 +218,7 @@ func TestRunMigrate_NonDryRun_HappyPath(t *testing.T) {
 		t.Errorf("entry = {Slug:%q Mode:%q}, want {Slug:readability Mode:individual}", entry.Slug, entry.Mode)
 	}
 	wantTpl := assignment.TemplateRef{Owner: "cs50-fall-2026", Repo: "readability", Branch: "main"}
-	if entry.Template != wantTpl {
+	if entry.Template == nil || *entry.Template != wantTpl {
 		t.Errorf("entry.Template = %+v, want %+v", entry.Template, wantTpl)
 	}
 	if entry.MigratedFrom == nil {

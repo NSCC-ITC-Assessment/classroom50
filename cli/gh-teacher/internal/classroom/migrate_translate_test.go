@@ -90,7 +90,7 @@ func TestAssignmentToEntry(t *testing.T) {
 		if entry.Mode != assignment.ModeIndividual {
 			t.Errorf("mode = %q, want %q", entry.Mode, assignment.ModeIndividual)
 		}
-		if entry.Template != target {
+		if entry.Template == nil || *entry.Template != target {
 			t.Errorf("template = %+v, want %+v", entry.Template, target)
 		}
 		if entry.Due != "" {

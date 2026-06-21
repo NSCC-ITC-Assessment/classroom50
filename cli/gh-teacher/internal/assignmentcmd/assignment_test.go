@@ -253,7 +253,7 @@ func TestFormatAssignmentListJSON(t *testing.T) {
 				Slug:        "hello",
 				Name:        "Hello",
 				Description: "First assignment",
-				Template:    assignment.TemplateRef{Owner: "cs50", Repo: "hello-template", Branch: "main"},
+				Template:    &assignment.TemplateRef{Owner: "cs50", Repo: "hello-template", Branch: "main"},
 				Due:         "2026-09-15T23:59:00-04:00",
 				Mode:        "individual",
 				Autograder:  "default",
@@ -296,7 +296,7 @@ func TestFormatAssignmentListJSON(t *testing.T) {
 			{
 				Slug:     "intro",
 				Name:     "Intro",
-				Template: assignment.TemplateRef{Owner: "cs50", Repo: "intro-template", Branch: "main"},
+				Template: &assignment.TemplateRef{Owner: "cs50", Repo: "intro-template", Branch: "main"},
 				Mode:     "individual",
 			},
 		}

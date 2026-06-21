@@ -47,6 +47,14 @@ class TestSchemaAccepts:
     def test_minimal_manifest(self):
         assert _errors(_manifest(_entry())) == []
 
+    def test_template_optional(self):
+        # A template-less assignment omits the `template` block entirely;
+        # the schema must accept it (gh student accept then creates an
+        # empty shim-only repo). Mirrors the Go ValidateExistingEntry path.
+        entry = _entry()
+        del entry["template"]
+        assert _errors(_manifest(entry)) == []
+
     def test_example_kit_tests(self):
         # The verification kit's tests.json is the canonical fixture the
         # CLI already accepts (pinned by TestKit-style Go coverage).
@@ -129,6 +137,26 @@ class TestSchemaAccepts:
 
 
 class TestSchemaRejects:
+    def test_template_null_rejected(self):
+        # A template-less assignment omits the `template` key. An explicit
+        # null is rejected (the Go parser rejects it too, via
+        # rejectExplicitNullTemplates) — keep CLI and schema in lockstep.
+        entry = _entry()
+        entry["template"] = None
+        assert _errors(_manifest(entry)) != []
+
+    def test_partial_template_rejected(self):
+        # When present, the template block still requires owner/repo/branch
+        # (mirrors the Go ValidateExistingEntry partial check).
+        for partial in (
+            {"owner": "cs50", "repo": "hello-template", "branch": ""},
+            {"owner": "cs50", "repo": "", "branch": "main"},
+            {},
+        ):
+            entry = _entry()
+            entry["template"] = partial
+            assert _errors(_manifest(entry)) != []
+
     @pytest.mark.parametrize("bad_test", [
         # The GUI prototype's legacy shape: unknown `output`, no type/run.
         {"name": "t", "input": "python main.py", "output": "hi", "points": 1},

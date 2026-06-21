@@ -226,7 +226,7 @@ func TestValidateAssignmentEntry_TestsPropagate(t *testing.T) {
 	entry := AssignmentEntry{
 		Slug:       "hello",
 		Name:       "Hello",
-		Template:   TemplateRef{Owner: "cs50", Repo: "hello-template", Branch: "main"},
+		Template:   &TemplateRef{Owner: "cs50", Repo: "hello-template", Branch: "main"},
 		Mode:       "individual",
 		Autograder: "default",
 		Tests:      []TestSpec{{Name: "t", Type: "io", Run: "x", Comparison: "fuzzy", Points: 1}},

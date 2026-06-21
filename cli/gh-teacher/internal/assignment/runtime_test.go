@@ -348,7 +348,7 @@ func TestValidateAssignmentEntry_RuntimePropagates(t *testing.T) {
 	entry := AssignmentEntry{
 		Slug:       "hello",
 		Name:       "Hello",
-		Template:   TemplateRef{Owner: "cs50", Repo: "hello-template", Branch: "main"},
+		Template:   &TemplateRef{Owner: "cs50", Repo: "hello-template", Branch: "main"},
 		Mode:       "individual",
 		Autograder: "default",
 		Runtime:    &RuntimeRef{Apt: []string{"BAD;PKG"}},

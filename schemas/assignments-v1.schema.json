@@ -21,7 +21,7 @@
     "assignment": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["slug", "name", "template", "mode", "autograder"],
+      "required": ["slug", "name", "mode", "autograder"],
       "properties": {
         "slug": { "$ref": "#/$defs/shortName" },
         "name": { "type": "string", "minLength": 1 },

@@ -121,7 +121,7 @@ func assignmentToEntry(
 	return assignment.AssignmentEntry{
 		Slug:         detail.Slug,
 		Name:         detail.Title,
-		Template:     targetTemplate,
+		Template:     &targetTemplate,
 		Due:          due,
 		DueMeta:      dueProvenance,
 		Mode:         detail.Type,
