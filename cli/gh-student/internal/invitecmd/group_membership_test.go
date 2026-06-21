@@ -1,4 +1,4 @@
-package main
+package invitecmd
 
 import (
 	"context"
@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/foundation50/gh-student/internal/classroomcfg"
+	"github.com/foundation50/gh-student/internal/githubtest"
 	"github.com/foundation50/gh-student/internal/reponame"
 )
 
@@ -67,7 +68,7 @@ func TestListGroupMemberLogins_KeepsFounderExcludesOtherAdmins(t *testing.T) {
 	})
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
-	client := newTestRESTClient(t, server)
+	client := githubtest.NewTestClient(t, server)
 
 	got, err := listGroupMemberLogins(context.Background(), client, "o", "cs-hw-alice", "alice")
 	if err != nil {
@@ -113,7 +114,7 @@ func TestListGroupMemberLogins_FollowsLinkHeader(t *testing.T) {
 	server = httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 
-	got, err := listGroupMemberLogins(context.Background(), newTestRESTClient(t, server), "o", "cs-hw-alice", "alice")
+	got, err := listGroupMemberLogins(context.Background(), githubtest.NewTestClient(t, server), "o", "cs-hw-alice", "alice")
 	if err != nil {
 		t.Fatalf("listGroupMemberLogins: %v", err)
 	}
@@ -151,7 +152,7 @@ func TestListGroupMemberLogins_FullPageNoNextLinkStops(t *testing.T) {
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 
-	got, err := listGroupMemberLogins(context.Background(), newTestRESTClient(t, server), "o", "cs-hw-alice", "alice")
+	got, err := listGroupMemberLogins(context.Background(), githubtest.NewTestClient(t, server), "o", "cs-hw-alice", "alice")
 	if err != nil {
 		t.Fatalf("listGroupMemberLogins: %v", err)
 	}
@@ -181,7 +182,7 @@ func TestCheckGroupSizeBeforeInvite(t *testing.T) {
 		s := server()
 		t.Cleanup(s.Close)
 		// 2 members, max 3 → adding carol is fine.
-		if err := checkGroupSizeBeforeInvite(context.Background(), newTestRESTClient(t, s), "o", "cs-hw-alice", "alice", "carol", 3); err != nil {
+		if err := checkGroupSizeBeforeInvite(context.Background(), githubtest.NewTestClient(t, s), "o", "cs-hw-alice", "alice", "carol", 3); err != nil {
 			t.Errorf("expected carol to be allowed (2 < 3), got %v", err)
 		}
 	})
@@ -190,7 +191,7 @@ func TestCheckGroupSizeBeforeInvite(t *testing.T) {
 		s := server()
 		t.Cleanup(s.Close)
 		// 2 members, max 2 → adding carol is refused.
-		err := checkGroupSizeBeforeInvite(context.Background(), newTestRESTClient(t, s), "o", "cs-hw-alice", "alice", "carol", 2)
+		err := checkGroupSizeBeforeInvite(context.Background(), githubtest.NewTestClient(t, s), "o", "cs-hw-alice", "alice", "carol", 2)
 		if err == nil || !strings.Contains(err.Error(), "group is full") {
 			t.Fatalf("expected 'group is full' error at the cap, got %v", err)
 		}
@@ -200,7 +201,7 @@ func TestCheckGroupSizeBeforeInvite(t *testing.T) {
 		s := server()
 		t.Cleanup(s.Close)
 		// At the cap (2/2) but bob is already a member → no-op, allowed.
-		if err := checkGroupSizeBeforeInvite(context.Background(), newTestRESTClient(t, s), "o", "cs-hw-alice", "alice", "bob", 2); err != nil {
+		if err := checkGroupSizeBeforeInvite(context.Background(), githubtest.NewTestClient(t, s), "o", "cs-hw-alice", "alice", "bob", 2); err != nil {
 			t.Errorf("re-inviting existing member 'bob' must not be blocked, got %v", err)
 		}
 	})
@@ -209,7 +210,7 @@ func TestCheckGroupSizeBeforeInvite(t *testing.T) {
 		s := server()
 		t.Cleanup(s.Close)
 		// maxGroupSize 0 → no enforcement, no API call needed, allowed.
-		if err := checkGroupSizeBeforeInvite(context.Background(), newTestRESTClient(t, s), "o", "cs-hw-alice", "alice", "carol", 0); err != nil {
+		if err := checkGroupSizeBeforeInvite(context.Background(), githubtest.NewTestClient(t, s), "o", "cs-hw-alice", "alice", "carol", 0); err != nil {
 			t.Errorf("max<=0 should impose no limit, got %v", err)
 		}
 	})
@@ -247,7 +248,7 @@ func TestListGroupMemberLogins_Pagination(t *testing.T) {
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 
-	got, err := listGroupMemberLogins(context.Background(), newTestRESTClient(t, server), "o", "cs-hw-alice", "alice")
+	got, err := listGroupMemberLogins(context.Background(), githubtest.NewTestClient(t, server), "o", "cs-hw-alice", "alice")
 	if err != nil {
 		t.Fatalf("listGroupMemberLogins: %v", err)
 	}
@@ -277,7 +278,7 @@ func TestListGroupMemberLogins_PageCap(t *testing.T) {
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 
-	got, err := listGroupMemberLogins(context.Background(), newTestRESTClient(t, server), "o", "cs-hw-alice", "alice")
+	got, err := listGroupMemberLogins(context.Background(), githubtest.NewTestClient(t, server), "o", "cs-hw-alice", "alice")
 	if err == nil || !strings.Contains(err.Error(), "page cap") {
 		t.Fatalf("expected a 'page cap' error when pages never end, got logins=%v err=%v", got, err)
 	}

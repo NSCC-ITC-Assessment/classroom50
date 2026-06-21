@@ -1,4 +1,10 @@
-package main
+// Package invitecmd implements `gh student invite <org>/<repo> <username>`:
+// add a push collaborator, and (when run from inside a group repo) enforce
+// the assignment's advisory max-group-size cap. It is an extracted command
+// package; only NewCmd is exported. Consumes the internal/* seams
+// (githubapi, assignments, classroomcfg, localgit, reponame) + contract,
+// never package main.
+package invitecmd
 
 import (
 	"context"
@@ -17,7 +23,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func inviteCmd() *cobra.Command {
+func NewCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "invite <org>/<repo> <username>",
 		Short: "Invite a classmate or TA to push to your assignment repo",
@@ -53,7 +59,7 @@ func inviteCmd() *cobra.Command {
 			}
 			org, repo := parts[0], parts[1]
 
-			client, err := requireAuthClient(cmd)
+			client, err := githubapi.RequireAuthClient(cmd)
 			if err != nil {
 				return err
 			}

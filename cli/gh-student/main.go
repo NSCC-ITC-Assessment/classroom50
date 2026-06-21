@@ -7,6 +7,7 @@ import (
 	"syscall"
 
 	"github.com/foundation50/gh-student/internal/auth"
+	"github.com/foundation50/gh-student/internal/invitecmd"
 	"github.com/foundation50/gh-student/internal/submitcmd"
 	"github.com/spf13/cobra"
 )
@@ -31,7 +32,7 @@ func main() {
 	root.AddCommand(auth.NewLoginCmd())
 	root.AddCommand(auth.NewLogoutCmd())
 	root.AddCommand(acceptCmd())
-	root.AddCommand(inviteCmd())
+	root.AddCommand(invitecmd.NewCmd())
 	root.AddCommand(submitcmd.NewCmd())
 
 	// Signal-aware root context: subcommands see cmd.Context()
