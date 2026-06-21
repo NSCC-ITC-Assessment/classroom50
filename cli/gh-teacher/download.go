@@ -22,6 +22,7 @@ import (
 	"github.com/foundation50/gh-teacher/internal/cliutil"
 	"github.com/foundation50/gh-teacher/internal/configrepo"
 	"github.com/foundation50/gh-teacher/internal/githubapi"
+	"github.com/foundation50/gh-teacher/internal/orgrepos"
 )
 
 // dirTimestampFormat: filesystem-safe and lexicographically sortable.
@@ -335,7 +336,7 @@ func downloadByPattern(client githubapi.Client, out, errOut io.Writer, org, clas
 	// contract with cli/gh-student/accept.go.
 	prefix := strings.ToLower(classroom) + "-" + strings.ToLower(assignment) + "-"
 
-	repos, err := listOrgRepoNames(client, org)
+	repos, err := orgrepos.ListNames(client, org)
 	if err != nil {
 		return err
 	}
@@ -1084,35 +1085,6 @@ func downloadAssetBytes(token, assetURL string) ([]byte, error) {
 		return nil, fmt.Errorf("asset exceeds %d byte ceiling", maxResultBytes)
 	}
 	return body, nil
-}
-
-// orgRepoPagesMax / orgRepoPerPage bound the org-repos walk. 100×100 =
-// 10k repos, far above classroom scale; hitting the cap errors loudly
-// rather than silently under-reporting (a partial list would make
-// teardown miss repos or download skip submissions).
-const (
-	orgRepoPerPage  = 100
-	orgRepoPagesMax = 100
-)
-
-// listOrgRepoNames returns every repo name in the org. Shared by
-// download (pattern mode) and teardown (wildcard nuke); both want the
-// unfiltered name list and map/filter it themselves.
-func listOrgRepoNames(client githubapi.Client, org string) ([]string, error) {
-	repos, err := githubapi.PaginateAll[struct {
-		Name string `json:"name"`
-	}](client, orgRepoPerPage, orgRepoPagesMax,
-		func(page int) string {
-			return fmt.Sprintf("orgs/%s/repos?per_page=%d&page=%d", url.PathEscape(org), orgRepoPerPage, page)
-		}, nil)
-	if err != nil {
-		return nil, err
-	}
-	names := make([]string, 0, len(repos))
-	for _, r := range repos {
-		names = append(names, r.Name)
-	}
-	return names, nil
 }
 
 // stderrTailCap bounds non-verbose stderr capture; the error lives

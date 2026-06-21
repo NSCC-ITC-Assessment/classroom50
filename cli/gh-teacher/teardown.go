@@ -14,6 +14,7 @@ import (
 	"github.com/foundation50/gh-teacher/internal/cliutil"
 	"github.com/foundation50/gh-teacher/internal/configrepo"
 	"github.com/foundation50/gh-teacher/internal/githubapi"
+	"github.com/foundation50/gh-teacher/internal/orgrepos"
 )
 
 // teardownCmd implements `gh teacher teardown <org>`: deletes every
@@ -76,7 +77,7 @@ func runTeardown(client githubapi.Client, in io.Reader, out, errOut io.Writer, o
 		return err
 	}
 
-	repos, err := listOrgRepoNames(client, org)
+	repos, err := orgrepos.ListNames(client, org)
 	if err != nil {
 		return err
 	}

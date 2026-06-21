@@ -12,8 +12,8 @@ import (
 // PaginateAll walks a GitHub `page`/`per_page` list endpoint, returning
 // every element across pages. It is the shared core for the teacher
 // CLI's capped list walks (org members/invitations/collaborators, the
-// GitHub Classroom imports, and the org-repos walk shared by
-// download.go/teardown.go via listOrgRepoNames), replacing those
+// GitHub Classroom imports, and the org-repos walk shared by download
+// and teardown via internal/orgrepos.ListNames), replacing those
 // per-call-site hand-rolled loops.
 //
 //   - pageURL(page) builds the request path for a 1-based page number
