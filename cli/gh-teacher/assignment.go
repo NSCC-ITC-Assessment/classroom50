@@ -353,7 +353,7 @@ func summarizeAssignmentList(org, classroom string, count int) string {
 // assignmentsFilePath: on-repo path to a classroom's assignments.json
 // (matches rosterFilePath's role for students.csv).
 func assignmentsFilePath(classroom string) string {
-	return classroom + "/assignments.json"
+	return assignment.AssignmentsFilePath(classroom)
 }
 
 // runAssignmentAdd validates template visibility and entry shape
@@ -600,20 +600,7 @@ func runAssignmentRemove(client githubapi.Client, out io.Writer, org, classroom,
 // read-only list path — the contents API accepts both). Missing
 // file → points the teacher at `gh teacher classroom add`.
 func loadAssignments(client githubapi.Client, org, classroom, ref string) (assignment.AssignmentsJSON, error) {
-	path := assignmentsFilePath(classroom)
-	data, ok, err := configrepo.ReadFileContents(client, org, configrepo.ConfigRepoName, path, ref)
-	if err != nil {
-		return assignment.AssignmentsJSON{}, err
-	}
-	if !ok {
-		return assignment.AssignmentsJSON{}, fmt.Errorf("%s/%s/%s not found — run `gh teacher classroom add %s %s` first, or restore the file if it was deleted",
-			org, configrepo.ConfigRepoName, path, org, classroom)
-	}
-	file, err := assignment.ParseAssignments(data)
-	if err != nil {
-		return assignment.AssignmentsJSON{}, fmt.Errorf("%s/%s/%s: %w", org, configrepo.ConfigRepoName, path, err)
-	}
-	return file, nil
+	return configrepo.LoadAssignments(client, org, classroom, ref)
 }
 
 // templateArg is the parsed `--template` flag. Branch is empty if

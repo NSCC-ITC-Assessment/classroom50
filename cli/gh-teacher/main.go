@@ -16,6 +16,7 @@ import (
 
 	"github.com/foundation50/gh-teacher/internal/auth"
 	"github.com/foundation50/gh-teacher/internal/classroom"
+	"github.com/foundation50/gh-teacher/internal/download"
 	"github.com/foundation50/gh-teacher/internal/invite"
 	"github.com/foundation50/gh-teacher/internal/member"
 	"github.com/foundation50/gh-teacher/internal/remove"
@@ -52,7 +53,7 @@ func main() {
 	root.AddCommand(invite.NewCmd())
 	root.AddCommand(remove.NewCmd())
 	root.AddCommand(member.NewCmd())
-	root.AddCommand(downloadCmd())
+	root.AddCommand(download.NewCmd())
 	root.AddCommand(teardown.NewCmd())
 
 	// Signal-aware root context: subcommands see cmd.Context()

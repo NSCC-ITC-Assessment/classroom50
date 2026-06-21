@@ -1,4 +1,15 @@
-package main
+// Package download implements the `gh teacher download` command: cloning
+// every student submission repo for an assignment under <org>/classroom50
+// (roster-driven by default, or --by-pattern), refreshing each repo's
+// result.json/results.json from its submit-tag releases, and writing a
+// scores.csv summary. It is an extracted command package (mirrors the
+// other internal/<command> packages): only NewCmd is exported; the
+// run* orchestration, the release-asset fetcher, and the scores.csv
+// writer are package-private. It is a read-only consumer of the config
+// repo. It depends only on the internal/* substrate seams (assignment,
+// configrepo, githubapi, orgrepos, scores, cliutil) plus the shared
+// contract package, never on package main.
+package download
 
 import (
 	"bytes"
@@ -78,7 +89,7 @@ var scoresCSVHeader = []string{
 	"override",
 }
 
-func downloadCmd() *cobra.Command {
+func NewCmd() *cobra.Command {
 	var (
 		dir       string
 		quiet     bool
@@ -140,10 +151,16 @@ func downloadCmd() *cobra.Command {
 			out := cmd.OutOrStdout()
 			errOut := cmd.ErrOrStderr()
 
+			// verbose is registered as a persistent flag on the root
+			// command (main.go); read it here and thread it down rather
+			// than reaching for a package global, so this command package
+			// has no dependency on package main.
+			verbose, _ := cmd.Flags().GetBool("verbose")
+
 			if byPattern {
-				return downloadByPattern(client, out, errOut, org, classroom, assignment, dir, quiet)
+				return downloadByPattern(client, out, errOut, org, classroom, assignment, dir, quiet, verbose)
 			}
-			return downloadByRoster(client, out, errOut, org, classroom, assignment, dir, quiet)
+			return downloadByRoster(client, out, errOut, org, classroom, assignment, dir, quiet, verbose)
 		},
 	}
 
@@ -158,7 +175,7 @@ func downloadCmd() *cobra.Command {
 // submit-tag release, write a scores.csv summary at the dir root.
 // Roster entries without a repo on the org are reported as missing
 // — not a hard failure.
-func downloadByRoster(client githubapi.Client, out, errOut io.Writer, org, classroom, assignment, dir string, quiet bool) error {
+func downloadByRoster(client githubapi.Client, out, errOut io.Writer, org, classroom, assignment, dir string, quiet, verbose bool) error {
 	branch, err := configrepo.ResolveConfigRepoBranch(client, org)
 	if err != nil {
 		return err
@@ -169,13 +186,13 @@ func downloadByRoster(client githubapi.Client, out, errOut io.Writer, org, class
 		return err
 	}
 
-	assignments, err := loadAssignments(client, org, classroom, branch)
+	assignments, err := configrepo.LoadAssignments(client, org, classroom, branch)
 	if err != nil {
 		return err
 	}
 	if !assignmentRegistered(assignments, assignment) {
 		return fmt.Errorf("assignment %q is not registered in %s/%s/%s — run `gh teacher assignment add %s %s %s --name <name> --template <owner>/<repo>` first, or pass --by-pattern to skip the roster lookup",
-			assignment, org, configrepo.ConfigRepoName, assignmentsFilePath(classroom), org, classroom, assignment)
+			assignment, org, configrepo.ConfigRepoName, assignmentsPath(classroom), org, classroom, assignment)
 	}
 
 	isGroup := assignmentIsGroup(assignments, assignment)
@@ -274,7 +291,7 @@ func downloadByRoster(client githubapi.Client, out, errOut io.Writer, org, class
 			}
 		}
 
-		if err := cloneOrgRepo(out, errOut, org, repoName, target, quiet); err != nil {
+		if err := cloneOrgRepo(out, errOut, org, repoName, target, quiet, verbose); err != nil {
 			if quiet {
 				_, _ = fmt.Fprintf(errOut, "%s: clone failed: %v\n", repoName, err)
 			} else if verbose {
@@ -332,7 +349,7 @@ func downloadByRoster(client githubapi.Client, out, errOut io.Writer, org, class
 // one whose name starts with <classroom>-<assignment>-. Skips the
 // roster lookup, result.json refresh, and scores.csv summary —
 // those all depend on the config repo being bootstrapped.
-func downloadByPattern(client githubapi.Client, out, errOut io.Writer, org, classroom, assignment, dir string, quiet bool) error {
+func downloadByPattern(client githubapi.Client, out, errOut io.Writer, org, classroom, assignment, dir string, quiet, verbose bool) error {
 	// Deterministic head of assignmentRepoName — cross-binary
 	// contract with cli/gh-student/accept.go.
 	prefix := strings.ToLower(classroom) + "-" + strings.ToLower(assignment) + "-"
@@ -384,7 +401,7 @@ func downloadByPattern(client githubapi.Client, out, errOut io.Writer, org, clas
 			}
 		}
 
-		if err := cloneOrgRepo(out, errOut, org, name, target, quiet); err != nil {
+		if err := cloneOrgRepo(out, errOut, org, name, target, quiet, verbose); err != nil {
 			if quiet {
 				_, _ = fmt.Fprintf(errOut, "%s: clone failed: %v\n", name, err)
 			} else if verbose {
@@ -418,6 +435,14 @@ func downloadByPattern(client githubapi.Client, out, errOut io.Writer, org, clas
 // assignmentRegistered: case-insensitive slug membership check. The
 // slug flows into repo names lowercased, so a mixed-case argument
 // still matches.
+// assignmentsPath returns the config-repo-relative assignments.json
+// path, wrapping the seam helper so call sites inside functions that
+// shadow the `assignment` package (with an `assignment` slug param) can
+// still reach it.
+func assignmentsPath(classroom string) string {
+	return assignment.AssignmentsFilePath(classroom)
+}
+
 func assignmentRegistered(assignments assignment.AssignmentsJSON, slug string) bool {
 	for _, entry := range assignments.Assignments {
 		if strings.EqualFold(entry.Slug, slug) {
@@ -1096,7 +1121,7 @@ const stderrTailCap = 8 * 1024
 // output; otherwise stdout is discarded and the tail of stderr is
 // captured so failures carry git's diagnostic, not just
 // "exit status 1".
-func cloneOrgRepo(out, errOut io.Writer, org, repo, target string, quiet bool) error {
+func cloneOrgRepo(out, errOut io.Writer, org, repo, target string, quiet, verbose bool) error {
 	args := []string{"repo", "clone", fmt.Sprintf("%s/%s", org, repo), target}
 	if quiet {
 		args = append(args, "--", "--quiet")
