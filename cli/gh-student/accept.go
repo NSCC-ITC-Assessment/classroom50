@@ -12,9 +12,8 @@ import (
 	"os/exec"
 	"strings"
 
-	"github.com/cli/go-gh/v2/pkg/api"
 	"github.com/foundation50/classroom50-cli-shared/contract"
-	"github.com/foundation50/classroom50-cli-shared/ghutil"
+	"github.com/foundation50/gh-student/internal/githubapi"
 	"github.com/spf13/cobra"
 )
 
@@ -139,13 +138,13 @@ type OrgStatus struct {
 }
 
 // checkOrgStatus returns the authed user's membership in org.
-func checkOrgStatus(client *api.RESTClient, org string) (OrgStatus, error) {
+func checkOrgStatus(client githubapi.Client, org string) (OrgStatus, error) {
 	path := fmt.Sprintf("user/memberships/orgs/%s", url.PathEscape(org))
 	var resp struct {
 		State string `json:"state"`
 	}
 	if err := client.Get(path, &resp); err != nil {
-		if httpErr, ok := errors.AsType[*api.HTTPError](err); ok {
+		if httpErr, ok := errors.AsType[*githubapi.HTTPError](err); ok {
 			return OrgStatus{
 				StatusCode: httpErr.StatusCode,
 			}, nil
@@ -165,7 +164,7 @@ type AcceptStatus struct {
 }
 
 // acceptOrgInvite PATCHes the user's pending org membership to "active".
-func acceptOrgInvite(client *api.RESTClient, org string) (AcceptStatus, error) {
+func acceptOrgInvite(client githubapi.Client, org string) (AcceptStatus, error) {
 	body, err := json.Marshal(map[string]string{"state": "active"})
 	if err != nil {
 		return AcceptStatus{}, fmt.Errorf("encode body: %w", err)
@@ -173,7 +172,7 @@ func acceptOrgInvite(client *api.RESTClient, org string) (AcceptStatus, error) {
 
 	path := fmt.Sprintf("user/memberships/orgs/%s", url.PathEscape(org))
 	if err := client.Patch(path, bytes.NewReader(body), nil); err != nil {
-		if httpErr, ok := errors.AsType[*api.HTTPError](err); ok {
+		if httpErr, ok := errors.AsType[*githubapi.HTTPError](err); ok {
 			return AcceptStatus{
 				StatusCode: httpErr.StatusCode,
 			}, nil
@@ -203,7 +202,7 @@ func checkAcceptableMode(assignment, mode string) error {
 	return nil
 }
 
-func acceptAssignment(cmd *cobra.Command, client *api.RESTClient, out io.Writer, org, classroom, assignment string) error {
+func acceptAssignment(cmd *cobra.Command, client githubapi.Client, out io.Writer, org, classroom, assignment string) error {
 	username, err := getAuthedUsername(client)
 	if err != nil {
 		return fmt.Errorf("retrieving authed username: %w", err)
@@ -291,7 +290,7 @@ func acceptAssignment(cmd *cobra.Command, client *api.RESTClient, out io.Writer,
 
 // is422AlreadyExists matches "already exists" (case-insensitive) in
 // the 422 message or any Errors[] item.
-func is422AlreadyExists(httpErr *api.HTTPError) bool {
+func is422AlreadyExists(httpErr *githubapi.HTTPError) bool {
 	if strings.Contains(strings.ToLower(httpErr.Message), "already exists") {
 		return true
 	}
@@ -336,8 +335,8 @@ func printCloneInstructions(out io.Writer, htmlURL string) error {
 	return nil
 }
 
-func getAuthedUsername(client *api.RESTClient) (string, error) {
-	login, _, err := ghutil.CurrentUser(client)
+func getAuthedUsername(client githubapi.Client) (string, error) {
+	login, _, err := githubapi.CurrentUser(client)
 	return login, err
 }
 
@@ -381,7 +380,7 @@ func assignmentRepoPrefix(classroom, assignment string) string {
 // message (template not readable by the student).
 // 422-already-exists → alreadyExisted=true and the PATCH is skipped
 // so re-runs don't disturb an existing repo.
-func createTemplatedPrivateAssignmentRepoInOrg(client *api.RESTClient, out io.Writer, username, classroom, assignment, org string, tmpl templateRef) (htmlURL, fullName string, alreadyExisted bool, err error) {
+func createTemplatedPrivateAssignmentRepoInOrg(client githubapi.Client, out io.Writer, username, classroom, assignment, org string, tmpl templateRef) (htmlURL, fullName string, alreadyExisted bool, err error) {
 	newRepoName := assignmentRepoName(classroom, assignment, username)
 	createBody, err := json.Marshal(map[string]any{
 		"owner":   org,
@@ -396,7 +395,7 @@ func createTemplatedPrivateAssignmentRepoInOrg(client *api.RESTClient, out io.Wr
 
 	var created GeneratedRepo
 	if err := client.Post(createPath, bytes.NewReader(createBody), &created); err != nil {
-		if httpErr, ok := errors.AsType[*api.HTTPError](err); ok {
+		if httpErr, ok := errors.AsType[*githubapi.HTTPError](err); ok {
 			switch httpErr.StatusCode {
 			case http.StatusUnprocessableEntity:
 				if is422AlreadyExists(httpErr) {
@@ -449,9 +448,9 @@ func createTemplatedPrivateAssignmentRepoInOrg(client *api.RESTClient, out io.Wr
 // The org-level member-privilege lockdown in `gh teacher init` (#112)
 // removes the org-wide danger of repo-admin (no delete/transfer/
 // visibility change), so admin-on-own-repo is safe.
-func inviteUserAsAdmin(client *api.RESTClient, out io.Writer, username, classroom, assignment, org string) error {
+func inviteUserAsAdmin(client githubapi.Client, out io.Writer, username, classroom, assignment, org string) error {
 	fullRepoName := assignmentRepoName(classroom, assignment, username)
-	if _, err := ghutil.SetCollaborator(client, org, fullRepoName, username, "admin"); err != nil {
+	if _, err := githubapi.SetCollaborator(client, org, fullRepoName, username, "admin"); err != nil {
 		return err
 	}
 

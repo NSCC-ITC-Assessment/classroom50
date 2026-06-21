@@ -9,8 +9,8 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/cli/go-gh/v2/pkg/api"
 	"github.com/foundation50/classroom50-cli-shared/ghutil"
+	"github.com/foundation50/gh-student/internal/githubapi"
 )
 
 // listGroupMemberLogins returns the logins of the student-level
@@ -36,7 +36,7 @@ import (
 // timeout, so without a deadline a stalled collaborators API would hang
 // the invite indefinitely — the caller passes a context.WithTimeout
 // matching the sibling Pages fetch's budget.
-func listGroupMemberLogins(ctx context.Context, client *api.RESTClient, org, repo, owner string) ([]string, error) {
+func listGroupMemberLogins(ctx context.Context, client githubapi.Client, org, repo, owner string) ([]string, error) {
 	const perPage = 100
 	const maxPages = 100
 	var logins []string
@@ -95,7 +95,7 @@ func listGroupMemberLogins(ctx context.Context, client *api.RESTClient, org, rep
 //
 // max <= 0 means no limit (defensive — group assignments always carry a
 // positive size). The founder (`owner`) counts toward the total.
-func checkGroupSizeBeforeInvite(ctx context.Context, client *api.RESTClient, org, repo, owner, invitee string, maxGroupSize int) error {
+func checkGroupSizeBeforeInvite(ctx context.Context, client githubapi.Client, org, repo, owner, invitee string, maxGroupSize int) error {
 	if maxGroupSize <= 0 {
 		return nil
 	}

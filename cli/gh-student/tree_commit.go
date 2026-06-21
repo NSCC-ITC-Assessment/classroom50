@@ -4,9 +4,9 @@ import (
 	"errors"
 	"net/http"
 
-	"github.com/cli/go-gh/v2/pkg/api"
 	"github.com/foundation50/classroom50-cli-shared/ghutil"
 	"github.com/foundation50/classroom50-cli-shared/gittree"
+	"github.com/foundation50/gh-student/internal/githubapi"
 )
 
 // commitFilesAttempts: read-parent + build-tree retries at 200ms × 2^n backoff
@@ -24,17 +24,17 @@ var errRefNotReady = errors.New("branch ref not fully propagated")
 // APIs lag. No rebase loop: this writes to the student's own just-accepted repo,
 // which has no concurrent writers (the teacher-side commitTree handles the
 // contended config repo).
-func commitFiles(client *api.RESTClient, owner, repo, branch, message string, files map[string]string) error {
+func commitFiles(client githubapi.Client, owner, repo, branch, message string, files map[string]string) error {
 	if len(files) == 0 {
 		return nil
 	}
 
-	entries, err := gittree.UploadBlobs(client, owner, repo, files)
+	entries, err := githubapi.UploadBlobs(client, owner, repo, files)
 	if err != nil {
 		return err
 	}
 
-	_, err = gittree.CommitWithFreshRepoRetry(client, owner, repo, branch, message, entries, gittree.FreshRepoRetry{
+	_, err = githubapi.CommitWithFreshRepoRetry(client, owner, repo, branch, message, entries, gittree.FreshRepoRetry{
 		Attempts: commitFilesAttempts,
 		ValidateParent: func(parentSHA, parentTreeSHA string) error {
 			if parentSHA == "" || parentTreeSHA == "" {

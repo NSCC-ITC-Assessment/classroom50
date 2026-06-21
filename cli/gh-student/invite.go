@@ -8,8 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/cli/go-gh/v2/pkg/api"
-	"github.com/foundation50/classroom50-cli-shared/ghutil"
+	"github.com/foundation50/gh-student/internal/githubapi"
 	"github.com/spf13/cobra"
 )
 
@@ -102,7 +101,7 @@ func inviteCmd() *cobra.Command {
 // the guardrail is advisory, so an infrastructure blip must not stop an
 // honest invite. Only a genuine "group is full" decision (or an API error
 // while counting members of the matched repo) blocks the invite.
-func enforceGroupSize(cmd *cobra.Command, client *api.RESTClient, org, repo, invitee string) error {
+func enforceGroupSize(cmd *cobra.Command, client githubapi.Client, org, repo, invitee string) error {
 	root, inside, err := currentGitRoot()
 	if err != nil || !inside {
 		return nil // not in a repo → no group context to enforce
@@ -169,8 +168,8 @@ func groupRepoOwner(repo string, cfg *ClassroomConfig) string {
 }
 
 // inviteUserToPush adds username as a push collaborator on org/repo.
-func inviteUserToPush(client *api.RESTClient, out io.Writer, org, repo, username string) error {
-	if _, err := ghutil.SetCollaborator(client, org, repo, username, "push"); err != nil {
+func inviteUserToPush(client githubapi.Client, out io.Writer, org, repo, username string) error {
+	if _, err := githubapi.SetCollaborator(client, org, repo, username, "push"); err != nil {
 		return err
 	}
 

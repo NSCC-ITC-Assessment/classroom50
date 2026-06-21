@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cli/go-gh/v2/pkg/api"
+	"github.com/foundation50/gh-student/internal/githubapi"
 	"gopkg.in/yaml.v3"
 )
 
@@ -96,11 +96,11 @@ func TestIsHTTPNotFound(t *testing.T) {
 		want bool
 	}{
 		{"nil", nil, false},
-		{"direct 404 HTTPError", &api.HTTPError{StatusCode: http.StatusNotFound}, true},
-		{"direct 409 HTTPError", &api.HTTPError{StatusCode: http.StatusConflict}, false},
+		{"direct 404 HTTPError", &githubapi.HTTPError{StatusCode: http.StatusNotFound}, true},
+		{"direct 409 HTTPError", &githubapi.HTTPError{StatusCode: http.StatusConflict}, false},
 		{
 			name: "wrapped 404 HTTPError still resolves",
-			err:  fmt.Errorf("GET something: %w", &api.HTTPError{StatusCode: http.StatusNotFound}),
+			err:  fmt.Errorf("GET something: %w", &githubapi.HTTPError{StatusCode: http.StatusNotFound}),
 			want: true,
 		},
 		{"plain error", errors.New("network unreachable"), false},

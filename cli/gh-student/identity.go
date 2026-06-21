@@ -3,8 +3,7 @@ package main
 import (
 	"fmt"
 
-	"github.com/cli/go-gh/v2/pkg/api"
-	"github.com/foundation50/classroom50-cli-shared/ghutil"
+	"github.com/foundation50/gh-student/internal/githubapi"
 )
 
 // gitIdentity is the author/committer pair stamped on submit commits.
@@ -15,8 +14,8 @@ type gitIdentity struct {
 
 // fetchGitIdentity returns the authenticated user's GitHub login and
 // `<id>+<login>@users.noreply.github.com` noreply email.
-func fetchGitIdentity(client *api.RESTClient) (gitIdentity, error) {
-	login, id, err := ghutil.CurrentUser(client)
+func fetchGitIdentity(client githubapi.Client) (gitIdentity, error) {
+	login, id, err := githubapi.CurrentUser(client)
 	if err != nil {
 		return gitIdentity{}, err
 	}

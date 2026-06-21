@@ -4,6 +4,7 @@ import (
 	"errors"
 
 	"github.com/foundation50/classroom50-cli-shared/ghauth"
+	"github.com/foundation50/gh-student/internal/githubapi"
 	"github.com/spf13/cobra"
 )
 
@@ -30,7 +31,7 @@ func loginCmd() *cobra.Command {
 				return errors.New("gh student login requires an interactive terminal (it shells out to gh auth login, which opens a browser)")
 			}
 			return ghauth.RunLogin(cmd.OutOrStdout(), cmd.ErrOrStderr(),
-				ghauth.DefaultHost(), requiredScopes, scopes)
+				ghauth.DefaultHost(), githubapi.RequiredScopes(), scopes)
 		},
 	}
 

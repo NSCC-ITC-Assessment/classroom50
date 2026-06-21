@@ -6,8 +6,8 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/cli/go-gh/v2/pkg/api"
 	"github.com/foundation50/classroom50-cli-shared/ghutil"
+	"github.com/foundation50/gh-student/internal/githubapi"
 	"gopkg.in/yaml.v3"
 )
 
@@ -54,7 +54,7 @@ func renderClassroomMetadata(cfg ClassroomConfig) ([]byte, error) {
 // doesn't propagate the post-templated-repo commit ref
 // synchronously (the contents API briefly returns 409
 // "Git Repository is empty" otherwise).
-func dropClassroomFiles(client *api.RESTClient, owner, repo, branch string, cfg ClassroomConfig, workflowContent string) error {
+func dropClassroomFiles(client githubapi.Client, owner, repo, branch string, cfg ClassroomConfig, workflowContent string) error {
 	if err := waitForStableBranch(client, owner, repo, branch); err != nil {
 		return err
 	}
@@ -79,8 +79,8 @@ func dropClassroomFiles(client *api.RESTClient, owner, repo, branch string, cfg 
 // 409 with "Git Repository is empty" until the ref propagates.
 // waitForStableBranch polls until a freshly-created branch's ref
 // propagates. Thin wrapper over the shared ghutil helper.
-func waitForStableBranch(client *api.RESTClient, owner, repo, branch string) error {
-	return ghutil.WaitForStableBranch(client, owner, repo, branch)
+func waitForStableBranch(client githubapi.Client, owner, repo, branch string) error {
+	return githubapi.WaitForStableBranch(client, owner, repo, branch)
 }
 
 // escapeContentPath URL-encodes each path segment, preserving slashes.
@@ -137,7 +137,7 @@ func quoteStringValues(n *yaml.Node) {
 	}
 }
 
-// isHTTPNotFound reports whether err is a 404 *api.HTTPError.
+// isHTTPNotFound reports whether err is a 404 *githubapi.HTTPError.
 // Thin wrapper over the shared ghutil helper (kept as a local name
 // so call sites are unchanged).
 func isHTTPNotFound(err error) bool {

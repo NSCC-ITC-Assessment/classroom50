@@ -13,8 +13,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/cli/go-gh/v2/pkg/api"
 	"github.com/foundation50/classroom50-cli-shared/ghutil"
+	"github.com/foundation50/gh-student/internal/githubapi"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 )
@@ -59,7 +59,7 @@ func submitCmd() *cobra.Command {
 	return cmd
 }
 
-func submitAssignment(_ context.Context, client *api.RESTClient, out io.Writer, errOut io.Writer) error {
+func submitAssignment(_ context.Context, client githubapi.Client, out io.Writer, errOut io.Writer) error {
 	const (
 		remote = "origin"
 		branch = "main"
@@ -195,7 +195,7 @@ type contentsFile struct {
 }
 
 func fetchRepoPath(
-	client *api.RESTClient,
+	client githubapi.Client,
 	dstRoot string,
 	owner string,
 	repo string,

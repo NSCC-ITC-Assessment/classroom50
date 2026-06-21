@@ -3,7 +3,7 @@ package main
 import (
 	"fmt"
 
-	"github.com/foundation50/classroom50-cli-shared/ghutil"
+	"github.com/foundation50/gh-student/internal/githubapi"
 	"github.com/spf13/cobra"
 )
 
@@ -18,7 +18,7 @@ func whoamiCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			login, _, err := ghutil.CurrentUser(client)
+			login, _, err := githubapi.CurrentUser(client)
 			if err != nil {
 				return err
 			}
