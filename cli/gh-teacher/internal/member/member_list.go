@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 
@@ -338,7 +339,7 @@ func renderMemberList(out, errOut io.Writer, target string, entries []memberList
 	for _, e := range entries {
 		githubID := "-"
 		if e.GitHubID != 0 {
-			githubID = fmt.Sprintf("%d", e.GitHubID)
+			githubID = strconv.FormatInt(e.GitHubID, 10)
 		}
 		role := e.Role
 		if role == "" {
