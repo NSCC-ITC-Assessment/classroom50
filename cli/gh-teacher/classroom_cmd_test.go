@@ -12,6 +12,7 @@ import (
 
 	"github.com/foundation50/gh-teacher/internal/configrepo"
 	"github.com/foundation50/gh-teacher/internal/githubtest"
+	"github.com/foundation50/gh-teacher/internal/output"
 )
 
 // configRepoMock is a minimal in-memory <org>/classroom50 server
@@ -142,7 +143,7 @@ func (m *configRepoMock) handler(t *testing.T) http.Handler {
 
 func classroomJSONContent(t *testing.T, org, shortName, name, term string) string {
 	t.Helper()
-	b, err := encodeJSONPretty(configrepo.ClassroomJSON{
+	b, err := output.JSONPretty(configrepo.ClassroomJSON{
 		Schema:    classroomSchemaV1,
 		Name:      name,
 		ShortName: shortName,
@@ -266,7 +267,7 @@ func TestEditClassroom(t *testing.T) {
 	// classroom.json -- including the optional migrated_from
 	// provenance block -- has to round-trip unchanged.
 	t.Run("preserves migrated_from and other fields", func(t *testing.T) {
-		migrated, err := encodeJSONPretty(configrepo.ClassroomJSON{
+		migrated, err := output.JSONPretty(configrepo.ClassroomJSON{
 			Schema:    classroomSchemaV1,
 			Name:      "CS Principles",
 			ShortName: "cs-principles",

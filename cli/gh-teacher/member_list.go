@@ -13,6 +13,8 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/foundation50/gh-teacher/internal/githubapi"
+	"github.com/foundation50/gh-teacher/internal/membership"
+	"github.com/foundation50/gh-teacher/internal/output"
 )
 
 // memberAPIPerPage / memberPagesMax bound the paginated membership
@@ -277,8 +279,8 @@ func paginateMembers(client githubapi.Client, base, subject string) ([]memberAcc
 
 // classifyMembershipReadError maps the common failure statuses of the
 // read-only membership endpoints to actionable messages, mirroring
-// classifyOrgInviteError's 403/404 handling so `member list` and
-// `invite` stay consistent. `subject` is a human label for the thing
+// membership.ClassifyOrgInviteError's 403/404 handling so `member list`
+// and `invite` stay consistent. `subject` is a human label for the thing
 // being read (e.g. "cs50/members", "cs50 pending invitations").
 // Returns the original wrapped error for statuses it doesn't special-case.
 func classifyMembershipReadError(path, subject string, err error) error {
@@ -290,10 +292,10 @@ func classifyMembershipReadError(path, subject string, err error) error {
 	case http.StatusNotFound:
 		return fmt.Errorf("%s: not found or not accessible", subject)
 	case http.StatusForbidden:
-		switch classifyOrgForbidden(httpErr) {
-		case orgForbiddenScopeMissing:
-			return errMissingOrgAdminScope
-		case orgForbiddenNotAdmin:
+		switch membership.ClassifyOrgForbidden(httpErr) {
+		case membership.OrgForbiddenScopeMissing:
+			return membership.ErrMissingOrgAdminScope
+		case membership.OrgForbiddenNotAdmin:
 			return fmt.Errorf("%s: forbidden — you may not have admin access to read it", subject)
 		default:
 			return fmt.Errorf("%s: forbidden — ensure your token has the admin:org scope (`gh teacher login`) and that you have access", subject)
@@ -307,7 +309,7 @@ func renderMemberList(out, errOut io.Writer, target string, entries []memberList
 		if entries == nil {
 			entries = []memberListEntry{}
 		}
-		data, err := encodeJSONPretty(entries)
+		data, err := output.JSONPretty(entries)
 		if err != nil {
 			return err
 		}

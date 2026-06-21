@@ -12,6 +12,7 @@ import (
 
 	"github.com/foundation50/gh-teacher/internal/configrepo"
 	"github.com/foundation50/gh-teacher/internal/githubapi"
+	"github.com/foundation50/gh-teacher/internal/membership"
 	"github.com/foundation50/gh-teacher/internal/validate"
 )
 
@@ -178,10 +179,10 @@ func rosterImportCmd() *cobra.Command {
 // pending; returns the membership state at decision time. The
 // pre-resolved userID avoids redundant GET /users/{username} calls
 // during a bulk import. A 422 "already member/pending" from
-// inviteOrgByID is recovered as success so a TOCTOU race between
-// pre-check and invite can't surface a spurious failure.
+// membership.InviteOrgByID is recovered as success so a TOCTOU race
+// between pre-check and invite can't surface a spurious failure.
 func inviteIfNotMember(client githubapi.Client, org, username string, userID int64) (state string, err error) {
-	if s, ok := getMembershipState(client, org, username); ok {
+	if s, ok := membership.MembershipState(client, org, username); ok {
 		switch s {
 		case "active":
 			return "active", nil
@@ -189,10 +190,10 @@ func inviteIfNotMember(client githubapi.Client, org, username string, userID int
 			return "pending", nil
 		}
 	}
-	if err := inviteOrgByID(client, org, username, userID, "direct_member"); err != nil {
-		var known *orgMembershipKnownError
+	if err := membership.InviteOrgByID(client, org, username, userID, "direct_member"); err != nil {
+		var known *membership.OrgMembershipKnownError
 		if errors.As(err, &known) {
-			return known.state, nil
+			return known.State, nil
 		}
 		return "", err
 	}
@@ -209,7 +210,7 @@ func runRosterAdd(client githubapi.Client, out, errOut io.Writer, org, classroom
 		return err
 	}
 
-	login, userID, err := lookupUser(client, username)
+	login, userID, err := membership.LookupUser(client, username)
 	if err != nil {
 		return err
 	}
@@ -369,7 +370,7 @@ func runRosterImport(client githubapi.Client, out, errOut io.Writer, org, classr
 	resolved := make([]configrepo.RosterRow, 0, len(imported))
 	for i, row := range imported {
 		line := i + 2
-		login, userID, err := lookupUser(client, row.Username)
+		login, userID, err := membership.LookupUser(client, row.Username)
 		if err != nil {
 			return fmt.Errorf("line %d (%s): %w", line, row.Username, err)
 		}

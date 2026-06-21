@@ -10,6 +10,7 @@ import (
 
 	"github.com/foundation50/gh-teacher/internal/configrepo"
 	"github.com/foundation50/gh-teacher/internal/githubapi"
+	"github.com/foundation50/gh-teacher/internal/output"
 	"github.com/foundation50/gh-teacher/internal/validate"
 )
 
@@ -259,7 +260,7 @@ func runAssignmentTestList(client githubapi.Client, out, errOut io.Writer, org, 
 		if tests == nil {
 			tests = []testSpec{}
 		}
-		data, err := encodeJSONPretty(tests)
+		data, err := output.JSONPretty(tests)
 		if err != nil {
 			return err
 		}

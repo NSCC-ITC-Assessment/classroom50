@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/foundation50/classroom50-cli-shared/contract"
+	"github.com/foundation50/gh-teacher/internal/output"
 	"github.com/foundation50/gh-teacher/internal/validate"
 )
 
@@ -346,7 +347,7 @@ func parseAssignments(data []byte) (assignmentsJSON, error) {
 	return file, nil
 }
 
-// encodeAssignments serializes via encodeJSONPretty (2-space indent,
+// encodeAssignments serializes via output.JSONPretty (2-space indent,
 // trailing newline) so on-disk diffs stay stable. Normalizes nil →
 // [] for Assignments and empty Autograder → defaultAutograderName so
 // the wire shape is uniform. Per-entry validation is the caller's
@@ -371,7 +372,7 @@ func encodeAssignments(file assignmentsJSON) ([]byte, error) {
 			}
 		}
 	}
-	return encodeJSONPretty(out)
+	return output.JSONPretty(out)
 }
 
 // upsertAssignment replaces by Slug (case-sensitive; the slug

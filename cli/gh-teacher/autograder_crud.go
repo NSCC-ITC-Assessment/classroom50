@@ -14,6 +14,7 @@ import (
 
 	"github.com/foundation50/gh-teacher/internal/configrepo"
 	"github.com/foundation50/gh-teacher/internal/githubapi"
+	"github.com/foundation50/gh-teacher/internal/output"
 	"github.com/foundation50/gh-teacher/internal/validate"
 )
 
@@ -127,7 +128,7 @@ func runAutograderShow(client githubapi.Client, out, errOut io.Writer, org, clas
 			meta.Size = len(content)
 			meta.SHA = gitBlobSHA(content)
 		}
-		data, err := encodeJSONPretty(meta)
+		data, err := output.JSONPretty(meta)
 		if err != nil {
 			return err
 		}
@@ -267,7 +268,7 @@ func runAutograderList(client githubapi.Client, out, errOut io.Writer, org, clas
 		if entries == nil {
 			entries = []autograderListEntry{}
 		}
-		data, err := encodeJSONPretty(entries)
+		data, err := output.JSONPretty(entries)
 		if err != nil {
 			return err
 		}

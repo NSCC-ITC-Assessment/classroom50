@@ -12,6 +12,7 @@ import (
 
 	"github.com/foundation50/gh-teacher/internal/configrepo"
 	"github.com/foundation50/gh-teacher/internal/githubapi"
+	"github.com/foundation50/gh-teacher/internal/output"
 	"github.com/foundation50/gh-teacher/internal/validate"
 )
 
@@ -98,7 +99,7 @@ func runRosterList(client githubapi.Client, out, errOut io.Writer, org, classroo
 		for _, r := range rows {
 			entries = append(entries, rosterListEntry(r))
 		}
-		data, err := encodeJSONPretty(entries)
+		data, err := output.JSONPretty(entries)
 		if err != nil {
 			return err
 		}

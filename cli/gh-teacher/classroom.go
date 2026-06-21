@@ -2,7 +2,6 @@ package main
 
 import (
 	"bufio"
-	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,6 +13,7 @@ import (
 	"github.com/foundation50/classroom50-cli-shared/contract"
 	"github.com/foundation50/gh-teacher/internal/configrepo"
 	"github.com/foundation50/gh-teacher/internal/githubapi"
+	"github.com/foundation50/gh-teacher/internal/output"
 	"github.com/foundation50/gh-teacher/internal/validate"
 )
 
@@ -253,7 +253,7 @@ func runClassroomList(client githubapi.Client, out, errOut io.Writer, org string
 		if classrooms == nil {
 			classrooms = []classroomSummary{}
 		}
-		data, err := encodeJSONPretty(classrooms)
+		data, err := output.JSONPretty(classrooms)
 		if err != nil {
 			return err
 		}
@@ -365,7 +365,7 @@ func editClassroom(client githubapi.Client, out, errOut io.Writer, org, shortNam
 		if setTerm {
 			c.Term = term
 		}
-		updated, err := encodeJSONPretty(c)
+		updated, err := output.JSONPretty(c)
 		if err != nil {
 			return nil, fmt.Errorf("encode classroom.json: %w", err)
 		}
@@ -559,7 +559,7 @@ func classroomScaffold(org, shortName, name, term string, entries []assignmentEn
 		Team:         team,
 		MigratedFrom: migration,
 	}
-	classroomBytes, err := encodeJSONPretty(classroom)
+	classroomBytes, err := output.JSONPretty(classroom)
 	if err != nil {
 		return nil, fmt.Errorf("encode classroom.json: %w", err)
 	}
@@ -579,7 +579,7 @@ func classroomScaffold(org, shortName, name, term string, entries []assignmentEn
 		Schema:      scoresSchemaV1,
 		Assignments: map[string]assignmentBucket{},
 	}
-	scoresBytes, err := encodeJSONPretty(scores)
+	scoresBytes, err := output.JSONPretty(scores)
 	if err != nil {
 		return nil, fmt.Errorf("encode scores.json: %w", err)
 	}
@@ -590,18 +590,4 @@ func classroomScaffold(org, shortName, name, term string, entries []assignmentEn
 		shortName + "/students.csv":     studentsCSVHeader,
 		shortName + "/scores.json":      string(scoresBytes),
 	}, nil
-}
-
-// encodeJSONPretty marshals v with 2-space indent and a trailing
-// newline so teachers can inspect/hand-edit the files. EscapeHTML
-// is off to keep `<`/`>` literal in URLs.
-func encodeJSONPretty(v any) ([]byte, error) {
-	var buf bytes.Buffer
-	enc := json.NewEncoder(&buf)
-	enc.SetIndent("", "  ")
-	enc.SetEscapeHTML(false)
-	if err := enc.Encode(v); err != nil {
-		return nil, err
-	}
-	return buf.Bytes(), nil
 }

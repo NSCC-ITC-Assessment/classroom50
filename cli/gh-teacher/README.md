@@ -69,7 +69,7 @@ New commands should prefer the extracted form. Currently extracted: `internal/au
 
 All GitHub REST access goes through `internal/githubapi`, the **only** package permitted to import [`go-gh`](https://github.com/cli/go-gh)'s `pkg/api` (the test-client helper `internal/githubtest` is the one other exception, since it constructs real clients for white-box tests). Domain code depends on the transport-verb `githubapi.Client` interface (`Get` / `Post` / `Request`), never on the concrete `*api.RESTClient`. Generic pagination (`githubapi.PaginateAll`/`GetPage`) and the shared-module operations that need the concrete client (`CommitWithRebase`, `SetCollaborator`, `WaitForStableBranch`, …) are wrapped here too. This boundary is **enforced in CI** by the "Single go-gh importer guard" step in [`gh-teacher-ci.yaml`](../../.github/workflows/gh-teacher-ci.yaml) — a non-test file outside `internal/githubapi/` that imports `go-gh/v2/pkg/api` fails the build. It is a lint/CI invariant, not a compiler-enforced boundary (sibling `internal/*` packages can import each other freely).
 
-Cross-cutting CLI helpers that are not GitHub-API logic live in `internal/cliutil` (`RequireAuthClient` is in `githubapi` since it builds a client; `IsHTTPStatus` is in `cliutil`).
+Cross-cutting CLI helpers that are not GitHub-API logic live in `internal/cliutil` (`RequireAuthClient` is in `githubapi` since it builds a client; `IsHTTPStatus` is in `cliutil`). The shared JSON encoder behind every `--json` view and every config-repo file written to disk lives in `internal/output` as `output.JSONPretty` (2-space indent, no HTML escaping, trailing newline — a byte contract pinned by `internal/output/output_test.go`).
 
 ### Identifier validation (`internal/validate`)
 
@@ -78,6 +78,12 @@ Pure identifier validators live in `internal/validate`: `validate.ShortName(name
 ### Config-repo substrate (`internal/configrepo`)
 
 `internal/configrepo` is the read substrate for each org's `<org>/classroom50` config repo. It holds: the contents/tree **read** plumbing (`ReadFileContents`, `ContentsExists`, `ListDirContents`, `ListSubtreeBlobPaths`, `CommitTreeSHA`); branch/loader helpers (`ResolveConfigRepoBranch`, `LoadRoster`, `LoadClassroom`); the `students.csv` data layer (`ParseRoster`/`EncodeRoster`/`UpsertRosterRow`/`RemoveRosterRow` + the CSV-injection defang); the persisted record types (`ClassroomJSON`, `TeamRef`, `MigratedFromRef`, `RosterRow`, `ConfigRepo`); and the team service (`EnsureClassroomTeam`, `ResolveClassroomTeam`, `AddTeamMembership`, `GrantTeamRepoRead`, …). The config-repo **write** helpers (`commitTree`/`commitTreeChange` in `tree_commit.go`) deliberately stay in `package main` to avoid an import cycle: they inject `classifyWorkflowScope404` (defined in `init_skeleton.go`), so moving them into `configrepo` would make the substrate package depend back on `main`.
+
+### Org-membership service (`internal/membership`)
+
+`internal/membership` is the org-level membership service shared by the `invite`, `roster`, and `member` commands: `LookupUser`, `InviteOrgByID`, `MembershipState`, the `OrgMembershipKnownError` type, `ClassifyOrgInviteError`, and the 403/scope classifier family (`ClassifyOrgForbidden` / `HasOrgAdminScope` / `ErrMissingOrgAdminScope`). It is a primitives surface, not a fused service: each command needs a different subset, so the roster-specific ensure-membership composition (`inviteIfNotMember`) stays in `package main` as command glue, and the Cobra wiring stays in `package main` too (full command extraction is a later slice, once `commitTree` is also relocated).
+
+**Membership boundary vs `internal/configrepo`:** if an operation is keyed by config-repo data (`classroom.json`, the roster file) it stays in `configrepo` — that is membership-as-config, e.g. `AddTeamMembership`/`RemoveTeamMembership` acting on the classroom team slug recorded in `classroom.json`. If it is pure GitHub org-membership independent of stored config — inviting a user to the org, looking a user up, reading org membership state — it lives in `membership`.
 
 Bootstrap commands (`init`, `rotate-service-token`) live alongside `init_repo.go`, `init_skeleton.go`, and `service_token.go`. The skeleton embedded into each org's `classroom50` repo at init time lives under `skeleton/` (Go sources read it via `//go:embed`).
 

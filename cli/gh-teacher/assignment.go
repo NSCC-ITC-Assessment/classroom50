@@ -15,6 +15,7 @@ import (
 	"github.com/foundation50/gh-teacher/internal/cliutil"
 	"github.com/foundation50/gh-teacher/internal/configrepo"
 	"github.com/foundation50/gh-teacher/internal/githubapi"
+	"github.com/foundation50/gh-teacher/internal/output"
 	"github.com/foundation50/gh-teacher/internal/validate"
 )
 
@@ -330,7 +331,7 @@ func formatAssignmentListJSON(entries []assignmentEntry) ([]byte, error) {
 			entries[i].Autograder = defaultAutograderName
 		}
 	}
-	return encodeJSONPretty(entries)
+	return output.JSONPretty(entries)
 }
 
 // summarizeAssignmentList: one-line stderr summary shaped
