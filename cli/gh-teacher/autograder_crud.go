@@ -13,6 +13,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/foundation50/gh-teacher/internal/configrepo"
+	"github.com/foundation50/gh-teacher/internal/configwrite"
 	"github.com/foundation50/gh-teacher/internal/githubapi"
 	"github.com/foundation50/gh-teacher/internal/output"
 	"github.com/foundation50/gh-teacher/internal/validate"
@@ -348,7 +349,7 @@ func autograderRemoveCmd() *cobra.Command {
 }
 
 // removeClassroomDefaultAutograder deletes <classroom>/autograder.py via
-// commitTreeChange. Existence is re-probed inside the build callback so
+// configwrite.CommitTreeChange. Existence is re-probed inside the build callback so
 // a concurrent delete collapses to a clean no-op rather than an error.
 func removeClassroomDefaultAutograder(client githubapi.Client, in io.Reader, out, errOut io.Writer, org, classroom string, skipConfirm bool) error {
 	branch, err := configrepo.ResolveConfigRepoBranch(client, org)
@@ -382,19 +383,19 @@ func removeClassroomDefaultAutograder(client githubapi.Client, in io.Reader, out
 		}
 	}
 
-	build := func(parentSHA string) (commitChange, error) {
+	build := func(parentSHA string) (configwrite.CommitChange, error) {
 		stillThere, err := configrepo.ContentsExists(client, org, configrepo.ConfigRepoName, repoPath, parentSHA)
 		if err != nil {
-			return commitChange{}, err
+			return configwrite.CommitChange{}, err
 		}
 		if !stillThere {
-			return commitChange{}, nil // a concurrent remove won; no-op
+			return configwrite.CommitChange{}, nil // a concurrent remove won; no-op
 		}
-		return commitChange{Deletes: []string{repoPath}}, nil
+		return configwrite.CommitChange{Deletes: []string{repoPath}}, nil
 	}
 
 	message := fmt.Sprintf("Remove %s default autograder.py (gh teacher autograder remove)", classroom)
-	sha, err := commitTreeChange(client, org, configrepo.ConfigRepoName, branch, message, build)
+	sha, err := configwrite.CommitTreeChange(client, org, configrepo.ConfigRepoName, branch, message, build)
 	if err != nil {
 		return err
 	}

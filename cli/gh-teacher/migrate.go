@@ -11,6 +11,7 @@ import (
 
 	"github.com/foundation50/gh-teacher/internal/assignment"
 	"github.com/foundation50/gh-teacher/internal/configrepo"
+	"github.com/foundation50/gh-teacher/internal/configwrite"
 	"github.com/foundation50/gh-teacher/internal/githubapi"
 	"github.com/foundation50/gh-teacher/internal/validate"
 )
@@ -202,7 +203,7 @@ func performMigration(client githubapi.Client, out, errOut io.Writer, plan migra
 	}
 
 	// Fail fast on the common "already exists" case before any
-	// template repos get created. The commitTree build callback
+	// template repos get created. The configwrite.CommitTree build callback
 	// re-probes for race-safety against a concurrent writer.
 	exists, err := configrepo.ContentsExists(client, plan.TargetOrg, configrepo.ConfigRepoName, plan.ShortName, branch)
 	if err != nil {
@@ -242,7 +243,7 @@ func performMigration(client githubapi.Client, out, errOut io.Writer, plan migra
 
 	message := fmt.Sprintf("Migrate %s from GitHub Classroom %d (gh teacher classroom migrate)",
 		plan.ShortName, plan.Classroom.ID)
-	commitSHA, err := commitTree(client, plan.TargetOrg, configrepo.ConfigRepoName, branch, message, build)
+	commitSHA, err := configwrite.CommitTree(client, plan.TargetOrg, configrepo.ConfigRepoName, branch, message, build)
 	if err != nil {
 		return err
 	}

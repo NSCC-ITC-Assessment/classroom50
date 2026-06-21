@@ -10,6 +10,7 @@ import (
 
 	"github.com/foundation50/gh-teacher/internal/assignment"
 	"github.com/foundation50/gh-teacher/internal/configrepo"
+	"github.com/foundation50/gh-teacher/internal/configwrite"
 	"github.com/foundation50/gh-teacher/internal/githubapi"
 	"github.com/foundation50/gh-teacher/internal/output"
 	"github.com/foundation50/gh-teacher/internal/validate"
@@ -145,7 +146,7 @@ func assignmentTestAddCmd() *cobra.Command {
 }
 
 // runAssignmentTestAdd upserts one test into an existing assignment
-// entry. The conflict check and entry lookup run inside the commitTree
+// entry. The conflict check and entry lookup run inside the configwrite.CommitTree
 // build closure against each attempt's parent SHA, so concurrent edits
 // rebase cleanly. assignment.ValidateAssignmentEntry re-runs in the closure to
 // enforce the count cap + name uniqueness against the merged array.
@@ -192,7 +193,7 @@ func runAssignmentTestAdd(client githubapi.Client, out io.Writer, org, classroom
 	}
 
 	message := fmt.Sprintf("assignment: set test %q on %s/%s (gh teacher assignment test add)", spec.Name, classroom, slug)
-	if _, err := commitTree(client, org, configrepo.ConfigRepoName, branch, message, build); err != nil {
+	if _, err := configwrite.CommitTree(client, org, configrepo.ConfigRepoName, branch, message, build); err != nil {
 		return err
 	}
 	_, _ = fmt.Fprintf(out, "%s/%s/%s: %s test %q on %s (type %s, %d pts)\n",
@@ -361,7 +362,7 @@ func runAssignmentTestRemove(client githubapi.Client, out io.Writer, org, classr
 	}
 
 	message := fmt.Sprintf("assignment: remove test %q from %s/%s (gh teacher assignment test remove)", testName, classroom, slug)
-	if _, err := commitTree(client, org, configrepo.ConfigRepoName, branch, message, build); err != nil {
+	if _, err := configwrite.CommitTree(client, org, configrepo.ConfigRepoName, branch, message, build); err != nil {
 		return err
 	}
 
@@ -398,7 +399,7 @@ func ensureDeclarativeTestsSupported(client githubapi.Client, org, ref string) e
 // ensureNoPerAssignmentAutograder rejects writing declarative tests for
 // a slug that already has a hand-written autograder.py in the config
 // repo: the runner prefers autograder.py, so the tests would silently
-// never run. Probed against `ref` so a caller inside a commitTree build
+// never run. Probed against `ref` so a caller inside a configwrite.CommitTree build
 // closure sees the same parent state as the rest of its read.
 func ensureNoPerAssignmentAutograder(client githubapi.Client, org, classroom, slug, ref string) error {
 	path := assignment.PerAssignmentAutograderPath(classroom, slug)

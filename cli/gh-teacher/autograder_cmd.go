@@ -15,6 +15,7 @@ import (
 
 	"github.com/foundation50/gh-teacher/internal/cliutil"
 	"github.com/foundation50/gh-teacher/internal/configrepo"
+	"github.com/foundation50/gh-teacher/internal/configwrite"
 	"github.com/foundation50/gh-teacher/internal/githubapi"
 	"github.com/foundation50/gh-teacher/internal/validate"
 )
@@ -72,7 +73,7 @@ func autograderCmd() *cobra.Command {
 // stdin via `--from -`). When `--from` is omitted, writes the
 // shipped diagnostic stub — useful for verifying the runner
 // pipeline before authoring real grading logic. Single Tree commit
-// through commitTree so concurrent edits don't silently lose each
+// through configwrite.CommitTree so concurrent edits don't silently lose each
 // other's work. No-ops when the proposed body matches the on-disk
 // body byte-for-byte.
 func autograderSetDefaultCmd() *cobra.Command {
@@ -181,7 +182,7 @@ func setClassroomDefaultAutograder(client githubapi.Client, out, errOut io.Write
 	}
 
 	message := fmt.Sprintf("Set %s default autograder.py from %s (gh teacher autograder set-default)", classroom, label)
-	commitSHA, err := commitTree(client, org, configrepo.ConfigRepoName, branch, message, build)
+	commitSHA, err := configwrite.CommitTree(client, org, configrepo.ConfigRepoName, branch, message, build)
 	if err != nil {
 		return err
 	}

@@ -1,4 +1,4 @@
-package main
+package configwrite
 
 import (
 	"encoding/json"
@@ -12,7 +12,7 @@ import (
 
 // TestCommitTreeChange_SendsDeletions verifies that deletes flow into
 // the git Tree payload as `"sha":null` entries alongside upsert blobs,
-// and that commitTreeChange returns the new commit SHA.
+// and that CommitTreeChange returns the new commit SHA.
 func TestCommitTreeChange_SendsDeletions(t *testing.T) {
 	var treePayload struct {
 		BaseTree string `json:"base_tree"`
@@ -56,19 +56,19 @@ func TestCommitTreeChange_SendsDeletions(t *testing.T) {
 	t.Cleanup(server.Close)
 	client := githubtest.NewTestClient(t, server)
 
-	build := func(parentSHA string) (commitChange, error) {
+	build := func(parentSHA string) (CommitChange, error) {
 		if parentSHA != "parent-sha" {
 			t.Errorf("build saw parentSHA %q, want parent-sha", parentSHA)
 		}
-		return commitChange{
+		return CommitChange{
 			Upserts: map[string]string{"keep/a.txt": "hi"},
 			Deletes: []string{"gone/b.txt", "gone/c.txt"},
 		}, nil
 	}
 
-	sha, err := commitTreeChange(client, "o", "r", "main", "del test", build)
+	sha, err := CommitTreeChange(client, "o", "r", "main", "del test", build)
 	if err != nil {
-		t.Fatalf("commitTreeChange: %v", err)
+		t.Fatalf("CommitTreeChange: %v", err)
 	}
 	if sha != "new-commit-sha" {
 		t.Errorf("returned sha %q, want new-commit-sha", sha)
@@ -114,11 +114,11 @@ func TestCommitTreeChange_EmptyIsNoOp(t *testing.T) {
 	t.Cleanup(server.Close)
 	client := githubtest.NewTestClient(t, server)
 
-	sha, err := commitTreeChange(client, "o", "r", "main", "noop", func(string) (commitChange, error) {
-		return commitChange{}, nil
+	sha, err := CommitTreeChange(client, "o", "r", "main", "noop", func(string) (CommitChange, error) {
+		return CommitChange{}, nil
 	})
 	if err != nil {
-		t.Fatalf("commitTreeChange: %v", err)
+		t.Fatalf("CommitTreeChange: %v", err)
 	}
 	if sha != "" {
 		t.Errorf("returned sha %q, want empty (no-op)", sha)

@@ -13,6 +13,7 @@ import (
 	"github.com/foundation50/classroom50-cli-shared/contract"
 	"github.com/foundation50/gh-teacher/internal/assignment"
 	"github.com/foundation50/gh-teacher/internal/configrepo"
+	"github.com/foundation50/gh-teacher/internal/configwrite"
 	"github.com/foundation50/gh-teacher/internal/githubapi"
 	"github.com/foundation50/gh-teacher/internal/output"
 	"github.com/foundation50/gh-teacher/internal/validate"
@@ -116,7 +117,7 @@ func classroomAddCmd() *cobra.Command {
 }
 
 // addClassroom writes the four-file scaffold in one Tree commit
-// through commitTree so concurrent writers don't lose each other's
+// through configwrite.CommitTree so concurrent writers don't lose each other's
 // work. The existence probe runs inside the build callback so a
 // same-classroom race surfaces as "already exists" rather than
 // silently clobbering the winner.
@@ -157,7 +158,7 @@ func addClassroom(client githubapi.Client, out, errOut io.Writer, org, shortName
 	}
 
 	message := fmt.Sprintf("Add %s classroom (gh teacher classroom add)", shortName)
-	if _, err := commitTree(client, org, configrepo.ConfigRepoName, branch, message, build); err != nil {
+	if _, err := configwrite.CommitTree(client, org, configrepo.ConfigRepoName, branch, message, build); err != nil {
 		return err
 	}
 
@@ -378,7 +379,7 @@ func editClassroom(client githubapi.Client, out, errOut io.Writer, org, shortNam
 	}
 
 	message := fmt.Sprintf("Edit %s classroom (gh teacher classroom edit)", shortName)
-	if _, err := commitTree(client, org, configrepo.ConfigRepoName, branch, message, build); err != nil {
+	if _, err := configwrite.CommitTree(client, org, configrepo.ConfigRepoName, branch, message, build); err != nil {
 		return err
 	}
 	if noop {
@@ -431,7 +432,7 @@ func classroomRemoveCmd() *cobra.Command {
 }
 
 // removeClassroom deletes the whole <short-name>/ subtree in one
-// commit via commitTreeChange. The subtree's blob paths are
+// commit via configwrite.CommitTreeChange. The subtree's blob paths are
 // enumerated inside the build callback so the deletion set stays
 // consistent with the parent it commits against.
 func removeClassroom(client githubapi.Client, in io.Reader, out, errOut io.Writer, org, shortName string, skipConfirm bool) error {
@@ -470,18 +471,18 @@ func removeClassroom(client githubapi.Client, in io.Reader, out, errOut io.Write
 	}
 
 	var deleted int
-	build := func(parentSHA string) (commitChange, error) {
+	build := func(parentSHA string) (configwrite.CommitChange, error) {
 		deleted = 0
 		paths, err := configrepo.ListSubtreeBlobPaths(client, org, configrepo.ConfigRepoName, parentSHA, shortName)
 		if err != nil {
-			return commitChange{}, err
+			return configwrite.CommitChange{}, err
 		}
 		deleted = len(paths)
-		return commitChange{Deletes: paths}, nil
+		return configwrite.CommitChange{Deletes: paths}, nil
 	}
 
 	message := fmt.Sprintf("Remove %s classroom (gh teacher classroom remove)", shortName)
-	sha, err := commitTreeChange(client, org, configrepo.ConfigRepoName, branch, message, build)
+	sha, err := configwrite.CommitTreeChange(client, org, configrepo.ConfigRepoName, branch, message, build)
 	if err != nil {
 		return err
 	}

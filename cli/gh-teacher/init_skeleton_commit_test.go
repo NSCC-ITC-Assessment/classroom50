@@ -12,6 +12,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/foundation50/gh-teacher/internal/configwrite"
 	"github.com/foundation50/gh-teacher/internal/githubtest"
 )
 
@@ -190,7 +191,7 @@ func TestCommitSkeleton_UpToDateSkeletonNoOps(t *testing.T) {
 	}
 }
 
-// registerRefreshCommitEndpoints wires the commitTree endpoints and
+// registerRefreshCommitEndpoints wires the configwrite.CommitTree endpoints and
 // captures the tree paths of the refresh commit.
 func registerRefreshCommitEndpoints(t *testing.T, mux *http.ServeMux) (treePaths *[]string, patched *bool, mu *sync.Mutex) {
 	t.Helper()
@@ -450,8 +451,8 @@ func TestCommitSkeleton_MissingWorkflowScopeFailsFast(t *testing.T) {
 	if err == nil {
 		t.Fatal("commitSkeleton should fail when the token lacks the workflow scope")
 	}
-	if !errors.Is(err, errMissingWorkflowScope) {
-		t.Errorf("error should wrap errMissingWorkflowScope, got: %v", err)
+	if !errors.Is(err, configwrite.ErrMissingWorkflowScope) {
+		t.Errorf("error should wrap configwrite.ErrMissingWorkflowScope, got: %v", err)
 	}
 	mu.Lock()
 	defer mu.Unlock()

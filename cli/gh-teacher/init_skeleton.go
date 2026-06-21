@@ -14,8 +14,8 @@ import (
 	"github.com/foundation50/classroom50-cli-shared/gittree"
 	"github.com/foundation50/gh-teacher/internal/cliutil"
 	"github.com/foundation50/gh-teacher/internal/configrepo"
+	"github.com/foundation50/gh-teacher/internal/configwrite"
 	"github.com/foundation50/gh-teacher/internal/githubapi"
-	"github.com/foundation50/gh-teacher/internal/validate"
 )
 
 // skeletonFS holds the files committed by `gh teacher init`. The
@@ -76,12 +76,6 @@ const skeletonCommitAttempts = 5
 // isn't readable yet and the Tree API would 404 on the blank
 // base_tree. Retryable.
 var errRefNotReady = errors.New("branch ref not fully propagated")
-
-// errMissingWorkflowScope: no `workflow` OAuth scope, so GitHub 404s
-// the Tree write of the skeleton's .github/workflows files. Looks like
-// the fresh-repo lag above, so createTree detects it via X-OAuth-Scopes
-// and treats it as terminal, not retryable.
-var errMissingWorkflowScope = errors.New("auth token is missing the `workflow` OAuth scope, so init can't commit the skeleton's .github/workflows files; re-run `gh teacher login` (or `gh auth refresh -s admin:org,workflow`), then run init again")
 
 // commitSkeleton lands the embedded skeleton on defaultBranch in one
 // Tree commit. When the probe file shows a skeleton already landed, it
@@ -181,7 +175,7 @@ func refreshSkeleton(client githubapi.Client, in io.Reader, out, errOut io.Write
 		refreshed = len(changed)
 		return updates, nil
 	}
-	commitSHA, err := commitTree(client, owner, repo, branch, "Refresh classroom50 skeleton (gh teacher init)", build)
+	commitSHA, err := configwrite.CommitTree(client, owner, repo, branch, "Refresh classroom50 skeleton (gh teacher init)", build)
 	if err != nil {
 		return err
 	}
@@ -238,7 +232,7 @@ func skeletonFreshRepoRetry() gittree.FreshRepoRetry {
 			}
 			return nil
 		},
-		Classify404: classifyWorkflowScope404,
+		Classify404: configwrite.ClassifyWorkflowScope404,
 		IsRetryable: isSkeletonRetryable,
 	}
 }
@@ -247,37 +241,10 @@ func skeletonFreshRepoRetry() gittree.FreshRepoRetry {
 // retry -- 404 (reads), 409 "Git Repository is empty" (writes), or an
 // empty parent SHA (errRefNotReady).
 func isSkeletonRetryable(err error) bool {
-	if errors.Is(err, errMissingWorkflowScope) {
+	if errors.Is(err, configwrite.ErrMissingWorkflowScope) {
 		return false
 	}
 	return cliutil.IsHTTPStatus(err, http.StatusNotFound) ||
 		cliutil.IsHTTPStatus(err, http.StatusConflict) ||
 		errors.Is(err, errRefNotReady)
-}
-
-// tokenLacksWorkflowScope reports whether err's X-OAuth-Scopes header is
-// present but missing `workflow`. An absent header (a fine-grained PAT
-// doesn't set it) returns false, so we fall back rather than guess.
-func tokenLacksWorkflowScope(err error) bool {
-	httpErr, ok := errors.AsType[*githubapi.HTTPError](err)
-	if !ok {
-		return false
-	}
-	scopes := httpErr.Headers.Get("X-OAuth-Scopes")
-	if scopes == "" {
-		return false
-	}
-	return !validate.ScopeListContains(scopes, "workflow")
-}
-
-// classifyWorkflowScope404 maps a Tree-write 404 to errMissingWorkflowScope
-// when the token's X-OAuth-Scopes header shows the `workflow` scope is absent.
-// A 404 without that signal is fresh-repo lag, so it returns nil (leave the
-// original error intact). Wired into the shared CreateTree/CommitWithRebase
-// paths as their classify404 hook.
-func classifyWorkflowScope404(err error) error {
-	if tokenLacksWorkflowScope(err) {
-		return errMissingWorkflowScope
-	}
-	return nil
 }

@@ -1,4 +1,4 @@
-package main
+package configwrite
 
 import (
 	"encoding/json"
@@ -14,12 +14,13 @@ import (
 
 // TestCommitTree_RetriesOnNonFastForward exercises the rebase loop
 // end-to-end: a concurrent-writer race on the first patchRef forces
-// commitTree to re-invoke build against the rebased parent SHA and
+// CommitTree to re-invoke build against the rebased parent SHA and
 // succeed on attempt 2. Pins the contract for every caller of
-// commitTree.
+// CommitTree.
 //
-// One retry × 200ms backoff keeps this well under a second; tune
-// via rebaseAttempts × 200ms × 2^n in tree_commit.go.
+// One retry × 200ms backoff keeps this well under a second; the retry
+// budget lives in the shared rebase loop (githubapi.CommitWithRebase /
+// cli/shared/gittree), not in this package.
 func TestCommitTree_RetriesOnNonFastForward(t *testing.T) {
 	var (
 		mu             sync.Mutex
@@ -119,12 +120,12 @@ func TestCommitTree_RetriesOnNonFastForward(t *testing.T) {
 		return map[string]string{"foo/bar.txt": "hello"}, nil
 	}
 
-	gotSHA, err := commitTree(client, "o", "r", "main", "test commit", build)
+	gotSHA, err := CommitTree(client, "o", "r", "main", "test commit", build)
 	if err != nil {
-		t.Fatalf("commitTree returned error: %v", err)
+		t.Fatalf("CommitTree returned error: %v", err)
 	}
 	if gotSHA != "new-commit-sha" {
-		t.Errorf("commitTree returned SHA %q, want %q", gotSHA, "new-commit-sha")
+		t.Errorf("CommitTree returned SHA %q, want %q", gotSHA, "new-commit-sha")
 	}
 
 	mu.Lock()
@@ -182,9 +183,9 @@ func TestCommitTree_PropagatesBuildErrorWithoutRetry(t *testing.T) {
 		return nil, &builtError{msg: wantErr}
 	}
 
-	_, err := commitTree(client, "o", "r", "main", "test commit", build)
+	_, err := CommitTree(client, "o", "r", "main", "test commit", build)
 	if err == nil {
-		t.Fatalf("commitTree returned nil, want error")
+		t.Fatalf("CommitTree returned nil, want error")
 	}
 	if !strings.Contains(err.Error(), wantErr) {
 		t.Errorf("err = %q, want substring %q", err.Error(), wantErr)
@@ -249,14 +250,14 @@ func TestCommitTree_NoOpOnEmptyMap(t *testing.T) {
 	t.Cleanup(server.Close)
 	client := githubtest.NewTestClient(t, server)
 
-	gotSHA, err := commitTree(client, "o", "r", "main", "noop", func(string) (map[string]string, error) {
+	gotSHA, err := CommitTree(client, "o", "r", "main", "noop", func(string) (map[string]string, error) {
 		return nil, nil
 	})
 	if err != nil {
-		t.Fatalf("commitTree returned error: %v", err)
+		t.Fatalf("CommitTree returned error: %v", err)
 	}
 	if gotSHA != "" {
-		t.Errorf(`commitTree returned %q, want "" (no commit on empty-map build)`, gotSHA)
+		t.Errorf(`CommitTree returned %q, want "" (no commit on empty-map build)`, gotSHA)
 	}
 	mu.Lock()
 	defer mu.Unlock()

@@ -1,10 +1,11 @@
 // Package configrepo is the read substrate for the per-org
 // <org>/classroom50 config repository: the contents/tree read helpers,
 // the classroom-metadata and roster record types, and the cross-domain
-// team service. It is consumed by nearly every command package. Write
-// helpers (commitTree/commitTreeChange) deliberately stay in package
-// main so the workflow-scope classifier they inject does not create an
-// import cycle back into this package.
+// team service. It is consumed by nearly every command package. The
+// write helpers (CommitTree/CommitTreeChange + the workflow-scope
+// classifier they inject) live in internal/configwrite, the write-side
+// sibling of this package; the two are kept separate so neither imports
+// the other.
 package configrepo
 
 import (

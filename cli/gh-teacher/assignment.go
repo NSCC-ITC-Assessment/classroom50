@@ -15,6 +15,7 @@ import (
 	"github.com/foundation50/gh-teacher/internal/assignment"
 	"github.com/foundation50/gh-teacher/internal/cliutil"
 	"github.com/foundation50/gh-teacher/internal/configrepo"
+	"github.com/foundation50/gh-teacher/internal/configwrite"
 	"github.com/foundation50/gh-teacher/internal/githubapi"
 	"github.com/foundation50/gh-teacher/internal/output"
 	"github.com/foundation50/gh-teacher/internal/validate"
@@ -356,7 +357,7 @@ func assignmentsFilePath(classroom string) string {
 }
 
 // runAssignmentAdd validates template visibility and entry shape
-// before entering the commitTree loop so a bad input never produces
+// before entering the configwrite.CommitTree loop so a bad input never produces
 // a partial-state commit. The autograder existence probe runs inside
 // the build callback against each attempt's parent SHA: a concurrent
 // delete of the referenced autograder loses cleanly on retry rather
@@ -500,7 +501,7 @@ func runAssignmentAdd(client githubapi.Client, out, errOut io.Writer, org, class
 	}
 
 	message := fmt.Sprintf("assignment: add %s to %s (gh teacher assignment add)", slug, classroom)
-	if _, err := commitTree(client, org, configrepo.ConfigRepoName, branch, message, build); err != nil {
+	if _, err := configwrite.CommitTree(client, org, configrepo.ConfigRepoName, branch, message, build); err != nil {
 		return err
 	}
 
@@ -567,7 +568,7 @@ func runAssignmentRemove(client githubapi.Client, out io.Writer, org, classroom,
 		next, ok := assignment.RemoveAssignment(file.Assignments, slug)
 		removed = ok
 		if !ok {
-			// commitTree treats nil-or-empty as a no-op so a missing
+			// configwrite.CommitTree treats nil-or-empty as a no-op so a missing
 			// slug doesn't produce an empty commit.
 			return nil, nil
 		}
@@ -580,7 +581,7 @@ func runAssignmentRemove(client githubapi.Client, out io.Writer, org, classroom,
 	}
 
 	message := fmt.Sprintf("assignment: remove %s from %s (gh teacher assignment remove)", slug, classroom)
-	if _, err := commitTree(client, org, configrepo.ConfigRepoName, branch, message, build); err != nil {
+	if _, err := configwrite.CommitTree(client, org, configrepo.ConfigRepoName, branch, message, build); err != nil {
 		return err
 	}
 
@@ -595,7 +596,7 @@ func runAssignmentRemove(client githubapi.Client, out io.Writer, org, classroom,
 }
 
 // loadAssignments reads assignments.json at `ref` (commit SHA for
-// rebase-consistent reads inside commitTree, branch name for the
+// rebase-consistent reads inside configwrite.CommitTree, branch name for the
 // read-only list path — the contents API accepts both). Missing
 // file → points the teacher at `gh teacher classroom add`.
 func loadAssignments(client githubapi.Client, org, classroom, ref string) (assignment.AssignmentsJSON, error) {
