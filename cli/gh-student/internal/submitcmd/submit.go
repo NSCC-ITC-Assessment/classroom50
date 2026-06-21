@@ -19,12 +19,13 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/spf13/cobra"
+
 	"github.com/foundation50/classroom50-cli-shared/ghutil"
 	"github.com/foundation50/gh-student/internal/classroomcfg"
 	"github.com/foundation50/gh-student/internal/githubapi"
 	identitypkg "github.com/foundation50/gh-student/internal/identity"
 	"github.com/foundation50/gh-student/internal/localgit"
-	"github.com/spf13/cobra"
 )
 
 func NewCmd() *cobra.Command {

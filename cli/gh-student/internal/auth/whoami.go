@@ -3,8 +3,9 @@ package auth
 import (
 	"fmt"
 
-	"github.com/foundation50/gh-student/internal/githubapi"
 	"github.com/spf13/cobra"
+
+	"github.com/foundation50/gh-student/internal/githubapi"
 )
 
 func NewWhoamiCmd() *cobra.Command {

@@ -7,8 +7,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/foundation50/gh-student/internal/githubapi"
 	"gopkg.in/yaml.v3"
+
+	"github.com/foundation50/gh-student/internal/githubapi"
 )
 
 func TestRenderClassroomMetadata_Shape(t *testing.T) {

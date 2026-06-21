@@ -6,10 +6,11 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/spf13/cobra"
+
 	"github.com/foundation50/gh-student/internal/auth"
 	"github.com/foundation50/gh-student/internal/invitecmd"
 	"github.com/foundation50/gh-student/internal/submitcmd"
-	"github.com/spf13/cobra"
 )
 
 var (

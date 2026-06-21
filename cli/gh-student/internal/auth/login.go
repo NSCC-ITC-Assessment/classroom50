@@ -3,9 +3,10 @@ package auth
 import (
 	"errors"
 
+	"github.com/spf13/cobra"
+
 	"github.com/foundation50/classroom50-cli-shared/ghauth"
 	"github.com/foundation50/gh-student/internal/githubapi"
-	"github.com/spf13/cobra"
 )
 
 func NewLoginCmd() *cobra.Command {

@@ -17,8 +17,9 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/foundation50/classroom50-cli-shared/contract"
 	"gopkg.in/yaml.v3"
+
+	"github.com/foundation50/classroom50-cli-shared/contract"
 )
 
 // configRepoName: the fixed per-org classroom config repo created by

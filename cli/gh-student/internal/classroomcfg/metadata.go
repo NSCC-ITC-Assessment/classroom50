@@ -14,9 +14,10 @@ import (
 	"os"
 	"strings"
 
+	"gopkg.in/yaml.v3"
+
 	"github.com/foundation50/classroom50-cli-shared/ghutil"
 	"github.com/foundation50/gh-student/internal/githubapi"
-	"gopkg.in/yaml.v3"
 )
 
 // MetadataPath: in-repo path read by both the student CLI and the
