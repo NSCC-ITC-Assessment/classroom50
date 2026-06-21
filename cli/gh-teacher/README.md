@@ -63,7 +63,7 @@ VSCode users: install the [Go extension](https://marketplace.visualstudio.com/it
 - **In-package commands** still live in their own file at the package root (`init.go`, `classroom.go`, …) exposing a `<name>Cmd()` factory function. To add one, copy an existing file and follow the pattern: factory returns `*cobra.Command`, write to `cmd.OutOrStdout()`, wrap errors with `fmt.Errorf("ctx: %w", err)`.
 - **Extracted commands** live in their own `internal/<domain>` package and expose an exported constructor: `NewCmd()` for a single-command package (e.g. `internal/remove`), or `New<Name>Cmd()` per command for a multi-command package (e.g. `internal/auth` exposes `NewWhoamiCmd`/`NewLoginCmd`/`NewLogoutCmd`). `main.go` imports the package and registers `<domain>.NewCmd()`.
 
-New commands should prefer the extracted form. Currently extracted: `internal/auth` (whoami/login/logout), `internal/remove`, `internal/roster` (list/add/remove/import). Shared rendering lives in `internal/ui` (the `ui.UI` renderer + the `ui.Status` outcome enum used by init/audit; init keeps a `preflightStatus = ui.Status` alias so its `--json` `status` field is unchanged).
+New commands should prefer the extracted form. Currently extracted: `internal/auth` (whoami/login/logout), `internal/remove`, `internal/roster` (list/add/remove/import), `internal/member` (list). Shared rendering lives in `internal/ui` (the `ui.UI` renderer + the `ui.Status` outcome enum used by init/audit; init keeps a `preflightStatus = ui.Status` alias so its `--json` `status` field is unchanged).
 
 ### GitHub API seam (`internal/githubapi`)
 

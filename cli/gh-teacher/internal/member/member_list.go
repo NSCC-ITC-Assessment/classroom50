@@ -1,4 +1,13 @@
-package main
+// Package member implements the `gh teacher member` command: read-only
+// views of actual GitHub membership (org members + pending invitations,
+// or repo collaborators) -- the counterpart to `gh teacher invite` /
+// `gh teacher remove`, used to reconcile the intended roster against
+// real membership. It is an extracted command package (mirrors
+// internal/auth, internal/remove, and internal/roster): only NewCmd is
+// exported; the subcommand factory and run* orchestration are
+// package-private. It depends only on the internal/* substrate seams
+// (githubapi, membership, output), never on package main.
+package member
 
 import (
 	"errors"
@@ -47,7 +56,7 @@ const (
 	memberKindCollaborator  = "collaborator"
 )
 
-func memberCmd() *cobra.Command {
+func NewCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "member",
 		Short: "Inspect organization and repository membership",

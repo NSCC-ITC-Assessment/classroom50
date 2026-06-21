@@ -15,6 +15,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/foundation50/gh-teacher/internal/auth"
+	"github.com/foundation50/gh-teacher/internal/member"
 	"github.com/foundation50/gh-teacher/internal/remove"
 	"github.com/foundation50/gh-teacher/internal/roster"
 )
@@ -47,7 +48,7 @@ func main() {
 	root.AddCommand(autograderCmd())
 	root.AddCommand(inviteCmd())
 	root.AddCommand(remove.NewCmd())
-	root.AddCommand(memberCmd())
+	root.AddCommand(member.NewCmd())
 	root.AddCommand(downloadCmd())
 	root.AddCommand(teardownCmd())
 
