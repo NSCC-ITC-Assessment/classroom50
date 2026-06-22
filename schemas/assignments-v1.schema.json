@@ -91,6 +91,16 @@
           "type": "boolean",
           "description": "Opt the assignment into the Feedback Pull Request: the autograde runner opens one long-lived PR per student repo (base = a frozen branch at the baseline commit, head = the default branch) for inline instructor review of the full starter→submission diff. Defaults to false; omitted when unset."
         },
+        "allowed_files": {
+          "type": "array",
+          "maxItems": 100,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^(?!\\s*$)[^\\u0000\\n]+$"
+          },
+          "description": "Ordered .gitignore-style patterns defining which files belong to the submission (order matters, last match wins, `!` re-includes). Example: [\"*\", \"!hello.py\"] ignores everything then re-includes hello.py — an allowlist of exactly hello.py. Empty/absent means every file is allowed. The autograde runner enforces it best-effort by removing disallowed working-tree files before grading (control files like .classroom50.yaml and .github/ are always kept), but fails open on git/resource failure — so it is a grading-scope/hygiene tool, not a secret-hiding boundary; `gh student submit` applies it as a best-effort pre-push filter."
+        },
         "migrated_from": {
           "type": "object",
           "additionalProperties": false,

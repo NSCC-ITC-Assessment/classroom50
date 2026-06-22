@@ -50,6 +50,7 @@ jobs:
       assignment:     ${{ steps.read.outputs.assignment }}
       feedback-pr:    ${{ steps.read.outputs.feedback-pr }}
       mode:           ${{ steps.read.outputs.mode }}
+      allowed-files:  ${{ steps.read.outputs.allowed-files }}
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6
@@ -401,6 +402,19 @@ jobs:
           if mode not in ("individual", "group"):
               fail(f"entry {assignment!r}: mode {mode!r} must be 'individual' or 'group'")
 
+          # === Allowed-files allowlist (issue #169) ===
+          # Re-validate the hand-editable manifest field and emit it as a
+          # JSON array for runner.py to enforce.
+          allowed_files = entry.get("allowed_files", [])
+          if not isinstance(allowed_files, list):
+              fail(f"entry {assignment!r}: allowed_files must be an array")
+          for i, pat in enumerate(allowed_files):
+              if not isinstance(pat, str) or not pat.strip():
+                  fail(f"entry {assignment!r}: allowed_files[{i}] {pat!r} must be a non-empty string")
+              if "\x00" in pat or "\n" in pat:
+                  fail(f"entry {assignment!r}: allowed_files[{i}] {pat!r} must not contain NUL or newline")
+          allowed_files_json = json.dumps(allowed_files)
+
           submission_tag = os.environ.get("SUBMISSION_TAG", "").strip()
           if not submission_tag:
               submission_tag = os.environ.get("GITHUB_REF_NAME", "")
@@ -420,6 +434,7 @@ jobs:
           emit("assignment", assignment)
           emit("feedback-pr", "true" if feedback_pr else "false")
           emit("mode", mode)
+          emit("allowed-files", allowed_files_json)
 
   grade:
     needs: setup
@@ -445,6 +460,9 @@ jobs:
       # instead of rejecting it. Defaults to the stricter individual rule
       # when absent.
       MODE:           ${{ needs.setup.outputs.mode }}
+      # allowed_files patterns (JSON array) from assignments.json (#169);
+      # runner.py removes disallowed files before grading. "[]" = allow all.
+      ALLOWED_FILES:  ${{ needs.setup.outputs.allowed-files }}
     steps:
       - uses: actions/checkout@v6
         with:

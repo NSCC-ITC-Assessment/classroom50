@@ -85,7 +85,9 @@ RESULT_SCHEMA_V1 = "classroom50/result/v1"
 
 # Filenames the autograder must (or may) write into the workspace.
 # release-body.md is optional; the runner synthesizes one when
-# missing. result.json is required.
+# missing. result.json is required. Keep in lockstep with the Go
+# single-source contract.ResultFilename / contract.ReleaseBodyFilename
+# (cli/shared/contract/contract.go); test_runner.py pins these literals.
 RESULT_FILENAME = "result.json"
 RELEASE_BODY_FILENAME = "release-body.md"
 
@@ -143,6 +145,24 @@ MAX_FETCH_BYTES = 10 * 1024 * 1024
 # classroomcfg.MetadataPath (cli/gh-student/internal/classroomcfg/
 # metadata.go) -- keep in lockstep.
 ACCEPT_MARKER_PATH = ".classroom50.yaml"
+
+# Control paths allowed_files enforcement (issue #169) never removes,
+# even under a bare `*`. Lockstep with submit.go's isControlPath, pinned
+# from both sides by the shared fixture
+# cli/shared/testdata/control_path_cases.json. Directory controls match by
+# prefix; file controls match exactly, so a sibling like `result.json.bak`
+# stays subject to the allowlist.
+ALLOWED_FILES_KEEP_PREFIXES = (
+    ".github/",
+    ".git/",
+)
+ALLOWED_FILES_KEEP_EXACT = (
+    ACCEPT_MARKER_PATH,
+    ".github",
+    ".git",
+    RESULT_FILENAME,
+    RELEASE_BODY_FILENAME,
+)
 
 
 def runtime_root() -> pathlib.Path:
@@ -586,6 +606,188 @@ def feedback_base_sha(workspace: pathlib.Path) -> str | None:
     wrong base."""
     sha, source = _baseline_scan(workspace)
     return sha if source == "accept" else None
+
+
+def _is_control_path(rel: str) -> bool:
+    """Whether rel is a control path allowed_files must never remove."""
+    if rel in ALLOWED_FILES_KEEP_EXACT:
+        return True
+    return any(rel.startswith(p) for p in ALLOWED_FILES_KEEP_PREFIXES)
+
+
+def parse_allowed_files(raw: str | None) -> list[str]:
+    """Parse the ALLOWED_FILES env (JSON array of patterns). Empty,
+    absent, or malformed -> [] so a bad value never strips files."""
+    if not raw or not raw.strip():
+        return []
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError:
+        print("runner: ALLOWED_FILES is not valid JSON; skipping allowed_files enforcement", file=sys.stderr)
+        return []
+    if not isinstance(value, list) or not all(isinstance(p, str) and p.strip() for p in value):
+        print("runner: ALLOWED_FILES must be a JSON array of non-empty strings; skipping enforcement", file=sys.stderr)
+        return []
+    return value
+
+
+def _isolated_git_env() -> dict[str, str]:
+    """Environment that ignores the host's git config so allowed_files
+    patterns classify identically on every runner. Paired with
+    `-c core.excludesFile`. Mirrors Go's isolatedGitEnv."""
+    env = dict(os.environ)
+    env["GIT_CONFIG_NOSYSTEM"] = "1"
+    env["GIT_CONFIG_GLOBAL"] = os.devnull
+    return env
+
+
+def _walk_workspace_files(workspace: pathlib.Path) -> list[str]:
+    """All regular-file relative paths (forward-slash) under `workspace`,
+    skipping `.git` at any depth. Unlike `git ls-files`, this recurses
+    into nested git repos, so files hidden inside one can't escape the
+    allowlist. Symlinks are reported as their own path."""
+    results: list[str] = []
+    for dirpath, dirnames, filenames in os.walk(workspace):
+        dirnames[:] = [d for d in dirnames if d != ".git"]
+        rel_dir = os.path.relpath(dirpath, workspace)
+        for name in filenames:
+            rel = name if rel_dir == "." else os.path.join(rel_dir, name)
+            results.append(pathlib.PurePath(rel).as_posix())
+    return results
+
+
+def _classify_disallowed(patterns: list[str], paths: list[str]) -> list[str] | None:
+    """Subset of `paths` the `patterns` disallow, or None when the matcher
+    couldn't run (the caller then skips enforcement — fail open). Delegates
+    to `git check-ignore` against a throwaway, config-isolated repo. Mirrors
+    Go's ignorematch.Disallowed; both pinned by the shared fixture
+    cli/shared/testdata/allowed_files_matcher_cases.json."""
+    if not patterns or not paths:
+        return []
+    git_env = _isolated_git_env()
+    # A hung git raises subprocess.TimeoutExpired (a SubprocessError, not an
+    # OSError); a missing git binary raises OSError. Both must surface as
+    # "matcher couldn't run" (return None) rather than escape as an uncaught
+    # traceback, mirroring _baseline_scan's SubprocessError handling.
+    try:
+        with tempfile.TemporaryDirectory(prefix="classroom50-ignore-") as tmp:
+            tmp_path = pathlib.Path(tmp)
+            init = subprocess.run(
+                ["git", "-C", tmp, "init", "-q"],
+                capture_output=True, text=True, timeout=60, check=False, env=git_env,
+            )
+            if init.returncode != 0:
+                print("runner: allowed_files enforcement skipped (could not init matcher repo)", file=sys.stderr)
+                return None
+            (tmp_path / ".gitignore").write_text("\n".join(patterns) + "\n")
+            checked = subprocess.run(
+                ["git", "-c", f"core.excludesFile={os.devnull}", "-C", tmp,
+                 "check-ignore", "--no-index", "--stdin", "-z"],
+                input="\x00".join(paths) + "\x00",
+                capture_output=True, text=True, timeout=120, check=False, env=git_env,
+            )
+    except (subprocess.SubprocessError, OSError) as exc:
+        print(f"runner: allowed_files enforcement skipped (matcher failed: {exc})", file=sys.stderr)
+        return None
+    # check-ignore: 0 = >=1 ignored, 1 = none, >1 = error.
+    if checked.returncode not in (0, 1):
+        print(f"runner: allowed_files enforcement skipped (check-ignore rc={checked.returncode}: "
+              f"{checked.stderr.strip()})", file=sys.stderr)
+        return None
+    return [p for p in checked.stdout.split("\x00") if p]
+
+
+def enforce_allowed_files(workspace: pathlib.Path, patterns: list[str]) -> list[str]:
+    """Remove every working-tree file the allowed_files patterns disallow
+    so the autograder only sees allowed files (issue #169). Control files
+    are always kept. Working-tree-only, so the baseline and review/
+    Feedback-PR links are unaffected. Returns the sorted removed paths;
+    no-ops when patterns is empty.
+
+    Fails OPEN: if the matcher can't run for a non-empty allowlist (tree
+    enumeration failure, git init/check-ignore error, or timeout), this
+    returns [] (skip enforcement, grade the unfiltered tree) rather than
+    blocking the grade. The submit-side filter is best-effort too, so this
+    keeps the whole feature lenient under git/resource hiccups.
+
+    To fail CLOSED instead (treat the allowlist as an authoritative security
+    boundary — refuse to grade rather than risk exposing disallowed files),
+    change the two `return []` failure branches below to raise an error and
+    have main() route it through finalize.error(...) so the submission lands
+    as an `error` result that can be re-run. The decision is intentionally
+    fail-open: allowed_files is a grading-scope/hygiene tool, not a secret-
+    hiding control.
+    """
+    if not patterns:
+        return []
+
+    # Walk the tree directly: `git ls-files` won't recurse into a nested
+    # repo, so a student could hide disallowed files there. The walk skips
+    # every `.git` so git metadata is never enumerated or removed.
+    try:
+        candidates = _walk_workspace_files(workspace)
+    except OSError as exc:
+        # Fail open (see docstring); to fail closed, raise here instead.
+        print(f"runner: allowed_files enforcement skipped (walk failed: {exc})", file=sys.stderr)
+        return []
+
+    candidates = [p for p in candidates if not _is_control_path(p)]
+    if not candidates:
+        return []
+
+    # None = matcher couldn't run. Fail open (see docstring); to fail closed,
+    # raise here instead and surface it via finalize.error in main().
+    disallowed = _classify_disallowed(patterns, candidates)
+    if disallowed is None:
+        return []
+
+    removed: list[str] = []
+    for rel in disallowed:
+        if _is_control_path(rel):
+            continue
+        target = workspace / rel
+        try:
+            target.unlink()
+            removed.append(rel)
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            print(f"runner: could not remove disallowed file {rel}: {exc}", file=sys.stderr)
+
+    removed.sort()
+    if removed:
+        print(f"runner: removed {len(removed)} file(s) outside the assignment's allowed_files set: "
+              f"{', '.join(removed)}")
+    return removed
+
+
+def render_removed_files_note(removed: list[str]) -> str:
+    """Markdown section listing files stripped by allowed_files, appended
+    to release-body.md so a renamed/missing required file is visible."""
+    lines = [
+        "",
+        f"### Removed {len(removed)} file(s) outside the assignment's allowed files",
+        "",
+        "These files are not in this assignment's `allowed_files` set, so the "
+        "autograder did not see them:",
+        "",
+    ]
+    lines.extend(f"- `{rel}`" for rel in removed)
+    lines.append("")
+    return "\n".join(lines)
+
+
+def append_removed_files_note(workspace: pathlib.Path, removed: list[str]) -> None:
+    """Append the removed-files note to release-body.md. Best-effort: a
+    missing body or write error must not fail the grade."""
+    if not removed:
+        return
+    body_path = workspace / RELEASE_BODY_FILENAME
+    try:
+        existing = body_path.read_text() if body_path.exists() else ""
+        body_path.write_text(existing + render_removed_files_note(removed))
+    except OSError as exc:
+        print(f"runner: could not append removed-files note to {RELEASE_BODY_FILENAME}: {exc}", file=sys.stderr)
 
 
 def no_baseline_warning() -> str:
@@ -1501,28 +1703,44 @@ def main() -> int:
         if f.exists():
             f.unlink()
 
-    # Pipeline: fetch bundle → resolve entrypoint → exec → validate +
-    # synthesize. Each stage returns an rc when it's terminal (a finalized
-    # error, the declarative grader, or a vacuous pass), else None/continue.
-    rc = fetch_bundle(
-        finalize, pages_base_url=pages_base_url, classroom=classroom,
-        assignment=assignment, runtime_dir=runtime_dir,
-    )
-    if rc is not None:
-        return rc
+    # Enforce allowed_files (issue #169) before grading: remove disallowed
+    # files so the autograder only sees allowed ones. Fails open — if the
+    # matcher can't run, enforce_allowed_files returns [] and grading
+    # proceeds on the unfiltered tree (see its docstring for how to flip to
+    # fail-closed via finalize.error here). The removed list is appended to
+    # release-body.md on every exit path below.
+    removed_files = enforce_allowed_files(workspace, parse_allowed_files(os.environ.get("ALLOWED_FILES")))
 
-    entrypoint, rc = resolve_entrypoint(
-        finalize, pages_base_url=pages_base_url, classroom=classroom,
-        assignment=assignment, runtime_dir=runtime_dir,
-    )
-    if entrypoint is None:
-        return rc  # declarative grader ran, vacuous pass, or fetch error
+    def _grade() -> int:
+        # Pipeline: fetch bundle → resolve entrypoint → exec → validate.
+        # Each stage returns an rc when terminal, else None to continue.
+        rc = fetch_bundle(
+            finalize, pages_base_url=pages_base_url, classroom=classroom,
+            assignment=assignment, runtime_dir=runtime_dir,
+        )
+        if rc is not None:
+            return rc
 
-    rc = run_entrypoint(finalize, entrypoint, workspace)
-    if rc is not None:
-        return rc
+        entrypoint, rc = resolve_entrypoint(
+            finalize, pages_base_url=pages_base_url, classroom=classroom,
+            assignment=assignment, runtime_dir=runtime_dir,
+        )
+        if entrypoint is None:
+            return rc  # declarative grader ran, vacuous pass, or fetch error
 
-    return finalize_result(finalize, is_group=is_group)
+        rc = run_entrypoint(finalize, entrypoint, workspace)
+        if rc is not None:
+            return rc
+
+        return finalize_result(finalize, is_group=is_group)
+
+    # Append the removed-files note on every exit path (incl. an exception
+    # in grading): the files were already deleted before _grade() ran.
+    try:
+        rc = _grade()
+    finally:
+        append_removed_files_note(workspace, removed_files)
+    return rc
 
 
 if __name__ == "__main__":

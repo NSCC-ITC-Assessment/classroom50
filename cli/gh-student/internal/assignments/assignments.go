@@ -42,6 +42,7 @@ type Entry struct {
 	MaxGroupSize int          `json:"max_group_size,omitempty"`
 	Template     *TemplateRef `json:"template,omitempty"`
 	Autograder   string       `json:"autograder"`
+	AllowedFiles []string     `json:"allowed_files,omitempty"`
 }
 
 // defaultAutograderName is the fallback when Entry.Autograder is empty.

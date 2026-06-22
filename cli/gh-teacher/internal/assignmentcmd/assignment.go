@@ -80,6 +80,7 @@ func assignmentAddCmd() *cobra.Command {
 		runtimeFile  string
 		testsFile    string
 		feedbackPR   bool
+		allowedFiles []string
 	)
 
 	cmd := &cobra.Command{
@@ -199,8 +200,23 @@ func assignmentAddCmd() *cobra.Command {
 				return err
 			}
 			return runAssignmentAdd(client, cmd.OutOrStdout(), cmd.ErrOrStderr(),
-				org, classroom, slug, nameVal, strings.TrimSpace(description),
-				tmplArg, dueVal, dueMetaVal, modeVal, maxGroupSize, autograderVal, runtime, tests, feedbackPR)
+				addAssignmentParams{
+					Org:          org,
+					Classroom:    classroom,
+					Slug:         slug,
+					Name:         nameVal,
+					Description:  strings.TrimSpace(description),
+					Tmpl:         tmplArg,
+					Due:          dueVal,
+					DueMeta:      dueMetaVal,
+					Mode:         modeVal,
+					MaxGroupSize: maxGroupSize,
+					Autograder:   autograderVal,
+					Runtime:      runtime,
+					Tests:        tests,
+					FeedbackPR:   feedbackPR,
+					AllowedFiles: allowedFiles,
+				})
 		},
 	}
 
@@ -214,6 +230,7 @@ func assignmentAddCmd() *cobra.Command {
 	cmd.Flags().StringVar(&runtimeFile, "runtime", "", "Path to a JSON file describing the runtime environment (runs-on as a single label or an array of labels for self-hosted runners, python/node/java/go versions, apt packages, or container image), or `-` to read from stdin. Omit for ubuntu-latest + Python 3.12.")
 	cmd.Flags().StringVar(&testsFile, "tests", "", "Path to a JSON file with a bare array of declarative test specs (io/run/python), or `-` to read from stdin. Sets the assignment's `tests` block; mutually exclusive with a per-assignment autograder.py. See `gh teacher assignment test --help`.")
 	cmd.Flags().BoolVar(&feedbackPR, "feedback-pr", true, "Open one long-lived Feedback pull request per student repo so you can leave inline review comments on the full starter→submission diff. The autograde runner freezes a base branch at the baseline commit and opens the PR on the first submission that has a diff. Default on; pass --feedback-pr=false to disable. Requires `gh teacher init` to have set up the org prerequisites.")
+	cmd.Flags().StringArrayVar(&allowedFiles, "allowed-files", nil, "Ordered .gitignore-style pattern (repeatable, order preserved) defining which files belong to the submission. Last match wins; `!` re-includes. Pass `--allowed-files '*' --allowed-files '!hello.py'` to allow only hello.py. The autograde runner removes disallowed files before grading (control files are always kept); `gh student submit` filters them too. Omit to allow every file.")
 	return cmd
 }
 
@@ -415,7 +432,36 @@ func validateModeAndSizeFlags(mode string, maxGroupSize int, sizeProvided bool) 
 	return modeVal, nil
 }
 
-func runAssignmentAdd(client githubapi.Client, out, errOut io.Writer, org, classroom, slug, name, description string, tmpl *templateArg, due string, dueMetaVal *assignment.DueMeta, mode string, maxGroupSize int, autograder string, runtime *assignment.RuntimeRef, tests []assignment.TestSpec, feedbackPR bool) error {
+// addAssignmentParams carries the inputs to runAssignmentAdd as named
+// fields rather than a long positional list. Several fields share types
+// (multiple strings, pointers, slices), so positional passing made arg
+// transposition a compile-clean footgun; field names make call sites
+// order-independent and self-documenting.
+type addAssignmentParams struct {
+	Org          string
+	Classroom    string
+	Slug         string
+	Name         string
+	Description  string
+	Tmpl         *templateArg
+	Due          string
+	DueMeta      *assignment.DueMeta
+	Mode         string
+	MaxGroupSize int
+	Autograder   string
+	Runtime      *assignment.RuntimeRef
+	Tests        []assignment.TestSpec
+	FeedbackPR   bool
+	AllowedFiles []string
+}
+
+func runAssignmentAdd(client githubapi.Client, out, errOut io.Writer, p addAssignmentParams) error {
+	org, classroom, slug := p.Org, p.Classroom, p.Slug
+	name, description := p.Name, p.Description
+	tmpl, due, dueMetaVal := p.Tmpl, p.Due, p.DueMeta
+	mode, maxGroupSize, autograder := p.Mode, p.MaxGroupSize, p.Autograder
+	runtime, tests := p.Runtime, p.Tests
+	feedbackPR, allowedFiles := p.FeedbackPR, p.AllowedFiles
 	branch, err := configrepo.ResolveConfigRepoBranch(client, org)
 	if err != nil {
 		return err
@@ -461,20 +507,23 @@ func runAssignmentAdd(client githubapi.Client, out, errOut io.Writer, org, class
 		Runtime:      runtime,
 		Tests:        tests,
 		FeedbackPR:   feedbackPR,
+		AllowedFiles: allowedFiles,
 	}
 	if err := assignment.ValidateAssignmentEntry(entry); err != nil {
 		return err
 	}
 
 	var (
-		action          string
-		lastEncodedSize int
-		droppedTests    int
-		droppedTemplate *assignment.TemplateRef
+		action            string
+		lastEncodedSize   int
+		droppedTests      int
+		droppedTemplate   *assignment.TemplateRef
+		droppedAllowedCnt int
 	)
 	build := func(parentSHA string) (map[string]string, error) {
 		droppedTests = 0
 		droppedTemplate = nil
+		droppedAllowedCnt = 0
 		// Verify the autograder shim exists at parent SHA before
 		// writing — otherwise the assignment lands successfully and
 		// every student's accept 404s on the Pages fetch later. The
@@ -525,6 +574,16 @@ func runAssignmentAdd(client githubapi.Client, out, errOut io.Writer, org, class
 		// every other field — but the teacher should know).
 		if idx, ok := assignment.FindAssignment(file.Assignments, slug); ok && entry.Template == nil && file.Assignments[idx].Template != nil {
 			droppedTemplate = file.Assignments[idx].Template
+		}
+		// Wholesale-replace footgun (as with tests/template): re-running
+		// add without --allowed-files drops a prior allowlist. The flag is a
+		// repeatable StringArrayVar, so via the CLI the value is either nil
+		// (flag omitted -> warn) or a non-empty list; ValidateAllowedFiles
+		// rejects an empty/whitespace pattern, so `--allowed-files ''` never
+		// yields a silent clear. A non-nil empty slice (the programmatic /
+		// non-CLI clear path) is treated as deliberate and does not warn.
+		if idx, ok := assignment.FindAssignment(file.Assignments, slug); ok && entry.AllowedFiles == nil {
+			droppedAllowedCnt = len(file.Assignments[idx].AllowedFiles)
 		}
 		updated, replaced := assignment.UpsertAssignment(file.Assignments, entry)
 		if replaced {
@@ -592,6 +651,11 @@ func runAssignmentAdd(client githubapi.Client, out, errOut io.Writer, org, class
 			"Warning: replacing %q dropped its template %s/%s@%s — `assignment add` rewrites the whole entry, and you re-ran it without --template. The assignment is now template-less (students get an empty shim-only repo). Pass --template %s/%s@%s to keep it.\n",
 			slug, droppedTemplate.Owner, droppedTemplate.Repo, droppedTemplate.Branch,
 			droppedTemplate.Owner, droppedTemplate.Repo, droppedTemplate.Branch)
+	}
+	if droppedAllowedCnt > 0 {
+		_, _ = fmt.Fprintf(errOut,
+			"Warning: replacing %q dropped its %d allowed_files pattern(s) — `assignment add` rewrites the whole entry, and you re-ran it without --allowed-files. Submissions are now unrestricted. Pass --allowed-files to keep the allowlist.\n",
+			slug, droppedAllowedCnt)
 	}
 	// Heads-up if the encoded file is approaching the GitHub
 	// contents-API behavior change (~1 MiB encoded → encoding:"none",

@@ -302,6 +302,115 @@ func TestParseAssignments_FeedbackPRRoundTrip(t *testing.T) {
 	}
 }
 
+func TestParseAssignments_AllowedFilesRoundTrip(t *testing.T) {
+	// allowed_files parses, survives a re-encode/re-parse preserving
+	// order, and an entry without the field decodes to a nil slice.
+	in := []byte(`{
+  "schema": "classroom50/assignments/v1",
+  "assignments": [
+    {
+      "slug": "hello",
+      "name": "Hello",
+      "template": { "owner": "cs50", "repo": "hello-template", "branch": "main" },
+      "mode": "individual",
+      "autograder": "default",
+      "allowed_files": ["*", "!hello.py"]
+    },
+    {
+      "slug": "world",
+      "name": "World",
+      "template": { "owner": "cs50", "repo": "world-template", "branch": "main" },
+      "mode": "individual",
+      "autograder": "default"
+    }
+  ]
+}`)
+	file, err := ParseAssignments(in)
+	if err != nil {
+		t.Fatalf("ParseAssignments: %v", err)
+	}
+	if got := file.Assignments[0].AllowedFiles; len(got) != 2 || got[0] != "*" || got[1] != "!hello.py" {
+		t.Errorf("hello.AllowedFiles = %#v, want [* !hello.py]", got)
+	}
+	if file.Assignments[1].AllowedFiles != nil {
+		t.Errorf("world.AllowedFiles = %#v, want nil (field absent)", file.Assignments[1].AllowedFiles)
+	}
+
+	encoded, err := EncodeAssignments(file)
+	if err != nil {
+		t.Fatalf("EncodeAssignments: %v", err)
+	}
+	if !strings.Contains(string(encoded), `"allowed_files"`) {
+		t.Errorf("encoded missing allowed_files:\n%s", encoded)
+	}
+	again, err := ParseAssignments(encoded)
+	if err != nil {
+		t.Fatalf("re-parse: %v", err)
+	}
+	if got := again.Assignments[0].AllowedFiles; len(got) != 2 || got[0] != "*" || got[1] != "!hello.py" {
+		t.Errorf("allowed_files order not stable across round-trip: %#v", got)
+	}
+	if again.Assignments[1].AllowedFiles != nil {
+		t.Errorf("absent allowed_files should round-trip nil, got %#v", again.Assignments[1].AllowedFiles)
+	}
+}
+
+func TestValidateAllowedFiles(t *testing.T) {
+	cases := []struct {
+		name     string
+		patterns []string
+		wantErr  bool
+	}{
+		{"nil is allowed", nil, false},
+		{"empty slice is allowed", []string{}, false},
+		{"valid allowlist", []string{"*", "!hello.py"}, false},
+		{"empty pattern rejected", []string{"*", ""}, true},
+		{"whitespace-only rejected", []string{"   "}, true},
+		{"newline rejected", []string{"a\nb"}, true},
+		{"NUL rejected", []string{"a\x00b"}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := ValidateAllowedFiles(tc.patterns)
+			if tc.wantErr && err == nil {
+				t.Errorf("ValidateAllowedFiles(%#v): expected error, got nil", tc.patterns)
+			}
+			if !tc.wantErr && err != nil {
+				t.Errorf("ValidateAllowedFiles(%#v): unexpected error %v", tc.patterns, err)
+			}
+		})
+	}
+
+	tooMany := make([]string, AllowedFilesCap+1)
+	for i := range tooMany {
+		tooMany[i] = "f"
+	}
+	if err := ValidateAllowedFiles(tooMany); err == nil {
+		t.Errorf("ValidateAllowedFiles(%d patterns): expected over-cap error, got nil", len(tooMany))
+	}
+}
+
+func TestParseAssignments_RejectsInvalidAllowedFiles(t *testing.T) {
+	// A hand-edited manifest with an empty allowed_files pattern must
+	// fail the parse-path validator (ValidateExistingEntry).
+	in := []byte(`{
+  "schema": "classroom50/assignments/v1",
+  "assignments": [
+    {
+      "slug": "hello",
+      "name": "Hello",
+      "template": { "owner": "cs50", "repo": "hello-template", "branch": "main" },
+      "mode": "individual",
+      "autograder": "default",
+      "allowed_files": ["*", ""]
+    }
+  ]
+}`)
+	if _, err := ParseAssignments(in); err == nil {
+		t.Fatal("expected parse error for empty allowed_files pattern, got nil")
+	}
+}
+
 func TestParseAssignments_RejectsNonBoolFeedbackPR(t *testing.T) {
 	// DisallowUnknownFields is satisfied (the field exists), but a
 	// non-bool value must fail the JSON decode rather than coerce.

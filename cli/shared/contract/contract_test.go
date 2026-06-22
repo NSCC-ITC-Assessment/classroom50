@@ -23,6 +23,8 @@ func TestContractLiterals(t *testing.T) {
 		{"DefaultAutograderName", DefaultAutograderName, "default"},
 		{"ModeIndividual", ModeIndividual, "individual"},
 		{"ModeGroup", ModeGroup, "group"},
+		{"ResultFilename", ResultFilename, "result.json"},
+		{"ReleaseBodyFilename", ReleaseBodyFilename, "release-body.md"},
 	}
 	for _, tc := range cases {
 		if tc.got != tc.want {

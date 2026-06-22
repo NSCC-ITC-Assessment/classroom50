@@ -146,6 +146,22 @@ func helloAssignments(testsJSON string) string {
 }`
 }
 
+// helloAddParams returns a baseline addAssignmentParams matching the
+// `hello` fixture (individual mode, default autograder, hello-template).
+// Tests override only the fields they exercise, so call sites stay
+// field-named and order-independent.
+func helloAddParams() addAssignmentParams {
+	return addAssignmentParams{
+		Org:        "o",
+		Classroom:  "cs-principles",
+		Slug:       "hello",
+		Name:       "Hello",
+		Tmpl:       &templateArg{Owner: "cs50", Repo: "hello-template"},
+		Mode:       "individual",
+		Autograder: "default",
+	}
+}
+
 // decodeCommitted parses the assignments.json the fixture captured.
 func decodeCommitted(t *testing.T, fix *testCmdFixture) assignment.AssignmentsJSON {
 	t.Helper()
@@ -299,8 +315,9 @@ func TestRunAssignmentAdd_WithTestsPersists(t *testing.T) {
 
 	tests := []assignment.TestSpec{{Name: "compiles", Type: "run", Run: "true", Points: 1}}
 	var stdout, stderr bytes.Buffer
-	err := runAssignmentAdd(client, &stdout, &stderr, "o", "cs-principles", "hello", "Hello", "",
-		&templateArg{Owner: "cs50", Repo: "hello-template"}, "", nil, "individual", 0, "default", nil, tests, false)
+	p := helloAddParams()
+	p.Tests = tests
+	err := runAssignmentAdd(client, &stdout, &stderr, p)
 	if err != nil {
 		t.Fatalf("runAssignmentAdd: %v", err)
 	}
@@ -315,14 +332,33 @@ func TestRunAssignmentAdd_GroupModePersists(t *testing.T) {
 	client := githubtest.NewTestClient(t, server)
 
 	var stdout, stderr bytes.Buffer
-	err := runAssignmentAdd(client, &stdout, &stderr, "o", "cs-principles", "hello", "Hello", "",
-		&templateArg{Owner: "cs50", Repo: "hello-template"}, "", nil, "group", 3, "default", nil, nil, false)
+	p := helloAddParams()
+	p.Mode = "group"
+	p.MaxGroupSize = 3
+	err := runAssignmentAdd(client, &stdout, &stderr, p)
 	if err != nil {
 		t.Fatalf("runAssignmentAdd(group): %v", err)
 	}
 	entry := decodeCommitted(t, fix).Assignments[0]
 	if entry.Mode != "group" || entry.MaxGroupSize != 3 {
 		t.Errorf("committed entry = mode %q max_group_size %d, want group/3", entry.Mode, entry.MaxGroupSize)
+	}
+}
+
+func TestRunAssignmentAdd_AllowedFilesPersists(t *testing.T) {
+	server, fix := newTestCmdServer(t, helloAssignments(""), false)
+	client := githubtest.NewTestClient(t, server)
+
+	var stdout, stderr bytes.Buffer
+	p := helloAddParams()
+	p.AllowedFiles = []string{"*", "!hello.py"}
+	err := runAssignmentAdd(client, &stdout, &stderr, p)
+	if err != nil {
+		t.Fatalf("runAssignmentAdd(allowed-files): %v", err)
+	}
+	got := decodeCommitted(t, fix).Assignments[0].AllowedFiles
+	if len(got) != 2 || got[0] != "*" || got[1] != "!hello.py" {
+		t.Errorf("committed allowed_files = %#v, want [* !hello.py] (order preserved)", got)
 	}
 }
 
@@ -335,8 +371,11 @@ func TestRunAssignmentAdd_TemplateLessPersists(t *testing.T) {
 	client := githubtest.NewTestClient(t, server)
 
 	var stdout, stderr bytes.Buffer
-	err := runAssignmentAdd(client, &stdout, &stderr, "o", "cs-principles", "solo", "Solo", "",
-		nil, "", nil, "individual", 0, "default", nil, nil, false)
+	p := helloAddParams()
+	p.Slug = "solo"
+	p.Name = "Solo"
+	p.Tmpl = nil
+	err := runAssignmentAdd(client, &stdout, &stderr, p)
 	if err != nil {
 		t.Fatalf("runAssignmentAdd(template-less): %v", err)
 	}
@@ -362,8 +401,9 @@ func TestRunAssignmentAdd_DropsTemplateWarns(t *testing.T) {
 	client := githubtest.NewTestClient(t, server)
 
 	var stdout, stderr bytes.Buffer
-	err := runAssignmentAdd(client, &stdout, &stderr, "o", "cs-principles", "hello", "Hello", "",
-		nil, "", nil, "individual", 0, "default", nil, nil, false)
+	p := helloAddParams()
+	p.Tmpl = nil
+	err := runAssignmentAdd(client, &stdout, &stderr, p)
 	if err != nil {
 		t.Fatalf("runAssignmentAdd(re-add template-less): %v", err)
 	}
@@ -376,14 +416,83 @@ func TestRunAssignmentAdd_DropsTemplateWarns(t *testing.T) {
 	}
 }
 
+// TestRunAssignmentAdd_DropsAllowedFilesWarns: re-adding an assignment
+// that had an allowed_files allowlist, without --allowed-files, lands the
+// (now unrestricted) entry but warns that the allowlist was dropped.
+func TestRunAssignmentAdd_DropsAllowedFilesWarns(t *testing.T) {
+	seeded := `{
+  "schema": "classroom50/assignments/v1",
+  "assignments": [
+    {
+      "slug": "hello",
+      "name": "Hello",
+      "template": { "owner": "cs50", "repo": "hello-template", "branch": "main" },
+      "mode": "individual",
+      "autograder": "default",
+      "allowed_files": ["*", "!hello.py"]
+    }
+  ]
+}`
+	server, fix := newTestCmdServer(t, seeded, false)
+	client := githubtest.NewTestClient(t, server)
+
+	var stdout, stderr bytes.Buffer
+	err := runAssignmentAdd(client, &stdout, &stderr, helloAddParams())
+	if err != nil {
+		t.Fatalf("runAssignmentAdd(re-add without --allowed-files): %v", err)
+	}
+	if got := decodeCommitted(t, fix).Assignments[0].AllowedFiles; len(got) != 0 {
+		t.Errorf("replace without --allowed-files should drop the allowlist, got %#v", got)
+	}
+	if !strings.Contains(stderr.String(), "dropped its 2 allowed_files pattern(s)") {
+		t.Errorf("stderr = %q, want a dropped-allowed_files warning", stderr.String())
+	}
+}
+
+// TestRunAssignmentAdd_ExplicitEmptyAllowedFilesClearsSilently: passing
+// an explicit empty allowlist is a deliberate clear, not an omission, so
+// it must not warn. (nil = omitted/warn; non-nil empty = clear/silent.)
+func TestRunAssignmentAdd_ExplicitEmptyAllowedFilesClearsSilently(t *testing.T) {
+	seeded := `{
+  "schema": "classroom50/assignments/v1",
+  "assignments": [
+    {
+      "slug": "hello",
+      "name": "Hello",
+      "template": { "owner": "cs50", "repo": "hello-template", "branch": "main" },
+      "mode": "individual",
+      "autograder": "default",
+      "allowed_files": ["*", "!hello.py"]
+    }
+  ]
+}`
+	server, fix := newTestCmdServer(t, seeded, false)
+	client := githubtest.NewTestClient(t, server)
+
+	var stdout, stderr bytes.Buffer
+	p := helloAddParams()
+	p.AllowedFiles = []string{}
+	err := runAssignmentAdd(client, &stdout, &stderr, p)
+	if err != nil {
+		t.Fatalf("runAssignmentAdd(explicit empty allowed_files): %v", err)
+	}
+	if got := decodeCommitted(t, fix).Assignments[0].AllowedFiles; len(got) != 0 {
+		t.Errorf("explicit empty --allowed-files should clear, got %#v", got)
+	}
+	if strings.Contains(stderr.String(), "allowed_files") {
+		t.Errorf("stderr = %q, explicit clear must not warn", stderr.String())
+	}
+}
+
 func TestRunAssignmentAdd_TestsRejectedWithAutograder(t *testing.T) {
 	server, fix := newTestCmdServer(t, helloAssignments(""), true)
 	client := githubtest.NewTestClient(t, server)
 
 	tests := []assignment.TestSpec{{Name: "compiles", Type: "run", Run: "true", Points: 1}}
 	var stdout, stderr bytes.Buffer
-	err := runAssignmentAdd(client, &stdout, &stderr, "o", "cs-principles", "hello", "Hello", "",
-		&templateArg{Owner: "cs50", Repo: "hello-template"}, "", nil, "individual", 0, "default", nil, tests, false)
+	p := helloAddParams()
+	p.Tests = tests
+	err := runAssignmentAdd(client, &stdout, &stderr, p)
 	if err == nil || !strings.Contains(err.Error(), "mutually exclusive") {
 		t.Fatalf("expected mutual-exclusion error, got %v", err)
 	}
@@ -405,8 +514,7 @@ func TestRunAssignmentAdd_ReplaceWithoutTestsWarns(t *testing.T) {
 	client := githubtest.NewTestClient(t, server)
 
 	var stdout, stderr bytes.Buffer
-	err := runAssignmentAdd(client, &stdout, &stderr, "o", "cs-principles", "hello", "Hello", "",
-		&templateArg{Owner: "cs50", Repo: "hello-template"}, "", nil, "individual", 0, "default", nil, nil, false)
+	err := runAssignmentAdd(client, &stdout, &stderr, helloAddParams())
 	if err != nil {
 		t.Fatalf("runAssignmentAdd: %v", err)
 	}
@@ -426,8 +534,9 @@ func TestRunAssignmentAdd_ExplicitEmptyTestsClearsSilently(t *testing.T) {
 	client := githubtest.NewTestClient(t, server)
 
 	var stdout, stderr bytes.Buffer
-	err := runAssignmentAdd(client, &stdout, &stderr, "o", "cs-principles", "hello", "Hello", "",
-		&templateArg{Owner: "cs50", Repo: "hello-template"}, "", nil, "individual", 0, "default", nil, []assignment.TestSpec{}, false)
+	p := helloAddParams()
+	p.Tests = []assignment.TestSpec{}
+	err := runAssignmentAdd(client, &stdout, &stderr, p)
 	if err != nil {
 		t.Fatalf("runAssignmentAdd: %v", err)
 	}
@@ -691,8 +800,9 @@ func TestRunAssignmentAdd_RejectsOutOfOrgPrivateTemplate(t *testing.T) {
 	client := githubtest.NewTestClient(t, server)
 
 	var stdout, stderr bytes.Buffer
-	err := runAssignmentAdd(client, &stdout, &stderr, "o", "cs-principles", "hello", "Hello", "",
-		&templateArg{Owner: "some-teacher", Repo: "hello-template"}, "", nil, "individual", 0, "default", nil, nil, false)
+	p := helloAddParams()
+	p.Tmpl = &templateArg{Owner: "some-teacher", Repo: "hello-template"}
+	err := runAssignmentAdd(client, &stdout, &stderr, p)
 	if err == nil || !strings.Contains(err.Error(), "private and outside the org") {
 		t.Fatalf("expected out-of-org private rejection, got %v", err)
 	}
@@ -713,8 +823,9 @@ func TestRunAssignmentAdd_GrantsTeamReadForInOrgPrivateTemplate(t *testing.T) {
 	client := githubtest.NewTestClient(t, server)
 
 	var stdout, stderr bytes.Buffer
-	err := runAssignmentAdd(client, &stdout, &stderr, "o", "cs-principles", "hello", "Hello", "",
-		&templateArg{Owner: "o", Repo: "hello-template"}, "", nil, "individual", 0, "default", nil, nil, false)
+	p := helloAddParams()
+	p.Tmpl = &templateArg{Owner: "o", Repo: "hello-template"}
+	err := runAssignmentAdd(client, &stdout, &stderr, p)
 	if err != nil {
 		t.Fatalf("runAssignmentAdd: %v", err)
 	}
@@ -738,8 +849,9 @@ func TestRunAssignmentAdd_SkipsGrantWhenTeamAlreadyHasAccess(t *testing.T) {
 	client := githubtest.NewTestClient(t, server)
 
 	var stdout, stderr bytes.Buffer
-	err := runAssignmentAdd(client, &stdout, &stderr, "o", "cs-principles", "hello", "Hello", "",
-		&templateArg{Owner: "o", Repo: "hello-template"}, "", nil, "individual", 0, "default", nil, nil, false)
+	p := helloAddParams()
+	p.Tmpl = &templateArg{Owner: "o", Repo: "hello-template"}
+	err := runAssignmentAdd(client, &stdout, &stderr, p)
 	if err != nil {
 		t.Fatalf("runAssignmentAdd: %v", err)
 	}
@@ -799,8 +911,9 @@ func TestRunAssignmentAdd_InOrgPrivateNoTeamErrors(t *testing.T) {
 	client := githubtest.NewTestClient(t, srv)
 
 	var stdout, stderr bytes.Buffer
-	err := runAssignmentAdd(client, &stdout, &stderr, "o", "cs-principles", "hello", "Hello", "",
-		&templateArg{Owner: "o", Repo: "hello-template"}, "", nil, "individual", 0, "default", nil, nil, false)
+	p := helloAddParams()
+	p.Tmpl = &templateArg{Owner: "o", Repo: "hello-template"}
+	err := runAssignmentAdd(client, &stdout, &stderr, p)
 	if err == nil || !strings.Contains(err.Error(), "has no team to grant read") {
 		t.Fatalf("expected actionable no-team error, got %v", err)
 	}

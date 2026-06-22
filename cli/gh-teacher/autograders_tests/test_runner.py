@@ -17,6 +17,7 @@ from __future__ import annotations
 import datetime
 import io
 import json
+import pathlib
 import subprocess
 import tarfile
 import urllib.error
@@ -24,6 +25,9 @@ import urllib.error
 import pytest
 
 from conftest import runner as ag, collect_scores as cs
+
+# Repo root: this file is cli/gh-teacher/autograders_tests/test_runner.py.
+_REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
 
 
 # ---------------------------------------------------------------------------
@@ -1275,3 +1279,263 @@ def test_result_asset_name_matches_collect_scores():
     # Cross-binary contract: the runner workflow uploads `result.json`;
     # collect_scores fetches by this exact name.
     assert cs.RESULT_ASSET_NAME == "result.json"
+
+
+def test_runner_output_filenames_match_go_contract():
+    # Cross-binary contract: runner.py's RESULT_FILENAME / RELEASE_BODY_FILENAME
+    # are single-sourced in Go as contract.ResultFilename / ReleaseBodyFilename
+    # (cli/shared/contract/contract.go, pinned by contract_test.go), and the
+    # allowed_files control-path force-keep on both sides depends on them
+    # matching exactly. Pin the Python literals so a one-sided edit fails here.
+    assert ag.RESULT_FILENAME == "result.json"
+    assert ag.RELEASE_BODY_FILENAME == "release-body.md"
+
+
+def _make_workspace(path, files):
+    """A real git repo at path containing the given relative files
+    (trivial content), all committed so `git ls-files` enumerates them."""
+    path.mkdir()
+    _git(path, "init", "-q", "-b", "main")
+    for rel in files:
+        p = path / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text("x\n")
+    _git(path, "add", "-A")
+    _git(path, "commit", "-q", "-m", "submission")
+
+
+class TestParseAllowedFiles:
+    def test_empty_and_absent(self):
+        assert ag.parse_allowed_files(None) == []
+        assert ag.parse_allowed_files("") == []
+        assert ag.parse_allowed_files("   ") == []
+
+    def test_valid_array(self):
+        assert ag.parse_allowed_files('["*", "!hello.py"]') == ["*", "!hello.py"]
+
+    def test_malformed_json_is_ignored(self):
+        assert ag.parse_allowed_files("not json") == []
+
+    def test_non_string_entries_ignored(self):
+        assert ag.parse_allowed_files('["*", 3]') == []
+        assert ag.parse_allowed_files('"hello.py"') == []
+
+
+class TestEnforceAllowedFiles:
+    def test_allowlist_removes_disallowed_keeps_match_and_control(self, tmp_path):
+        ws = tmp_path / "repo"
+        _make_workspace(ws, [
+            "hello.py",
+            "scratch.py",
+            "build/out.o",
+            ag.ACCEPT_MARKER_PATH,
+            ".github/workflows/autograde.yaml",
+        ])
+        removed = ag.enforce_allowed_files(ws, ["*", "!hello.py"])
+
+        assert removed == ["build/out.o", "scratch.py"]
+        assert (ws / "hello.py").exists()
+        assert (ws / ag.ACCEPT_MARKER_PATH).exists()
+        assert (ws / ".github/workflows/autograde.yaml").exists()
+        assert not (ws / "scratch.py").exists()
+        assert not (ws / "build/out.o").exists()
+
+    def test_empty_patterns_remove_nothing(self, tmp_path):
+        ws = tmp_path / "repo"
+        _make_workspace(ws, ["a.py", "b.py"])
+        assert ag.enforce_allowed_files(ws, []) == []
+        assert (ws / "a.py").exists() and (ws / "b.py").exists()
+
+    def test_control_files_kept_even_under_bare_star(self, tmp_path):
+        ws = tmp_path / "repo"
+        _make_workspace(ws, [
+            "anything.py",
+            ag.ACCEPT_MARKER_PATH,
+            ".github/workflows/autograde.yaml",
+        ])
+        removed = ag.enforce_allowed_files(ws, ["*"])
+        assert removed == ["anything.py"]
+        assert (ws / ag.ACCEPT_MARKER_PATH).exists()
+        assert (ws / ".github/workflows/autograde.yaml").exists()
+        assert not (ws / "anything.py").exists()
+
+    def test_nested_git_repo_cannot_hide_disallowed_files(self, tmp_path):
+        # `git ls-files` won't recurse into a nested repo, so the walk
+        # must catch files hidden there or they escape the allowlist.
+        ws = tmp_path / "repo"
+        _make_workspace(ws, ["hello.py"])
+        nested = ws / "nested"
+        nested.mkdir()
+        _git(nested, "init", "-q")
+        (nested / "sneaky.py").write_text("disallowed\n")
+
+        removed = ag.enforce_allowed_files(ws, ["*", "!hello.py"])
+
+        assert (ws / "hello.py").exists()
+        assert not (nested / "sneaky.py").exists(), "nested-repo file escaped enforcement"
+        assert "nested/sneaky.py" in removed
+        assert (nested / ".git").exists()  # .git metadata never touched
+
+    def test_control_name_prefix_sibling_is_not_force_kept(self, tmp_path):
+        # Only exact control names are kept; `result.json.bak` is subject
+        # to the allowlist.
+        ws = tmp_path / "repo"
+        _make_workspace(ws, [
+            "hello.py",
+            "result.json.bak",
+            ag.ACCEPT_MARKER_PATH + ".bak",
+        ])
+        removed = ag.enforce_allowed_files(ws, ["*", "!hello.py"])
+        assert "result.json.bak" in removed
+        assert f"{ag.ACCEPT_MARKER_PATH}.bak" in removed
+        assert not (ws / "result.json.bak").exists()
+
+    def test_ignores_ambient_global_excludesfile(self, tmp_path, monkeypatch):
+        # A host global ignore of `*.log` must not leak in: with patterns
+        # that don't match app.log, it stays allowed.
+        home = tmp_path / "home"
+        home.mkdir()
+        (home / "globalignore").write_text("*.log\n")
+        (home / ".gitconfig").write_text(
+            f"[core]\n\texcludesFile = {home / 'globalignore'}\n")
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.delenv("GIT_CONFIG_GLOBAL", raising=False)
+        monkeypatch.delenv("GIT_CONFIG_NOSYSTEM", raising=False)
+
+        ws = tmp_path / "repo"
+        _make_workspace(ws, ["app.log", "secret.txt", "keep.py"])
+        removed = ag.enforce_allowed_files(ws, ["secret.txt"])
+        assert removed == ["secret.txt"]
+        assert (ws / "app.log").exists(), "ambient global excludesFile leaked into the matcher"
+
+    def test_shared_fixture_parity(self):
+        # Same golden cases the Go ignorematch test asserts, so the two
+        # parallel matcher implementations stay in lockstep.
+        fixture = (_REPO_ROOT / "cli" / "shared" / "testdata"
+                   / "allowed_files_matcher_cases.json")
+        cases = json.loads(fixture.read_text())["cases"]
+        assert cases, "shared fixture has no cases"
+        for case in cases:
+            disallowed = ag._classify_disallowed(case["patterns"], case["paths"])
+            assert disallowed is not None, f"{case['name']}: matcher failed"
+            assert sorted(disallowed) == sorted(case["disallowed"]), case["name"]
+
+    def test_control_path_shared_fixture_parity(self):
+        # Same golden cases the Go isControlPath test asserts, so the
+        # force-keep control-path sets stay in lockstep across languages.
+        fixture = (_REPO_ROOT / "cli" / "shared" / "testdata"
+                   / "control_path_cases.json")
+        cases = json.loads(fixture.read_text())["cases"]
+        assert cases, "shared control-path fixture has no cases"
+        for case in cases:
+            assert ag._is_control_path(case["path"]) == case["is_control"], case["path"]
+
+
+class TestEnforceAllowedFilesDegradation:
+    """The fail-safe branches the design relies on: on any git failure,
+    skip enforcement (fail open — grade the unfiltered tree) rather than
+    delete the wrong files or block the grade. enforce_allowed_files returns
+    [] and the files survive. (See its docstring for how to flip to
+    fail-closed if allowed_files should ever be an authoritative boundary.)"""
+
+    def test_walk_failure_skips_enforcement(self, tmp_path, monkeypatch):
+        ws = tmp_path / "repo"
+        _make_workspace(ws, ["hello.py", "scratch.py"])
+
+        def boom(_workspace):
+            raise OSError("walk blew up")
+
+        monkeypatch.setattr(ag, "_walk_workspace_files", boom)
+        removed = ag.enforce_allowed_files(ws, ["*", "!hello.py"])
+        assert removed == []
+        assert (ws / "scratch.py").exists(), "files must survive when enumeration fails"
+
+    def test_matcher_init_failure_skips_enforcement(self, tmp_path, monkeypatch):
+        ws = tmp_path / "repo"
+        _make_workspace(ws, ["hello.py", "scratch.py"])
+
+        real_run = subprocess.run
+
+        def fake_run(cmd, *args, **kwargs):
+            # Fail the throwaway matcher repo's `git init`.
+            if "init" in cmd:
+                return subprocess.CompletedProcess(cmd, 1, "", "init failed")
+            return real_run(cmd, *args, **kwargs)
+
+        monkeypatch.setattr(ag.subprocess, "run", fake_run)
+        removed = ag.enforce_allowed_files(ws, ["*", "!hello.py"])
+        assert removed == []
+        assert (ws / "scratch.py").exists()
+
+    def test_check_ignore_error_skips_enforcement(self, tmp_path, monkeypatch):
+        ws = tmp_path / "repo"
+        _make_workspace(ws, ["hello.py", "scratch.py"])
+
+        real_run = subprocess.run
+
+        def fake_run(cmd, *args, **kwargs):
+            if "check-ignore" in cmd:
+                return subprocess.CompletedProcess(cmd, 2, "", "fatal: boom")
+            return real_run(cmd, *args, **kwargs)
+
+        monkeypatch.setattr(ag.subprocess, "run", fake_run)
+        removed = ag.enforce_allowed_files(ws, ["*", "!hello.py"])
+        assert removed == []
+        assert (ws / "scratch.py").exists()
+
+    def test_check_ignore_timeout_skips_enforcement(self, tmp_path, monkeypatch):
+        # A hung git raises subprocess.TimeoutExpired (a SubprocessError, not
+        # an OSError). _classify_disallowed catches it and returns None, so
+        # enforcement is skipped (fail open) rather than crashing the runner
+        # before grading.
+        ws = tmp_path / "repo"
+        _make_workspace(ws, ["hello.py", "scratch.py"])
+
+        real_run = subprocess.run
+
+        def fake_run(cmd, *args, **kwargs):
+            if "check-ignore" in cmd:
+                raise subprocess.TimeoutExpired(cmd, kwargs.get("timeout"))
+            return real_run(cmd, *args, **kwargs)
+
+        monkeypatch.setattr(ag.subprocess, "run", fake_run)
+        removed = ag.enforce_allowed_files(ws, ["*", "!hello.py"])
+        assert removed == []
+        assert (ws / "scratch.py").exists(), "a git timeout fails open, not crash or delete"
+
+    def test_unlink_oserror_keeps_going_and_omits_from_removed(self, tmp_path, monkeypatch):
+        ws = tmp_path / "repo"
+        _make_workspace(ws, ["hello.py", "a.py", "b.py"])
+
+        real_unlink = pathlib.Path.unlink
+
+        def flaky_unlink(self, *args, **kwargs):
+            if self.name == "a.py":
+                raise PermissionError("locked")
+            return real_unlink(self, *args, **kwargs)
+
+        monkeypatch.setattr(ag.pathlib.Path, "unlink", flaky_unlink)
+        removed = ag.enforce_allowed_files(ws, ["*", "!hello.py"])
+        # b.py removed; a.py failed and is NOT reported as removed. A single
+        # un-removable file is best-effort and does NOT fail the whole grade.
+        assert "b.py" in removed
+        assert "a.py" not in removed
+        assert not (ws / "b.py").exists()
+
+
+class TestRemovedFilesReporting:
+    def test_note_appended_to_release_body(self, tmp_path):
+        body = tmp_path / ag.RELEASE_BODY_FILENAME
+        body.write_text("### classroom50 autograde: 0/0\n")
+        ag.append_removed_files_note(tmp_path, ["scratch.py", "build/out.o"])
+        text = body.read_text()
+        assert "classroom50 autograde: 0/0" in text
+        assert "Removed 2 file(s)" in text
+        assert "`scratch.py`" in text and "`build/out.o`" in text
+
+    def test_no_note_when_nothing_removed(self, tmp_path):
+        body = tmp_path / ag.RELEASE_BODY_FILENAME
+        body.write_text("body\n")
+        ag.append_removed_files_note(tmp_path, [])
+        assert body.read_text() == "body\n"
+

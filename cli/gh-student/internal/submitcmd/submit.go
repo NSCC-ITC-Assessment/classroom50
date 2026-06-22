@@ -22,12 +22,14 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/foundation50/classroom50-cli-shared/contract"
 	"github.com/foundation50/classroom50-cli-shared/ghui"
 	"github.com/foundation50/classroom50-cli-shared/ghutil"
 	"github.com/foundation50/gh-student/internal/assignments"
 	"github.com/foundation50/gh-student/internal/classroomcfg"
 	"github.com/foundation50/gh-student/internal/githubapi"
 	identitypkg "github.com/foundation50/gh-student/internal/identity"
+	"github.com/foundation50/gh-student/internal/ignorematch"
 	"github.com/foundation50/gh-student/internal/localgit"
 	"github.com/foundation50/gh-student/internal/ui"
 )
@@ -135,7 +137,11 @@ func submitAssignment(ctx context.Context, client githubapi.Client, verbose bool
 		u.Detail("Preparing submission snapshot from %s", root)
 	}
 
-	if err := copySubmittableFiles(root, workTree); err != nil {
+	// Resolve allowed_files (best-effort): a fetch failure never blocks
+	// submission — the runner enforces authoritatively at grade time.
+	allowedFiles := fetchAllowedFiles(ctx, repoOwner, config, u, verbose)
+
+	if err := copySubmittableFiles(root, workTree, allowedFiles, u, verbose); err != nil {
 		return err
 	}
 
@@ -215,6 +221,30 @@ func submitAssignment(ctx context.Context, client githubapi.Client, verbose bool
 	_, _ = fmt.Fprintf(out, "View your submission at: %s/commit/%s\n", repoHTMLURL, sha)
 
 	return nil
+}
+
+// fetchEntryFn resolves the manifest entry; injectable so tests can
+// exercise the success and failure paths without a live Pages fetch.
+var fetchEntryFn = assignments.FetchEntry
+
+// fetchAllowedFiles resolves the assignment's allowed_files patterns
+// from the manifest. Best-effort: any failure returns nil and warns,
+// since the runner enforces the list authoritatively. Bounded by
+// assignmentNameTimeout.
+func fetchAllowedFiles(ctx context.Context, org string, config *classroomcfg.Config, u *ui.UI, verbose bool) []string {
+	ctx, cancel := context.WithTimeout(ctx, assignmentNameTimeout)
+	defer cancel()
+	entry, err := fetchEntryFn(ctx, org, config.Classroom, config.Assignment)
+	if err != nil {
+		if verbose {
+			u.Detail("Could not resolve allowed_files (%v); submitting all files — the autograder enforces the list", err)
+		}
+		return nil
+	}
+	if len(entry.AllowedFiles) > 0 && verbose {
+		u.Detail("Applying allowed_files filter (%d pattern(s))", len(entry.AllowedFiles))
+	}
+	return entry.AllowedFiles
 }
 
 // resolveAssignmentName returns the assignment's full name from the
@@ -475,7 +505,7 @@ func runCmd(out io.Writer, errOut io.Writer, dir string, name string, args ...st
 	return nil
 }
 
-func copySubmittableFiles(srcRoot string, dstRoot string) error {
+func copySubmittableFiles(srcRoot string, dstRoot string, allowedFiles []string, u *ui.UI, verbose bool) error {
 	cmd := exec.Command("git", "ls-files", "-co", "--exclude-standard", "-z")
 	cmd.Dir = srcRoot
 
@@ -485,14 +515,45 @@ func copySubmittableFiles(srcRoot string, dstRoot string) error {
 	}
 
 	entries := bytes.Split(out, []byte{0})
+
+	// Candidate relative paths (skipping .git) for one check-ignore pass.
+	var candidates []string
 	for _, entry := range entries {
 		if len(entry) == 0 {
 			continue
 		}
-
 		rel := string(entry)
-
 		if rel == ".git" || strings.HasPrefix(rel, ".git/") {
+			continue
+		}
+		candidates = append(candidates, rel)
+	}
+
+	disallowed := make(map[string]bool)
+	if len(allowedFiles) > 0 {
+		var filterable []string
+		for _, rel := range candidates {
+			if isControlPath(rel) {
+				continue
+			}
+			filterable = append(filterable, rel)
+		}
+		d, err := ignorematch.Disallowed(allowedFiles, filterable)
+		if err != nil {
+			// Best-effort: the runner enforces authoritatively.
+			if verbose {
+				u.Detail("allowed_files filter skipped (%v); submitting all files", err)
+			}
+		} else {
+			disallowed = d
+		}
+	}
+
+	for _, rel := range candidates {
+		if disallowed[rel] {
+			if verbose {
+				u.Detail("Excluding %s (outside allowed_files)", rel)
+			}
 			continue
 		}
 
@@ -514,6 +575,27 @@ func copySubmittableFiles(srcRoot string, dstRoot string) error {
 	}
 
 	return nil
+}
+
+// isControlPath reports whether rel is a control file always submitted
+// regardless of allowed_files. Lockstep with runner.py's
+// _is_control_path / ALLOWED_FILES_KEEP_*: the .classroom50.yaml marker,
+// the .github/ shim, the .git metadata dir, and the runner outputs
+// (result.json, release-body.md). Both sides are pinned by the shared
+// fixture cli/shared/testdata/control_path_cases.json.
+//
+// `.git` is included for literal parity with the Python keep-set even
+// though copySubmittableFiles already strips it upstream — keeping the two
+// classifiers identical means the lockstep holds without relying on that
+// external precondition.
+func isControlPath(rel string) bool {
+	switch rel {
+	case classroomcfg.MetadataPath, contract.ResultFilename, contract.ReleaseBodyFilename:
+		return true
+	case ".github", ".git":
+		return true
+	}
+	return strings.HasPrefix(rel, ".github/") || strings.HasPrefix(rel, ".git/")
 }
 
 // lastNonEmptyLine returns the last non-empty trimmed line of s, used to

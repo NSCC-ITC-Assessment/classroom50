@@ -1,0 +1,18 @@
+{
+  "_comment": "Shared golden fixture pinning the allowed_files control-path classifier to identical output across the two parallel implementations: Go isControlPath (cli/gh-student/internal/submitcmd/submit.go) and Python _is_control_path (cli/gh-teacher/skeleton/dotgithub/scripts/runner.py). Control paths are force-kept regardless of allowed_files. Each case is a (path -> is_control) expectation asserted by both ignorematch/copysubmittable Go tests and the Python runner tests, so the two keep-sets can't drift. Directory controls (.github, .git) match by exact name or '/' prefix; file controls (.classroom50.yaml, result.json, release-body.md) match exactly, so a sibling like 'result.json.bak' is NOT a control path.",
+  "cases": [
+    { "path": ".classroom50.yaml", "is_control": true },
+    { "path": ".github", "is_control": true },
+    { "path": ".github/workflows/autograde.yaml", "is_control": true },
+    { "path": ".git", "is_control": true },
+    { "path": ".git/config", "is_control": true },
+    { "path": "result.json", "is_control": true },
+    { "path": "release-body.md", "is_control": true },
+    { "path": "hello.py", "is_control": false },
+    { "path": "src/main.c", "is_control": false },
+    { "path": "result.json.bak", "is_control": false },
+    { "path": ".classroom50.yaml.bak", "is_control": false },
+    { "path": ".githubbed/notes.md", "is_control": false },
+    { "path": "sub/.github/x.yaml", "is_control": false }
+  ]
+}

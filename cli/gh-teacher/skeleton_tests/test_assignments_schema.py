@@ -86,6 +86,13 @@ class TestSchemaAccepts:
     def test_feedback_pr_must_be_boolean(self):
         assert _errors(_manifest(_entry(feedback_pr="yes"))) != []
 
+    def test_allowed_files_accepted(self):
+        # allowed_files is a CLI-written ordered list of gitignore-style
+        # patterns; the schema must accept it given the assignment object
+        # is additionalProperties:false.
+        assert _errors(_manifest(_entry(allowed_files=["*", "!hello.py"]))) == []
+        assert _errors(_manifest(_entry(allowed_files=[]))) == []
+
     def test_container_with_ubuntu_runs_on(self):
         entry = _entry(runtime={"container": {"image": "x"}, "runs-on": "ubuntu-22.04"})
         assert _errors(_manifest(entry)) == []
@@ -159,6 +166,21 @@ class TestSchemaRejects:
         entry = _entry()
         entry["template"] = None
         assert _errors(_manifest(entry)) != []
+
+    def test_allowed_files_empty_pattern_rejected(self):
+        # An empty-string pattern is rejected (mirrors the Go
+        # ValidateAllowedFiles minLength check).
+        assert _errors(_manifest(_entry(allowed_files=["*", ""]))) != []
+
+    def test_allowed_files_whitespace_only_pattern_rejected(self):
+        # A whitespace-only pattern is rejected too, matching the Go
+        # ValidateAllowedFiles strings.TrimSpace check and the workflow's
+        # inline pat.strip() re-validation — all three validators agree.
+        assert _errors(_manifest(_entry(allowed_files=["*", "   "]))) != []
+
+    def test_allowed_files_must_be_array(self):
+        # A scalar value is rejected; allowed_files is an ordered list.
+        assert _errors(_manifest(_entry(allowed_files="hello.py"))) != []
 
     def test_partial_template_rejected(self):
         # When present, the template block still requires owner/repo/branch

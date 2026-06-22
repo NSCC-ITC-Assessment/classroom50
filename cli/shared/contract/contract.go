@@ -34,4 +34,12 @@ const (
 	// repo per student; group = a shared repo teammates join.
 	ModeIndividual = "individual"
 	ModeGroup      = "group"
+
+	// ResultFilename and ReleaseBodyFilename are the autograder's output
+	// artifacts in the student workspace: the required result.json (the
+	// grading payload collect-scores ingests) and the optional
+	// release-body.md. The submit/allowed_files paths must never strip
+	// them. Mirror runner.py's RESULT_FILENAME / RELEASE_BODY_FILENAME.
+	ResultFilename      = "result.json"
+	ReleaseBodyFilename = "release-body.md"
 )

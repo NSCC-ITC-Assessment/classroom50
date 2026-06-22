@@ -1,0 +1,47 @@
+{
+  "_comment": "Shared golden fixture pinning the allowed_files gitignore matcher to identical (patterns, paths) -> disallowed output across the two parallel implementations: Go ignorematch.Disallowed (cli/gh-student) and Python enforce_allowed_files's classifier (cli/gh-teacher/skeleton/dotgithub/scripts/runner.py). Both delegate to `git check-ignore`; this fixture catches edge-case drift between the two sides. `disallowed` lists exactly the input paths the patterns ignore (i.e. NOT allowed).",
+  "cases": [
+    {
+      "name": "allowlist re-includes one file",
+      "patterns": ["*", "!hello.py"],
+      "paths": ["hello.py", "scratch.py", "build/out.o", "sub/deep/x.txt"],
+      "disallowed": ["scratch.py", "build/out.o", "sub/deep/x.txt"]
+    },
+    {
+      "name": "ignore specific noise, allow the rest",
+      "patterns": ["node_modules/", "*.lock"],
+      "paths": ["main.py", "node_modules/x.js", "package.lock", "src/app.py"],
+      "disallowed": ["node_modules/x.js", "package.lock"]
+    },
+    {
+      "name": "no patterns allows everything",
+      "patterns": [],
+      "paths": ["a.py", "b.py"],
+      "disallowed": []
+    },
+    {
+      "name": "negation-only fails open (re-includes nothing ignored)",
+      "patterns": ["!hello.py"],
+      "paths": ["hello.py", "other.py"],
+      "disallowed": []
+    },
+    {
+      "name": "last match wins; an excluded dir cannot be re-included via its contents",
+      "patterns": ["*", "!keep/", "keep/secret.txt"],
+      "paths": ["keep/a.py", "keep/secret.txt", "drop.py"],
+      "disallowed": ["keep/a.py", "keep/secret.txt", "drop.py"]
+    },
+    {
+      "name": "negating a dir does not re-include files under an excluded parent",
+      "patterns": ["*", "!src/"],
+      "paths": ["src/a.py", "src/deep/b.py", "top.py"],
+      "disallowed": ["src/a.py", "src/deep/b.py", "top.py"]
+    },
+    {
+      "name": "extension allowlist only re-includes at top level (parent dirs stay excluded)",
+      "patterns": ["*", "!*.py"],
+      "paths": ["a.py", "b.py", "c.txt", "nested/d.py", "nested/e.md"],
+      "disallowed": ["c.txt", "nested/d.py", "nested/e.md"]
+    }
+  ]
+}

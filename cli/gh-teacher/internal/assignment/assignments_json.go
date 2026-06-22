@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"io"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/foundation50/classroom50-cli-shared/contract"
@@ -96,6 +97,12 @@ type AssignmentsJSON struct {
 // branch) so teachers leave inline review comments on the full
 // starter→submission diff. Default false; omits from the file when
 // unset. The runner re-reads it from the published manifest.
+//
+// AllowedFiles is an ordered list of .gitignore-style patterns defining
+// which files belong to the submission (last match wins, `!` re-includes),
+// so `["*", "!hello.py"]` allows only hello.py. Empty/absent allows every
+// file. The runner enforces it by removing disallowed files before
+// grading; `gh student submit` applies it best-effort.
 type AssignmentEntry struct {
 	Slug         string           `json:"slug"`
 	Name         string           `json:"name"`
@@ -109,6 +116,7 @@ type AssignmentEntry struct {
 	Runtime      *RuntimeRef      `json:"runtime,omitempty"`
 	Tests        []TestSpec       `json:"tests,omitempty"`
 	FeedbackPR   bool             `json:"feedback_pr,omitempty"`
+	AllowedFiles []string         `json:"allowed_files,omitempty"`
 	MigratedFrom *MigratedFromRef `json:"migrated_from,omitempty"`
 }
 
@@ -118,6 +126,29 @@ const MaxGroupSizeCap = 100
 func ValidateMaxGroupSize(n int) error {
 	if n < 0 || n > MaxGroupSizeCap {
 		return fmt.Errorf("max_group_size %d out of range (0 = unset/individual, or 2..%d for group mode)", n, MaxGroupSizeCap)
+	}
+	return nil
+}
+
+// AllowedFilesCap bounds the number of allowed_files patterns, a sanity
+// ceiling mirroring the tests[] maxItems bound.
+const AllowedFilesCap = 100
+
+// ValidateAllowedFiles rejects empty/whitespace-only patterns and ones
+// containing NUL or newline (they're written one-per-line into a
+// .gitignore, where a newline would smuggle an extra rule). A nil/empty
+// list is valid (all files allowed); callers skip this check for it.
+func ValidateAllowedFiles(patterns []string) error {
+	if len(patterns) > AllowedFilesCap {
+		return fmt.Errorf("allowed_files has %d patterns (max %d)", len(patterns), AllowedFilesCap)
+	}
+	for i, p := range patterns {
+		if strings.TrimSpace(p) == "" {
+			return fmt.Errorf("allowed_files[%d] must not be empty", i)
+		}
+		if strings.ContainsAny(p, "\x00\n") {
+			return fmt.Errorf("allowed_files[%d] %q must not contain NUL or newline", i, p)
+		}
 	}
 	return nil
 }
@@ -602,6 +633,9 @@ func ValidateAssignmentEntry(entry AssignmentEntry) error {
 			return err
 		}
 	}
+	if err := ValidateAllowedFiles(entry.AllowedFiles); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -679,6 +713,9 @@ func ValidateExistingEntry(entry AssignmentEntry) error {
 		if err := ValidateTests(entry.Tests); err != nil {
 			return fmt.Errorf("entry %q: %w", entry.Slug, err)
 		}
+	}
+	if err := ValidateAllowedFiles(entry.AllowedFiles); err != nil {
+		return fmt.Errorf("entry %q: %w", entry.Slug, err)
 	}
 	return nil
 }
