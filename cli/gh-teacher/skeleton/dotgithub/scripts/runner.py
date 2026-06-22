@@ -131,13 +131,18 @@ FETCH_ATTEMPTS = 3
 # is small but the same ceiling avoids a hostile asset.
 MAX_FETCH_BYTES = 10 * 1024 * 1024
 
-# Subject of the plumbing commit `gh student accept` adds after
-# templating (.classroom50.yaml + autograde shim). Mirrors
-# cli/gh-student/metadata.go (dropClassroomFiles) -- keep in lockstep.
-# baseline_sha skips past it so those files don't diff as student work.
-ACCEPT_COMMIT_SUBJECT = (
-    "Initialize .classroom50.yaml and autograde workflow (gh student accept)"
-)
+# The accept commit is the one that creates the repo's
+# `.classroom50.yaml`. Resolving the baseline from this structural
+# marker (not the commit subject) keeps it stable across clients and
+# message rewording, and removes the subject-reuse spoof. Note the
+# baseline still can't be moved *forward* (to hide pre-baseline work)
+# only because the default-branch force-push/delete ruleset protects
+# the immutable accept commit -- on a plan that rejects org rulesets
+# that protection silently doesn't apply, so this is a robustness win
+# over subject-matching, not an unconditional guarantee. Path mirrors
+# classroomcfg.MetadataPath (cli/gh-student/internal/classroomcfg/
+# metadata.go) -- keep in lockstep.
+ACCEPT_MARKER_PATH = ".classroom50.yaml"
 
 
 def runtime_root() -> pathlib.Path:
@@ -507,10 +512,10 @@ def _baseline_scan(workspace: pathlib.Path) -> tuple[str | None, str]:
     """Resolve the student's baseline commit and how it was found.
 
     Returns (sha, source) where source is:
-      - "accept": matched the `gh student accept` plumbing commit
-        (ACCEPT_COMMIT_SUBJECT) — a trusted baseline.
-      - "root":   fell back to the repo's root commit (no accept commit
-        in history) — a best-effort baseline.
+      - "accept": the accept commit -- the commit that introduced
+        `.classroom50.yaml` (ACCEPT_MARKER_PATH). A trusted baseline.
+      - "root":   fell back to the repo's root commit (no commit added
+        `.classroom50.yaml`) -- a best-effort baseline.
       - "none":   history unavailable (sha is None).
     """
 
@@ -530,46 +535,71 @@ def _baseline_scan(workspace: pathlib.Path) -> tuple[str | None, str]:
             # checkout's persisted credentials authenticate the fetch.
             if git("fetch", "--quiet", "--unshallow", "origin").returncode != 0:
                 return None, "none"
-        log = git("log", "--reverse", "--first-parent", "--format=%H %s", "HEAD")
+        # Earliest commit that ADDED the marker wins so a later re-add
+        # (delete then restore) can't move the baseline forward and hide
+        # work from the review diff. --diff-filter=A selects additions,
+        # --reverse puts the oldest first, --first-parent stays on
+        # mainline. Run before the root-commit fallback.
+        added = git(
+            "log", "--reverse", "--first-parent", "--diff-filter=A",
+            "--format=%H", "HEAD", "--", ACCEPT_MARKER_PATH,
+        )
+        # A failed marker query is history-unavailable, not "marker
+        # absent" -- return "none" (like the other git calls) so a
+        # transient git error doesn't silently degrade to the root
+        # fallback and make the skip warning misreport a structural cause.
+        if added.returncode != 0:
+            return None, "none"
+        for line in added.stdout.splitlines():
+            sha = line.strip()
+            if sha:
+                return sha, "accept"
+        # No commit added the marker (hand-created repo): fall back to
+        # the root commit for the best-effort review link.
+        log = git("log", "--reverse", "--first-parent", "--format=%H", "HEAD")
         if log.returncode != 0:
             return None, "none"
-        lines = [line for line in log.stdout.splitlines() if line.strip()]
-        if not lines:
-            return None, "none"
-        # Earliest match wins: a commit crafted later in history with
-        # the same subject can't move the baseline forward. (Today the
-        # accept commit is always position 1 -- the template-generate
-        # API squashes the starter into a single initial commit -- but
-        # scanning keeps this correct if the creation flow changes.)
-        for line in lines:
-            sha, _, subject = line.partition(" ")
-            if subject == ACCEPT_COMMIT_SUBJECT:
-                return sha, "accept"
-        return lines[0].partition(" ")[0], "root"
+        for line in log.stdout.splitlines():
+            sha = line.strip()
+            if sha:
+                return sha, "root"
+        return None, "none"
     except (OSError, subprocess.SubprocessError):
         return None, "none"
 
 
 def baseline_sha(workspace: pathlib.Path) -> str | None:
-    """SHA of the commit the student started from: the `gh student
-    accept` plumbing commit (matched via ACCEPT_COMMIT_SUBJECT) when
-    present, else the root commit. Returns None when history is
-    unavailable -- no git binary, no .git (actions/checkout's tarball
-    fallback in git-less containers), or an un-deepenable shallow
-    clone -- and the caller falls back to the commit view. Used for the
-    review compare link, which tolerates the root-commit fallback."""
+    """SHA the student started from: the accept commit (the commit that
+    introduced `.classroom50.yaml`) when present, else the root commit.
+    None when history is unavailable (no git, no .git, or an
+    un-deepenable shallow clone) and the caller falls back to the commit
+    view. Used for the review compare link, which tolerates the root
+    fallback."""
     return _baseline_scan(workspace)[0]
 
 
 def feedback_base_sha(workspace: pathlib.Path) -> str | None:
     """Trusted baseline for the Feedback PR's frozen base branch: the
-    `gh student accept` plumbing commit, or None. Unlike baseline_sha,
-    this does NOT fall back to the root commit -- the feedback base is
-    frozen into a long-lived branch and reviewed as authoritative, so an
-    unmatched accept commit (unusual/tampered history, or a future
-    creation flow) must skip the PR rather than freeze a wrong base."""
+    accept commit, or None. Unlike baseline_sha, never falls back to the
+    root commit -- the base is frozen into a long-lived branch, so an
+    unresolvable accept commit must skip the PR rather than freeze a
+    wrong base."""
     sha, source = _baseline_scan(workspace)
     return sha if source == "accept" else None
+
+
+def no_baseline_warning() -> str:
+    """The GitHub workflow annotation emitted when no trusted baseline
+    resolves and the Feedback PR step will skip. Kept as a pure helper
+    so the `::warning::` prefix (which routes it to GitHub's annotation
+    stream rather than a plain log line) is unit-testable -- a regression
+    in that prefix silently degrades the skip back into an unscannable
+    log line."""
+    return (
+        "::warning title=classroom50 Feedback PR::no trusted baseline "
+        f"found -- no commit in history added {ACCEPT_MARKER_PATH}, so the "
+        "Feedback PR step will skip. Was this repo created by an accept flow?"
+    )
 
 
 
@@ -1425,20 +1455,22 @@ def main() -> int:
         print("runner: no baseline commit found; review link falls back to the commit view")
 
     # Hand the baseline + graded SHAs to the workflow so the post-grade
-    # step can open/refresh the Feedback PR (issue #86) without
-    # recomputing git state. Emitted unconditionally and early so the
-    # step runs even when grading fails (teachers review failing work
-    # too). The step itself is the gate: it opens the PR only when the
-    # assignment opted in (feedback-pr) and there's a diff to show
-    # (baseline-sha != head-sha) -- mirroring review_url's compare-vs-
-    # commit choice. The Feedback PR base uses the *trusted* baseline
-    # (the matched accept commit, never the root-commit fallback): the
-    # base is frozen into a long-lived branch, so an unmatched baseline
-    # skips the PR rather than freezing a wrong/oversized base.
+    # step can open/refresh the Feedback PR without recomputing git
+    # state. Emitted unconditionally and early so the step runs even
+    # when grading fails (teachers review failing work too). The step
+    # itself is the gate: it opens the PR only when the assignment opted
+    # in (feedback-pr) and there's a diff (baseline-sha != head-sha).
+    # The Feedback PR base uses the *trusted* baseline (the accept
+    # commit, never the root-commit fallback): the base is frozen into a
+    # long-lived branch, so an unresolvable baseline skips the PR rather
+    # than freezing a wrong/oversized base.
     fb_base_sha = feedback_base_sha(workspace)
     append_sha_outputs(github_output, fb_base_sha, sha)
     if fb_base_sha is None:
-        print("runner: no trusted baseline (accept commit) found; Feedback PR step will skip")
+        # Visible annotation (not a plain log) so a skipped Feedback PR
+        # is diagnosable without reading raw job logs. A warning, not an
+        # error: the Feedback PR step is opt-in.
+        print(no_baseline_warning())
 
     print(
         f"runner: classroom={classroom!r} assignment={assignment!r} "

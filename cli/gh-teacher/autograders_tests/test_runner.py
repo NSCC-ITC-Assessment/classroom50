@@ -170,14 +170,28 @@ def _git(repo, *args):
     )
 
 
-def _make_repo(path, subjects):
-    """A real git repo with one commit per subject. Returns the SHAs
-    in commit order (oldest first)."""
+# The accept commit is identified by the file it adds
+# (ag.ACCEPT_MARKER_PATH), not its subject. The marker `"accept"` in a
+# `_make_repo` spec means "this commit adds the marker file"; everything
+# else is a plain commit touching an unrelated file.
+ACCEPT = "accept"
+
+
+def _make_repo(path, specs):
+    """A real git repo with one commit per spec. A spec of ACCEPT adds
+    `.classroom50.yaml` (the structural accept marker); any other value
+    is used as the commit subject and touches an unrelated file. Returns
+    the SHAs in commit order (oldest first)."""
     path.mkdir()
     _git(path, "init", "-q", "-b", "main")
     shas = []
-    for i, subject in enumerate(subjects):
-        (path / f"f{i}.txt").write_text(f"{i}\n")
+    for i, spec in enumerate(specs):
+        if spec == ACCEPT:
+            (path / ag.ACCEPT_MARKER_PATH).write_text("classroom: x\n")
+            subject = "Accept whatever/the-client-wants"
+        else:
+            (path / f"f{i}.txt").write_text(f"{i}\n")
+            subject = spec
         _git(path, "add", "-A")
         _git(path, "commit", "-q", "-m", subject)
         shas.append(_git(path, "rev-parse", "HEAD").stdout.strip())
@@ -185,44 +199,65 @@ def _make_repo(path, subjects):
 
 
 class TestBaselineSha:
-    def test_accept_shaped_history_baselines_at_accept_commit(self, tmp_path):
-        # Canonical history: template commit, accept plumbing commit,
-        # submissions. Baseline = accept commit so the plumbing files
-        # don't diff as student work.
+    def test_accept_marker_history_baselines_at_accept_commit(self, tmp_path):
+        # Canonical history: template commit, accept commit (adds
+        # .classroom50.yaml), submissions. Baseline = accept commit so
+        # the plumbing files don't diff as student work.
         shas = _make_repo(tmp_path / "repo", [
             "Initial commit",
-            ag.ACCEPT_COMMIT_SUBJECT,
+            ACCEPT,
             "Submit hello",
+            "Submit hello",
+        ])
+        assert ag.baseline_sha(tmp_path / "repo") == shas[1]
+
+    def test_accept_commit_subject_is_irrelevant(self, tmp_path):
+        # The baseline is found by the added .classroom50.yaml, NOT the
+        # commit subject. A repo whose accept commit carries an arbitrary
+        # subject (e.g. the web GUI's "Accept <classroom>/<assignment>")
+        # still baselines correctly -- _make_repo's ACCEPT spec already
+        # uses a non-CLI subject.
+        shas = _make_repo(tmp_path / "repo", [
+            "Initial commit",
+            ACCEPT,
             "Submit hello",
         ])
         assert ag.baseline_sha(tmp_path / "repo") == shas[1]
 
     def test_accept_commit_beyond_position_one_is_found(self, tmp_path):
-        # Today the accept commit is always second (template-generate
+        # Today the accept commit is usually second (template-generate
         # squashes the starter); the scan keeps working if a future
         # creation flow lands it later.
         shas = _make_repo(tmp_path / "repo", [
             "Initial commit",
             "Starter follow-up",
-            ag.ACCEPT_COMMIT_SUBJECT,
+            ACCEPT,
             "Submit hello",
         ])
         assert ag.baseline_sha(tmp_path / "repo") == shas[2]
 
-    def test_earliest_accept_subject_wins(self, tmp_path):
-        # A student commit reusing the accept subject later in history
-        # must not move the baseline forward (it would hide work from
-        # the review diff).
-        shas = _make_repo(tmp_path / "repo", [
-            "Initial commit",
-            ag.ACCEPT_COMMIT_SUBJECT,
-            "Submit hello",
-            ag.ACCEPT_COMMIT_SUBJECT,
-        ])
-        assert ag.baseline_sha(tmp_path / "repo") == shas[1]
+    def test_earliest_marker_add_wins(self, tmp_path):
+        # If a student deletes then re-adds .classroom50.yaml later in
+        # history, the EARLIEST add must win (a later re-add can't move
+        # the baseline forward and hide work from the review diff).
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        _git(repo, "init", "-q", "-b", "main")
+        (repo / "f0.txt").write_text("0\n")
+        _git(repo, "add", "-A"); _git(repo, "commit", "-q", "-m", "Initial commit")
+        # First add of the marker -- the real accept commit.
+        (repo / ag.ACCEPT_MARKER_PATH).write_text("classroom: x\n")
+        _git(repo, "add", "-A"); _git(repo, "commit", "-q", "-m", "Accept x/y")
+        accept_sha = _git(repo, "rev-parse", "HEAD").stdout.strip()
+        # Delete it, then re-add it -- a later re-add must NOT win.
+        _git(repo, "rm", "-q", ag.ACCEPT_MARKER_PATH)
+        _git(repo, "commit", "-q", "-m", "Submit (oops removed config)")
+        (repo / ag.ACCEPT_MARKER_PATH).write_text("classroom: x\n")
+        _git(repo, "add", "-A"); _git(repo, "commit", "-q", "-m", "Restore config")
+        assert ag.baseline_sha(repo) == accept_sha
 
     def test_hand_created_repo_baselines_at_root_commit(self, tmp_path):
-        # Hand-created repo without the accept commit -> root commit.
+        # Hand-created repo without the accept marker -> root commit.
         shas = _make_repo(tmp_path / "repo", [
             "Initial commit",
             "Submit hello",
@@ -244,7 +279,7 @@ class TestBaselineSha:
         # unshallow or the graft boundary would pose as the root.
         shas = _make_repo(tmp_path / "src", [
             "Initial commit",
-            ag.ACCEPT_COMMIT_SUBJECT,
+            ACCEPT,
             "Submit hello",
         ])
         clone = tmp_path / "clone"
@@ -258,18 +293,19 @@ class TestBaselineSha:
 
 class TestFeedbackBaseSha:
     # feedback_base_sha is the *trusted* baseline for the Feedback PR's
-    # frozen base branch: it returns the matched accept commit, and
-    # (unlike baseline_sha) does NOT fall back to the root commit.
-    def test_returns_accept_commit_when_matched(self, tmp_path):
+    # frozen base branch: it returns the accept commit (the commit that
+    # introduced .classroom50.yaml), and (unlike baseline_sha) does NOT
+    # fall back to the root commit.
+    def test_returns_accept_commit_when_marker_present(self, tmp_path):
         shas = _make_repo(tmp_path / "repo", [
             "Initial commit",
-            ag.ACCEPT_COMMIT_SUBJECT,
+            ACCEPT,
             "Submit hello",
         ])
         assert ag.feedback_base_sha(tmp_path / "repo") == shas[1]
 
-    def test_none_when_accept_commit_absent_no_root_fallback(self, tmp_path):
-        # A hand-created repo without the accept commit: baseline_sha
+    def test_none_when_marker_absent_no_root_fallback(self, tmp_path):
+        # A hand-created repo without the accept marker: baseline_sha
         # would fall back to the root, but feedback_base_sha must NOT —
         # freezing a wrong base into a long-lived branch is worse than
         # skipping the Feedback PR.
@@ -283,14 +319,84 @@ class TestFeedbackBaseSha:
         (tmp_path / "plain").mkdir()
         assert ag.feedback_base_sha(tmp_path / "plain") is None
 
-    def test_earliest_accept_subject_wins(self, tmp_path):
+    def test_earliest_marker_add_wins(self, tmp_path):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        _git(repo, "init", "-q", "-b", "main")
+        (repo / "f0.txt").write_text("0\n")
+        _git(repo, "add", "-A"); _git(repo, "commit", "-q", "-m", "Initial commit")
+        (repo / ag.ACCEPT_MARKER_PATH).write_text("classroom: x\n")
+        _git(repo, "add", "-A"); _git(repo, "commit", "-q", "-m", "Accept x/y")
+        accept_sha = _git(repo, "rev-parse", "HEAD").stdout.strip()
+        _git(repo, "rm", "-q", ag.ACCEPT_MARKER_PATH)
+        _git(repo, "commit", "-q", "-m", "Submit")
+        (repo / ag.ACCEPT_MARKER_PATH).write_text("classroom: x\n")
+        _git(repo, "add", "-A"); _git(repo, "commit", "-q", "-m", "Restore")
+        assert ag.feedback_base_sha(repo) == accept_sha
+
+
+class TestNoBaselineWarning:
+    # The Feedback-PR-skip message is a GitHub *workflow annotation*, not
+    # a plain log line -- the `::warning::` prefix is what routes it to
+    # the annotation stream so a skipped PR is diagnosable without
+    # scraping job logs. A regression in that prefix silently degrades it
+    # back to an unscannable log line, so pin the prefix and the content.
+    def test_is_a_github_warning_annotation(self):
+        assert ag.no_baseline_warning().startswith(
+            "::warning title=classroom50 Feedback PR::"
+        )
+
+    def test_names_the_marker_path(self):
+        # The message must name the missing marker so the reader knows
+        # *why* no baseline resolved.
+        assert ag.ACCEPT_MARKER_PATH in ag.no_baseline_warning()
+
+    def test_is_a_single_line(self):
+        # An embedded newline would split the annotation, breaking the
+        # `::warning::` parse and the diagnosability the prefix buys.
+        assert "\n" not in ag.no_baseline_warning()
+
+
+class TestBaselineScanSource:
+    # _baseline_scan returns (sha, source); source drives feedback_base_sha
+    # (only "accept" is trusted). These pin the source discriminator
+    # directly rather than only through feedback_base_sha.
+    def test_accept_marker_source_is_accept(self, tmp_path):
         shas = _make_repo(tmp_path / "repo", [
             "Initial commit",
-            ag.ACCEPT_COMMIT_SUBJECT,
+            ACCEPT,
             "Submit hello",
-            ag.ACCEPT_COMMIT_SUBJECT,
         ])
-        assert ag.feedback_base_sha(tmp_path / "repo") == shas[1]
+        assert ag._baseline_scan(tmp_path / "repo") == (shas[1], "accept")
+
+    def test_no_marker_source_is_root(self, tmp_path):
+        shas = _make_repo(tmp_path / "repo", [
+            "Initial commit",
+            "Submit hello",
+        ])
+        assert ag._baseline_scan(tmp_path / "repo") == (shas[0], "root")
+
+    def test_failed_marker_query_yields_none_not_root(self, tmp_path, monkeypatch):
+        # A *failed* marker query (transient git error) must surface as
+        # "none" (history unavailable), NOT silently degrade to the root
+        # fallback -- otherwise feedback_base_sha would skip with a
+        # warning that wrongly blames a missing accept commit. Make only
+        # the --diff-filter=A marker query fail; let other git calls pass.
+        shas = _make_repo(tmp_path / "repo", [
+            "Initial commit",
+            ACCEPT,
+            "Submit hello",
+        ])
+        real_run = subprocess.run
+
+        def fake_run(cmd, *args, **kwargs):
+            if isinstance(cmd, (list, tuple)) and "--diff-filter=A" in cmd:
+                return subprocess.CompletedProcess(cmd, 128, stdout="", stderr="boom")
+            return real_run(cmd, *args, **kwargs)
+
+        monkeypatch.setattr(ag.subprocess, "run", fake_run)
+        assert ag._baseline_scan(tmp_path / "repo") == (None, "none")
+        assert ag.feedback_base_sha(tmp_path / "repo") is None
 
 
 # ---------------------------------------------------------------------------

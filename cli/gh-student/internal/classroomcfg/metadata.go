@@ -22,6 +22,14 @@ import (
 
 // MetadataPath: in-repo path read by both the student CLI and the
 // autograde-runner workflow's bootstrap step.
+//
+// It also serves as the runner's accept-commit marker: the runner
+// resolves the Feedback-PR baseline as "the commit that introduced
+// .classroom50.yaml", not by matching the commit subject. Every accept
+// client (this CLI, the web GUI, any future client) MUST create this
+// file in its accept commit; the commit subject carries no contract.
+// Mirrored runner-side as runner.ACCEPT_MARKER_PATH
+// (cli/gh-teacher/skeleton/dotgithub/scripts/runner.py).
 const MetadataPath = ".classroom50.yaml"
 
 // AutogradeWorkflowPath: in-repo destination for the autograde shim
@@ -64,7 +72,10 @@ func Render(cfg Config) ([]byte, error) {
 }
 
 // DropFiles commits `.classroom50.yaml` + the autograde workflow in one
-// Tree commit so the repo's initial shape lands atomically.
+// Tree commit so the repo's initial shape lands atomically. This is the
+// accept commit; creating `.classroom50.yaml` here is what the runner
+// uses to resolve the Feedback-PR baseline (see MetadataPath). The
+// commit message is human-readable only and can be reworded freely.
 // WaitForStableBranch polls first because GitHub doesn't propagate the
 // post-templated-repo commit ref synchronously (the contents API briefly
 // returns 409 "Git Repository is empty" otherwise).
