@@ -172,6 +172,26 @@ func TestSoftWrap(t *testing.T) {
 	}
 }
 
+// TestUI_Spinner_NonTTYDelegates verifies the UI.Spinner helper returns
+// the shared ghui spinner bound to the UI's writer. A buffer-backed UI is
+// non-TTY, so the spinner takes its plain fallback (no cursor escapes).
+func TestUI_Spinner_NonTTYDelegates(t *testing.T) {
+	var buf bytes.Buffer
+	sp := NewForced(&buf, false).Spinner("Waiting")
+	if sp.Active() {
+		t.Fatal("a buffer-backed UI spinner must not be active (non-TTY)")
+	}
+	sp.Start()
+	sp.Stop("Waiting")
+	got := buf.String()
+	if strings.Contains(got, "\x1b[") || strings.Contains(got, "\r") {
+		t.Errorf("non-TTY spinner must not emit escapes or carriage returns:\n%q", got)
+	}
+	if !strings.Contains(got, "Waiting...") || !strings.Contains(got, "Waiting done") {
+		t.Errorf("non-TTY spinner should print plain start/done lines:\n%q", got)
+	}
+}
+
 func TestDisplayLen_IgnoresANSI(t *testing.T) {
 	plain := "hello"
 	colored := ansiGreen + "hello" + ansiReset

@@ -301,18 +301,18 @@ func preflightFailError(res preflightResult) error {
 // used both by --dry-run (to describe the plan) and by the progress
 // headers. Kept as one list so the count and order can't drift.
 var initStepLabels = []string{
-	"Org member-privilege lockdown",
-	"GitHub Actions enablement (org)",
-	"Actions pull-request permission (org)",
-	"Branch rulesets (Feedback PR protections)",
-	"Config repo (create or reuse)",
-	"Repo Actions enablement",
-	"Skeleton commit",
-	"GitHub Pages",
-	"Branch protection",
-	"Workflow permissions",
-	"Reusable-workflow access",
-	"Service-token secret",
+	"Locking down org member privileges",
+	"Enabling GitHub Actions (org)",
+	"Allowing Actions to create pull requests (org)",
+	"Installing branch rulesets (Feedback PR protections)",
+	"Creating the config repo",
+	"Enabling repo-level Actions",
+	"Committing the skeleton workflows",
+	"Enabling GitHub Pages",
+	"Protecting the default branch",
+	"Setting workflow permissions",
+	"Granting reusable-workflow access",
+	"Storing the service-token secret",
 }
 
 // renderDryRunSteps prints the ordered list of steps init would perform,

@@ -7,8 +7,10 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/foundation50/gh-student/internal/assignments"
+	"github.com/foundation50/gh-student/internal/ui"
 )
 
 func TestCreateTemplatedPrivateAssignmentRepoInOrg(t *testing.T) {
@@ -38,7 +40,7 @@ func TestCreateTemplatedPrivateAssignmentRepoInOrg(t *testing.T) {
 		client := newTestRESTClient(t, server)
 
 		var out bytes.Buffer
-		htmlURL, fullName, already, err := createTemplatedPrivateAssignmentRepoInOrg(client, &out, "alice", "cs-principles", "hello", "o", tmpl)
+		htmlURL, fullName, already, err := createTemplatedPrivateAssignmentRepoInOrg(client, ui.NewForced(&out, false), false, "alice", "cs-principles", "hello", "o", tmpl)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -75,7 +77,7 @@ func TestCreateTemplatedPrivateAssignmentRepoInOrg(t *testing.T) {
 		client := newTestRESTClient(t, server)
 
 		var out bytes.Buffer
-		_, fullName, already, err := createTemplatedPrivateAssignmentRepoInOrg(client, &out, "alice", "cs-principles", "hello", "o", tmpl)
+		_, fullName, already, err := createTemplatedPrivateAssignmentRepoInOrg(client, ui.NewForced(&out, false), false, "alice", "cs-principles", "hello", "o", tmpl)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -100,7 +102,7 @@ func TestCreateTemplatedPrivateAssignmentRepoInOrg(t *testing.T) {
 		client := newTestRESTClient(t, server)
 
 		var out bytes.Buffer
-		_, _, _, err := createTemplatedPrivateAssignmentRepoInOrg(client, &out, "alice", "cs-principles", "hello", "o", tmpl)
+		_, _, _, err := createTemplatedPrivateAssignmentRepoInOrg(client, ui.NewForced(&out, false), false, "alice", "cs-principles", "hello", "o", tmpl)
 		if err == nil || !strings.Contains(err.Error(), "not accessible to you") {
 			t.Fatalf("err = %v, want the cross-org 'not accessible' message", err)
 		}
@@ -136,7 +138,7 @@ func TestCreateEmptyPrivateAssignmentRepoInOrg(t *testing.T) {
 		client := newTestRESTClient(t, server)
 
 		var out bytes.Buffer
-		htmlURL, fullName, branch, already, err := createEmptyPrivateAssignmentRepoInOrg(client, &out, "alice", "cs-principles", "solo", "o")
+		htmlURL, fullName, branch, already, err := createEmptyPrivateAssignmentRepoInOrg(client, ui.NewForced(&out, false), false, "alice", "cs-principles", "solo", "o")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -177,7 +179,7 @@ func TestCreateEmptyPrivateAssignmentRepoInOrg(t *testing.T) {
 		client := newTestRESTClient(t, server)
 
 		var out bytes.Buffer
-		_, _, branch, _, err := createEmptyPrivateAssignmentRepoInOrg(client, &out, "alice", "cs-principles", "solo", "o")
+		_, _, branch, _, err := createEmptyPrivateAssignmentRepoInOrg(client, ui.NewForced(&out, false), false, "alice", "cs-principles", "solo", "o")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -209,7 +211,7 @@ func TestCreateEmptyPrivateAssignmentRepoInOrg(t *testing.T) {
 		client := newTestRESTClient(t, server)
 
 		var out bytes.Buffer
-		_, fullName, branch, already, err := createEmptyPrivateAssignmentRepoInOrg(client, &out, "alice", "cs-principles", "solo", "o")
+		_, fullName, branch, already, err := createEmptyPrivateAssignmentRepoInOrg(client, ui.NewForced(&out, false), false, "alice", "cs-principles", "solo", "o")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -224,6 +226,325 @@ func TestCreateEmptyPrivateAssignmentRepoInOrg(t *testing.T) {
 		}
 		if fullName != "o/cs-principles-solo-alice" {
 			t.Errorf("fullName = %q, want the existing repo from the follow-up GET", fullName)
+		}
+	})
+}
+
+// repoFileExists underpins the self-healing branch (probe
+// .classroom50.yaml on an already-existing repo) and the post-provision
+// verification. 200 -> true, 404 -> false, other statuses -> error.
+func TestRepoFileExists(t *testing.T) {
+	cases := []struct {
+		name    string
+		status  int
+		want    bool
+		wantErr bool
+	}{
+		{"present (200)", http.StatusOK, true, false},
+		{"missing (404)", http.StatusNotFound, false, false},
+		{"transient (500) propagates", http.StatusInternalServerError, false, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			mux := http.NewServeMux()
+			mux.HandleFunc("/repos/o/r/contents/.classroom50.yaml", func(w http.ResponseWriter, _ *http.Request) {
+				if tc.status == http.StatusOK {
+					_ = json.NewEncoder(w).Encode(map[string]any{"type": "file", "name": ".classroom50.yaml"})
+					return
+				}
+				w.WriteHeader(tc.status)
+			})
+			server := httptest.NewServer(mux)
+			t.Cleanup(server.Close)
+			client := newTestRESTClient(t, server)
+
+			got, err := repoFileExists(client, "o", "r", ".classroom50.yaml")
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected an error for status %d, got nil", tc.status)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tc.want {
+				t.Errorf("repoFileExists = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// verifyProvisioned passes when the accept marker (.classroom50.yaml) is
+// readable. DropFiles lands it and the autograde workflow in one atomic
+// Tree commit, so the marker's presence implies the workflow's; checking
+// the marker alone is the contract. The read-back polls through the
+// contents API's post-commit consistency lag, so a marker that is missing
+// on the first read but present on a retry succeeds; a persistently
+// missing marker fails with an actionable re-run hint.
+func TestVerifyProvisioned(t *testing.T) {
+	const repo = "cs-principles-hello-alice"
+
+	// Shrink the backoff so the retry-path tests stay fast.
+	origBackoff := verifyProvisionBackoff
+	verifyProvisionBackoff = time.Millisecond
+	t.Cleanup(func() { verifyProvisionBackoff = origBackoff })
+
+	t.Run("marker present -> ok", func(t *testing.T) {
+		mux := http.NewServeMux()
+		mux.HandleFunc("/repos/o/"+repo+"/contents/.classroom50.yaml", func(w http.ResponseWriter, _ *http.Request) {
+			_ = json.NewEncoder(w).Encode(map[string]any{"type": "file"})
+		})
+		server := httptest.NewServer(mux)
+		t.Cleanup(server.Close)
+		if err := verifyProvisioned(newTestRESTClient(t, server), "o", repo); err != nil {
+			t.Fatalf("verifyProvisioned: unexpected error: %v", err)
+		}
+	})
+
+	t.Run("marker 404 on first read then present -> ok (rides out contents lag)", func(t *testing.T) {
+		var calls int
+		mux := http.NewServeMux()
+		mux.HandleFunc("/repos/o/"+repo+"/contents/.classroom50.yaml", func(w http.ResponseWriter, _ *http.Request) {
+			calls++
+			if calls < 2 {
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"type": "file"})
+		})
+		server := httptest.NewServer(mux)
+		t.Cleanup(server.Close)
+		if err := verifyProvisioned(newTestRESTClient(t, server), "o", repo); err != nil {
+			t.Fatalf("verifyProvisioned should retry past a transient 404, got: %v", err)
+		}
+		if calls < 2 {
+			t.Errorf("expected a retry after the first 404, got %d call(s)", calls)
+		}
+	})
+
+	t.Run("marker persistently missing -> error with re-run hint", func(t *testing.T) {
+		mux := http.NewServeMux()
+		mux.HandleFunc("/repos/o/"+repo+"/contents/.classroom50.yaml", func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusNotFound)
+		})
+		server := httptest.NewServer(mux)
+		t.Cleanup(server.Close)
+		err := verifyProvisioned(newTestRESTClient(t, server), "o", repo)
+		if err == nil {
+			t.Fatal("expected an error when the accept marker is persistently missing, got nil")
+		}
+		if !strings.Contains(err.Error(), "re-run") {
+			t.Errorf("error should carry a re-run hint, got: %v", err)
+		}
+	})
+}
+
+// TestAcceptIntoRepo_SelfHealFork is the end-to-end test of accept's
+// headline self-healing behavior — the fork the code review flagged as
+// uncovered. It exercises acceptIntoRepo (the post-create tail of
+// acceptAssignment, split out so it can be driven without the up-front
+// Pages fetch) against an httptest GitHub server, asserting both
+// branches: an already-provisioned repo is left untouched, and a
+// half-provisioned one is repaired by re-running the idempotent
+// provisioning.
+func TestAcceptIntoRepo_SelfHealFork(t *testing.T) {
+	const (
+		org      = "o"
+		repoName = "cs-principles-hello-alice"
+	)
+	markerPath := "/repos/" + org + "/" + repoName + "/contents/.classroom50.yaml"
+
+	// Keep the verify-poll fast if the heal path reaches it.
+	origBackoff := verifyProvisionBackoff
+	verifyProvisionBackoff = time.Millisecond
+	t.Cleanup(func() { verifyProvisionBackoff = origBackoff })
+
+	baseParams := func() acceptRepoParams {
+		var errBuf bytes.Buffer
+		return acceptRepoParams{
+			org:            org,
+			classroom:      "cs-principles",
+			assignment:     "hello",
+			username:       "alice",
+			repoName:       repoName,
+			branch:         "main",
+			shim:           "shim-content",
+			autograderName: "default",
+			fullName:       org + "/" + repoName,
+			htmlURL:        "https://github.com/" + org + "/" + repoName,
+			alreadyExisted: true,
+			// A buffer-backed spinner is non-active (non-TTY), matching a
+			// piped/CI run; Start/Stop just emit plain lines.
+			createSp:  ui.NewForced(&errBuf, false).Spinner("Creating"),
+			createMsg: "Creating",
+		}
+	}
+
+	t.Run("already accepted (marker present) -> untouched, no provisioning", func(t *testing.T) {
+		var collaboratorPut, treeWrite bool
+		mux := http.NewServeMux()
+		mux.HandleFunc(markerPath, func(w http.ResponseWriter, _ *http.Request) {
+			_ = json.NewEncoder(w).Encode(map[string]any{"type": "file"})
+		})
+		// Any provisioning call here is a bug — the repo is already done.
+		mux.HandleFunc("/repos/"+org+"/"+repoName+"/collaborators/alice", func(w http.ResponseWriter, _ *http.Request) {
+			collaboratorPut = true
+			w.WriteHeader(http.StatusNoContent)
+		})
+		mux.HandleFunc("/repos/"+org+"/"+repoName+"/git/trees", func(w http.ResponseWriter, _ *http.Request) {
+			treeWrite = true
+			_ = json.NewEncoder(w).Encode(map[string]string{"sha": "t"})
+		})
+		server := httptest.NewServer(mux)
+		t.Cleanup(server.Close)
+
+		var out bytes.Buffer
+		err := acceptIntoRepo(newTestRESTClient(t, server), ui.NewForced(&out, false), false, &out, baseParams())
+		if err != nil {
+			t.Fatalf("acceptIntoRepo: unexpected error: %v", err)
+		}
+		if collaboratorPut || treeWrite {
+			t.Errorf("an already-provisioned repo must be left untouched (collaboratorPut=%v treeWrite=%v)", collaboratorPut, treeWrite)
+		}
+		if !strings.Contains(out.String(), "already accepted") {
+			t.Errorf("expected an already-accepted report on stdout:\n%s", out.String())
+		}
+	})
+
+	t.Run("half-provisioned (marker missing) -> re-provisions and repairs", func(t *testing.T) {
+		var (
+			markerReads     int
+			collaboratorPut bool
+			treeWrite       bool
+			refPatched      bool
+		)
+		mux := http.NewServeMux()
+		// Marker: absent until the heal commit lands, present afterward.
+		mux.HandleFunc(markerPath, func(w http.ResponseWriter, _ *http.Request) {
+			markerReads++
+			if refPatched {
+				_ = json.NewEncoder(w).Encode(map[string]any{"type": "file"})
+				return
+			}
+			w.WriteHeader(http.StatusNotFound)
+		})
+		// Provisioning: admin grant.
+		mux.HandleFunc("/repos/"+org+"/"+repoName+"/collaborators/alice", func(w http.ResponseWriter, _ *http.Request) {
+			collaboratorPut = true
+			w.WriteHeader(http.StatusNoContent)
+		})
+		// Provisioning: DropFiles -> WaitForStableBranch (stable SHA),
+		// then the Tree-commit dance.
+		mux.HandleFunc("/repos/"+org+"/"+repoName+"/branches/main", func(w http.ResponseWriter, _ *http.Request) {
+			_ = json.NewEncoder(w).Encode(map[string]any{"commit": map[string]any{"sha": "stable"}})
+		})
+		mux.HandleFunc("/repos/"+org+"/"+repoName+"/git/refs/heads/main", func(w http.ResponseWriter, r *http.Request) {
+			switch r.Method {
+			case http.MethodGet:
+				_ = json.NewEncoder(w).Encode(map[string]any{"object": map[string]string{"sha": "parent"}})
+			case http.MethodPatch:
+				refPatched = true
+				w.WriteHeader(http.StatusOK)
+			}
+		})
+		mux.HandleFunc("/repos/"+org+"/"+repoName+"/git/commits/parent", func(w http.ResponseWriter, _ *http.Request) {
+			_ = json.NewEncoder(w).Encode(map[string]any{"tree": map[string]string{"sha": "parent-tree"}})
+		})
+		mux.HandleFunc("/repos/"+org+"/"+repoName+"/git/blobs", func(w http.ResponseWriter, _ *http.Request) {
+			_ = json.NewEncoder(w).Encode(map[string]string{"sha": "blob"})
+		})
+		mux.HandleFunc("/repos/"+org+"/"+repoName+"/git/trees", func(w http.ResponseWriter, _ *http.Request) {
+			treeWrite = true
+			_ = json.NewEncoder(w).Encode(map[string]string{"sha": "tree"})
+		})
+		mux.HandleFunc("/repos/"+org+"/"+repoName+"/git/commits", func(w http.ResponseWriter, _ *http.Request) {
+			_ = json.NewEncoder(w).Encode(map[string]string{"sha": "commit"})
+		})
+		server := httptest.NewServer(mux)
+		t.Cleanup(server.Close)
+
+		var out bytes.Buffer
+		err := acceptIntoRepo(newTestRESTClient(t, server), ui.NewForced(&out, false), false, &out, baseParams())
+		if err != nil {
+			t.Fatalf("acceptIntoRepo (heal): unexpected error: %v", err)
+		}
+		if !collaboratorPut || !treeWrite || !refPatched {
+			t.Errorf("heal path must re-provision (collaboratorPut=%v treeWrite=%v refPatched=%v)", collaboratorPut, treeWrite, refPatched)
+		}
+		// The marker is probed for the fork decision (1) and again by the
+		// post-provision verifyProvisioned (>=1), so it must be read more
+		// than once.
+		if markerReads < 2 {
+			t.Errorf("expected the marker to be re-read after provisioning, got %d read(s)", markerReads)
+		}
+		if !strings.Contains(out.String(), "already accepted") {
+			t.Errorf("a healed already-existing repo still reports already-accepted:\n%s", out.String())
+		}
+	})
+
+	t.Run("freshly created (not alreadyExisted) -> provisions and reports accepted", func(t *testing.T) {
+		var (
+			collaboratorPut bool
+			treeWrite       bool
+			refPatched      bool
+		)
+		mux := http.NewServeMux()
+		// Fresh create skips the fork's marker probe; the marker is only
+		// read by the post-provision verifyProvisioned, and must be
+		// present (the commit just landed it).
+		mux.HandleFunc(markerPath, func(w http.ResponseWriter, _ *http.Request) {
+			_ = json.NewEncoder(w).Encode(map[string]any{"type": "file"})
+		})
+		mux.HandleFunc("/repos/"+org+"/"+repoName+"/collaborators/alice", func(w http.ResponseWriter, _ *http.Request) {
+			collaboratorPut = true
+			w.WriteHeader(http.StatusNoContent)
+		})
+		mux.HandleFunc("/repos/"+org+"/"+repoName+"/branches/main", func(w http.ResponseWriter, _ *http.Request) {
+			_ = json.NewEncoder(w).Encode(map[string]any{"commit": map[string]any{"sha": "stable"}})
+		})
+		mux.HandleFunc("/repos/"+org+"/"+repoName+"/git/refs/heads/main", func(w http.ResponseWriter, r *http.Request) {
+			switch r.Method {
+			case http.MethodGet:
+				_ = json.NewEncoder(w).Encode(map[string]any{"object": map[string]string{"sha": "parent"}})
+			case http.MethodPatch:
+				refPatched = true
+				w.WriteHeader(http.StatusOK)
+			}
+		})
+		mux.HandleFunc("/repos/"+org+"/"+repoName+"/git/commits/parent", func(w http.ResponseWriter, _ *http.Request) {
+			_ = json.NewEncoder(w).Encode(map[string]any{"tree": map[string]string{"sha": "parent-tree"}})
+		})
+		mux.HandleFunc("/repos/"+org+"/"+repoName+"/git/blobs", func(w http.ResponseWriter, _ *http.Request) {
+			_ = json.NewEncoder(w).Encode(map[string]string{"sha": "blob"})
+		})
+		mux.HandleFunc("/repos/"+org+"/"+repoName+"/git/trees", func(w http.ResponseWriter, _ *http.Request) {
+			treeWrite = true
+			_ = json.NewEncoder(w).Encode(map[string]string{"sha": "tree"})
+		})
+		mux.HandleFunc("/repos/"+org+"/"+repoName+"/git/commits", func(w http.ResponseWriter, _ *http.Request) {
+			_ = json.NewEncoder(w).Encode(map[string]string{"sha": "commit"})
+		})
+		server := httptest.NewServer(mux)
+		t.Cleanup(server.Close)
+
+		p := baseParams()
+		p.alreadyExisted = false
+		var out bytes.Buffer
+		err := acceptIntoRepo(newTestRESTClient(t, server), ui.NewForced(&out, false), false, &out, p)
+		if err != nil {
+			t.Fatalf("acceptIntoRepo (fresh): unexpected error: %v", err)
+		}
+		if !collaboratorPut || !treeWrite || !refPatched {
+			t.Errorf("fresh path must provision (collaboratorPut=%v treeWrite=%v refPatched=%v)", collaboratorPut, treeWrite, refPatched)
+		}
+		// A first-time accept reports "Assignment accepted:", NOT the
+		// "already accepted" wording the alreadyExisted branches use.
+		if !strings.Contains(out.String(), "Assignment accepted:") {
+			t.Errorf("a fresh accept should report 'Assignment accepted:':\n%s", out.String())
+		}
+		if strings.Contains(out.String(), "already accepted") {
+			t.Errorf("a fresh accept must not use the already-accepted wording:\n%s", out.String())
 		}
 	})
 }

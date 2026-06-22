@@ -7,10 +7,9 @@ package ui
 import (
 	"fmt"
 	"io"
-	"os"
 	"strings"
 
-	"github.com/foundation50/classroom50-cli-shared/ghauth"
+	"github.com/foundation50/classroom50-cli-shared/ghui"
 )
 
 // UI renders the human channel. Styling (ANSI color + box-drawing) is
@@ -58,28 +57,17 @@ func NewForced(w io.Writer, color bool) *UI {
 	return &UI{w: w, color: color, tty: color}
 }
 
-// detectTTY reports whether w is an interactive terminal (only os.Stderr
-// is eligible — the human channel). Independent of color so that
-// NO_COLOR still allows in-place progress on a real terminal.
+// detectTTY reports whether w is an interactive terminal, via the shared
+// ghui.IsStderrTTY. Kept separate from color so NO_COLOR still allows
+// in-place progress on a real terminal.
 func detectTTY(w io.Writer) bool {
-	if w != io.Writer(os.Stderr) {
-		return false
-	}
-	return ghauth.IsCharDevice(os.Stderr)
+	return ghui.IsStderrTTY(w)
 }
 
-// detectColor reports whether color should be emitted to w. Only os.Stderr
-// is eligible (the human channel); any other writer is treated as a
-// capture/redirect and gets plain output. NO_COLOR (the de-facto standard)
-// and CLASSROOM50_NO_COLOR both force plain.
+// detectColor reports whether to emit color, via the shared ghui.UseColor
+// (so the policy stays identical across both CLIs and the spinner).
 func detectColor(w io.Writer) bool {
-	if os.Getenv("NO_COLOR") != "" || os.Getenv("CLASSROOM50_NO_COLOR") != "" {
-		return false
-	}
-	if w != io.Writer(os.Stderr) {
-		return false
-	}
-	return ghauth.IsCharDevice(os.Stderr)
+	return ghui.UseColor(w)
 }
 
 // paint wraps s in an SGR code when color is on; otherwise returns s
@@ -118,6 +106,12 @@ type Progress struct {
 
 func (u *UI) NewProgress(total int) *Progress {
 	return &Progress{u: u, total: total}
+}
+
+// Spinner returns a live single-line spinner for a long-running step,
+// backed by the shared ghui spinner so both CLIs animate identically.
+func (u *UI) Spinner(message string) *ghui.Spinner {
+	return ghui.NewSpinner(u.w, message)
 }
 
 // Active reports whether the progress line actually renders (TTY only).

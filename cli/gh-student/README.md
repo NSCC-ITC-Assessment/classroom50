@@ -79,6 +79,7 @@ single-command package, or `New<Name>Cmd()` for the auth group — registered by
 - `internal/identity` — the submit-commit git author/committer identity (`GitIdentity`/`Fetch`).
 - `internal/reponame` — the canonical `<classroom>-<assignment>-<username>` repo-name formula (`Name`/`Prefix`), the cross-binary contract shared with gh-teacher's `download.go` and `runner.py`.
 - `internal/localgit` — `CurrentGitRoot`, the local-git-tree nested-clone guard.
+- `internal/ui` — the human-channel renderer (always stderr): TTY-gated color, the `Warn`/`Detail` helpers, and the long-running `Spinner` (a thin constructor over the shared `ghui` spinner). Color/TTY policy is delegated to `ghui` so it stays identical to gh-teacher and the shared spinner. Machine-stable output stays on stdout; this package never touches it.
 
 **`accept.go` stays in `package main` at the module root** — it embeds the universal autograder shim (`//go:embed embed/autograde-shim.yaml`), and `//go:embed` cannot reference a directory outside the embedding file's own (`package main` is also unimportable from `internal/*`). So the accept command, which embeds and writes that shim, is the principled terminus of the extraction, not unfinished work. Moving the embed tree into `internal/*` is a deliberate non-goal — see [the captured learning](../../docs/solutions/architecture-patterns/embed-terminus-and-build-as-oracle-in-go-package-extraction.md). `accept.go` consumes the seams above like every other command.
 

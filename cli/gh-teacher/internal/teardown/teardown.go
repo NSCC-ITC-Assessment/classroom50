@@ -21,6 +21,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/foundation50/classroom50-cli-shared/ghui"
 	"github.com/foundation50/gh-teacher/internal/cliutil"
 	"github.com/foundation50/gh-teacher/internal/configrepo"
 	"github.com/foundation50/gh-teacher/internal/githubapi"
@@ -111,25 +112,63 @@ func runTeardown(client githubapi.Client, in io.Reader, out, errOut io.Writer, o
 		}
 	}
 
-	// classroom50 last — see the function doc.
+	// classroom50 last — see the function doc. The per-DELETE loop is the
+	// long-running phase; drive a spinner. When animating, suppress the
+	// per-repo "deleted:" stdout lines (the summary below is always
+	// printed regardless).
 	ordered := orderRepoDeletions(repos)
 	deleted, failed, markerPreserved := 0, 0, false
-	for _, name := range ordered {
+	sp := ghui.NewSpinner(errOut, fmt.Sprintf("Deleting %d repo(s) in %s", len(ordered), org))
+	animate := sp.Active()
+	if animate {
+		sp.Start()
+	}
+	// The ticker goroutine rewrites the live line on errOut every frame,
+	// so writing per-repo skipped/failed lines to errOut mid-loop would
+	// be clobbered by the next \r — erasing the failure list. Buffer them
+	// while animating and flush after the spinner finalizes; on a non-TTY
+	// (no ticker) write immediately.
+	var deferredDetail []string
+	emitDetail := func(format string, a ...any) {
+		line := fmt.Sprintf(format, a...)
+		if animate {
+			deferredDetail = append(deferredDetail, line)
+			return
+		}
+		_, _ = fmt.Fprint(errOut, line)
+	}
+	for i, name := range ordered {
+		if animate {
+			sp.Update(fmt.Sprintf("Deleting repos in %s (%d/%d)", org, i+1, len(ordered)))
+		}
 		// Preserve the marker repo when any earlier delete
 		// failed — re-running teardown still passes
 		// requireConfigRepo and can retry the survivors.
 		if name == configrepo.ConfigRepoName && failed > 0 {
 			markerPreserved = true
-			_, _ = fmt.Fprintf(errOut, "  skipped: %s/%s preserved so a re-run can retry the failed deletions above\n", org, name)
+			emitDetail("  skipped: %s/%s preserved so a re-run can retry the failed deletions above\n", org, name)
 			continue
 		}
 		if err := deleteRepo(client, org, name); err != nil {
 			failed++
-			_, _ = fmt.Fprintf(errOut, "  failed:  %s/%s: %v\n", org, name, err)
+			emitDetail("  failed:  %s/%s: %v\n", org, name, err)
 			continue
 		}
 		deleted++
-		_, _ = fmt.Fprintf(out, "  deleted: %s/%s\n", org, name)
+		if !animate {
+			_, _ = fmt.Fprintf(out, "  deleted: %s/%s\n", org, name)
+		}
+	}
+	if animate {
+		if failed > 0 {
+			sp.Fail(fmt.Sprintf("Deleted %d repo(s), %d failed", deleted, failed))
+		} else {
+			sp.Stop(fmt.Sprintf("Deleted %d repo(s)", deleted))
+		}
+		// Ticker stopped — safe to flush the buffered detail lines now.
+		for _, line := range deferredDetail {
+			_, _ = fmt.Fprint(errOut, line)
+		}
 	}
 
 	summary := fmt.Sprintf("\nTeardown of %s: %d deleted, %d failed", org, deleted, failed)

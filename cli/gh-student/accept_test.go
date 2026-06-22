@@ -8,7 +8,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/foundation50/gh-student/internal/reponame"
+	"github.com/foundation50/gh-student/internal/ui"
 )
 
 // TestCheckAcceptableMode pins the lifted accept seam: group is now
@@ -45,12 +45,11 @@ func TestCheckAcceptableMode(t *testing.T) {
 // `gh student invite`, so assert the exact PUT path and request body.
 func TestInviteUserAsAdmin(t *testing.T) {
 	const (
-		org        = "cs50"
-		classroom  = "cs50-fall-2026"
-		assignment = "hello"
-		username   = "alice"
+		org      = "cs50"
+		repoName = "cs50-fall-2026-hello-alice"
+		username = "alice"
 	)
-	wantPath := "/repos/" + org + "/" + reponame.Name(classroom, assignment, username) + "/collaborators/" + username
+	wantPath := "/repos/" + org + "/" + repoName + "/collaborators/" + username
 
 	var gotPath, gotMethod string
 	var gotBody map[string]any
@@ -65,7 +64,7 @@ func TestInviteUserAsAdmin(t *testing.T) {
 	client := newTestRESTClient(t, server)
 
 	var out bytes.Buffer
-	if err := inviteUserAsAdmin(client, &out, username, classroom, assignment, org); err != nil {
+	if err := inviteUserAsAdmin(client, ui.NewForced(&out, false), false, username, org, repoName); err != nil {
 		t.Fatalf("inviteUserAsAdmin returned error: %v", err)
 	}
 

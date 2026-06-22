@@ -10,15 +10,18 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/foundation50/classroom50-cli-shared/contract"
+	"github.com/foundation50/classroom50-cli-shared/ghui"
 	"github.com/foundation50/gh-student/internal/assignments"
 	"github.com/foundation50/gh-student/internal/classroomcfg"
 	"github.com/foundation50/gh-student/internal/githubapi"
 	"github.com/foundation50/gh-student/internal/localgit"
 	"github.com/foundation50/gh-student/internal/reponame"
+	"github.com/foundation50/gh-student/internal/ui"
 )
 
 // embeddedShimContent is the universal autograder shim — the same
@@ -84,9 +87,14 @@ func acceptCmd() *cobra.Command {
 			"After creating the repo, the student is added as an `admin`\n" +
 			"collaborator (so they can manage collaborators for group\n" +
 			"assignments), and `.classroom50.yaml` and the autograde\n" +
-			"workflow are written in a single Tree commit. Re-running on an\n" +
-			"already-accepted assignment short-circuits without touching the\n" +
-			"existing repo.",
+			"workflow are written in a single Tree commit, then verified.\n\n" +
+			"Re-running is safe and self-healing: an already-accepted repo\n" +
+			"that is fully provisioned is left untouched, but one whose\n" +
+			"setup never finished (a prior run interrupted after the repo\n" +
+			"was created but before the control files landed) is repaired by\n" +
+			"re-running the idempotent provisioning. accept only reports\n" +
+			"success once both control files are confirmed present, so an\n" +
+			"\"accepted\" repo always autogrades.",
 		Example: "  gh student accept cs50 cs50-fall-2026 hello\n",
 		Args:    cobra.ExactArgs(3),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -105,6 +113,7 @@ func acceptCmd() *cobra.Command {
 			}
 
 			out := cmd.OutOrStdout()
+			u := ui.New(cmd.ErrOrStderr())
 
 			status, err := checkOrgStatus(client, org)
 			if err != nil {
@@ -121,7 +130,7 @@ func acceptCmd() *cobra.Command {
 					}
 					switch acceptStatus.StatusCode {
 					case http.StatusOK:
-						return acceptAssignment(cmd, client, out, org, classroom, assignment)
+						return acceptAssignment(cmd, client, u, out, org, classroom, assignment)
 					case http.StatusNotFound:
 						return fmt.Errorf("%s: no membership found for accept", org)
 					case http.StatusForbidden:
@@ -140,7 +149,7 @@ func acceptCmd() *cobra.Command {
 				return fmt.Errorf("%s: unknown status received (%d)", org, status.StatusCode)
 			}
 
-			return acceptAssignment(cmd, client, out, org, classroom, assignment)
+			return acceptAssignment(cmd, client, u, out, org, classroom, assignment)
 		},
 	}
 
@@ -210,7 +219,9 @@ func checkAcceptableMode(assignment, mode string) error {
 	return nil
 }
 
-func acceptAssignment(cmd *cobra.Command, client githubapi.Client, out io.Writer, org, classroom, assignment string) error {
+func acceptAssignment(cmd *cobra.Command, client githubapi.Client, u *ui.UI, out io.Writer, org, classroom, assignment string) error {
+	verbose, _ := cmd.Flags().GetBool("verbose")
+
 	username, err := getAuthedUsername(client)
 	if err != nil {
 		return fmt.Errorf("retrieving authed username: %w", err)
@@ -219,10 +230,14 @@ func acceptAssignment(cmd *cobra.Command, client githubapi.Client, out io.Writer
 	// 1) Look up the assignment entry on the published Pages site
 	//    (no token; publish-pages keeps the JSON public). The entry
 	//    carries the template ref, mode, and autograder ref.
+	lookup := u.Spinner(fmt.Sprintf("Looking up %s in %s/%s", assignment, org, classroom))
+	lookup.Start()
 	entry, err := assignments.FetchEntry(cmd.Context(), org, classroom, assignment)
 	if err != nil {
+		lookup.Fail(fmt.Sprintf("Looking up %s", assignment))
 		return err
 	}
+	lookup.Stop(fmt.Sprintf("Found assignment %s", assignment))
 	// Group assignments are accepted normally by the first accepter:
 	// the repo is created under their name and they add teammates with
 	// `gh student invite <org>/<repo> <teammate>`. Only an unknown mode
@@ -256,10 +271,12 @@ func acceptAssignment(cmd *cobra.Command, client githubapi.Client, out io.Writer
 		shim = workflow.Content
 	}
 
-	// 3) Create the assignment repo. A templated assignment generates
-	//    from the template; a template-less one creates an empty
-	//    auto-init'd repo. Already-exists → short-circuit and leave the
-	//    existing repo alone.
+	// 3) Create the assignment repo (templated → generate; template-less
+	//    → empty auto-init'd). Already-exists is NOT a terminal
+	//    short-circuit: a prior accept may have created the repo but died
+	//    before landing the control files (seeding lag, transient 5xx,
+	//    Ctrl-C), leaving a repo that looks accepted but never autogrades.
+	//    The probe below heals that. Mirrors the GUI's accept.
 	var (
 		htmlURL        string
 		fullName       string
@@ -267,8 +284,11 @@ func acceptAssignment(cmd *cobra.Command, client githubapi.Client, out io.Writer
 		commitBranch   string
 		cfgSource      *classroomcfg.Source
 	)
+	createMsg := fmt.Sprintf("Creating private repo for %s", assignment)
+	createSp := u.Spinner(createMsg)
+	createSp.Start()
 	if hasTemplate {
-		htmlURL, fullName, alreadyExisted, err = createTemplatedPrivateAssignmentRepoInOrg(client, out, username, classroom, assignment, org, *entry.Template)
+		htmlURL, fullName, alreadyExisted, err = createTemplatedPrivateAssignmentRepoInOrg(client, u, verbose, username, classroom, assignment, org, *entry.Template)
 		commitBranch = entry.Template.Branch
 		cfgSource = &classroomcfg.Source{
 			Owner:  entry.Template.Owner,
@@ -277,44 +297,203 @@ func acceptAssignment(cmd *cobra.Command, client githubapi.Client, out io.Writer
 		}
 	} else {
 		var defaultBranch string
-		htmlURL, fullName, defaultBranch, alreadyExisted, err = createEmptyPrivateAssignmentRepoInOrg(client, out, username, classroom, assignment, org)
+		htmlURL, fullName, defaultBranch, alreadyExisted, err = createEmptyPrivateAssignmentRepoInOrg(client, u, verbose, username, classroom, assignment, org)
 		commitBranch = defaultBranch
 	}
 	if err != nil {
-		return err
-	}
-	if alreadyExisted {
-		return reportAlreadyAccepted(out, fullName, htmlURL)
-	}
-
-	// 4) Keep the founder as repo `admin` (PUT collaborators is an
-	//    upsert). Admin is required so they can manage collaborators —
-	//    a group founder adds teammates with `gh student invite`, which
-	//    only an admin can do. The danger admin would otherwise carry
-	//    (delete / transfer / visibility change) is defanged at the org
-	//    level by `gh teacher init`'s member-privilege lockdown (#112).
-	if err := inviteUserAsAdmin(client, out, username, classroom, assignment, org); err != nil {
+		createSp.Fail(createMsg)
 		return err
 	}
 
-	// 5) Write .classroom50.yaml + the autograde workflow in one
-	//    Tree commit. classroomcfg.DropFiles waits out GitHub's
-	//    post-creation replication lag.
 	repoName := reponame.Name(classroom, assignment, username)
-	cfg := classroomcfg.Config{
-		Classroom:  classroom,
-		Assignment: assignment,
-		Source:     cfgSource,
-	}
-	if err := classroomcfg.DropFiles(client, org, repoName, commitBranch, cfg, shim); err != nil {
-		return err
-	}
-	if verbose {
-		_, _ = fmt.Fprintf(out, "wrote %s and %s in %s/%s (autograder %q)\n",
-			classroomcfg.MetadataPath, classroomcfg.AutogradeWorkflowPath, org, repoName, autograderName)
+	return acceptIntoRepo(client, u, verbose, out, acceptRepoParams{
+		org:            org,
+		classroom:      classroom,
+		assignment:     assignment,
+		username:       username,
+		repoName:       repoName,
+		branch:         commitBranch,
+		source:         cfgSource,
+		shim:           shim,
+		autograderName: autograderName,
+		fullName:       fullName,
+		htmlURL:        htmlURL,
+		alreadyExisted: alreadyExisted,
+		createSp:       createSp,
+		createMsg:      createMsg,
+	})
+}
+
+// acceptRepoParams carries the post-create inputs acceptIntoRepo needs.
+// Splitting this tail out of acceptAssignment makes the self-heal fork
+// testable end-to-end against an httptest GitHub server, without the
+// Pages fetch acceptAssignment does up front.
+type acceptRepoParams struct {
+	org, classroom, assignment string
+	username, repoName, branch string
+	source                     *classroomcfg.Source
+	shim, autograderName       string
+	fullName, htmlURL          string
+	alreadyExisted             bool
+	createSp                   *ghui.Spinner
+	createMsg                  string
+}
+
+// acceptIntoRepo decides whether a just-created-or-existing repo needs
+// provisioning, runs the idempotent provisioning when it does, and emits
+// the final report. It is the self-healing fork:
+//
+//   - alreadyExisted + marker present → genuinely already accepted, leave
+//     untouched and short-circuit.
+//   - alreadyExisted + marker missing → a half-finished prior accept;
+//     re-run the idempotent provisioning to repair it.
+//   - freshly created → provision normally.
+func acceptIntoRepo(client githubapi.Client, u *ui.UI, verbose bool, out io.Writer, p acceptRepoParams) error {
+	// An existing repo with its .classroom50.yaml present is genuinely
+	// already accepted — leave it untouched. A missing marker means a
+	// half-finished prior accept; fall through to re-provision and repair.
+	if p.alreadyExisted {
+		provisioned, perr := repoFileExists(client, p.org, p.repoName, classroomcfg.MetadataPath)
+		if perr != nil {
+			p.createSp.Fail(p.createMsg)
+			return perr
+		}
+		if provisioned {
+			p.createSp.Stop(fmt.Sprintf("Repo already exists: %s", p.fullName))
+			return reportAlreadyAccepted(u, out, p.fullName, p.htmlURL)
+		}
+		// The ✓ here marks the completed probe (setup found incomplete),
+		// not the repair — the following setup spinner reports that with
+		// its own ✓/✗, so a failed re-provision isn't preceded by a
+		// success glyph for work that hadn't happened yet.
+		p.createSp.Stop(fmt.Sprintf("Found incomplete setup: %s", p.fullName))
+	} else {
+		p.createSp.Stop(fmt.Sprintf("Created %s", p.fullName))
 	}
 
-	return reportAccepted(out, fullName, htmlURL)
+	// Provision (or repair) the repo. Every step is idempotent, so this is
+	// safe whether the repo was just created or is being healed.
+	cfg := classroomcfg.Config{
+		Classroom:  p.classroom,
+		Assignment: p.assignment,
+		Source:     p.source,
+	}
+	if err := provisionAcceptedRepo(client, u, verbose, p, cfg); err != nil {
+		return err
+	}
+
+	if p.alreadyExisted {
+		return reportAlreadyAccepted(u, out, p.fullName, p.htmlURL)
+	}
+	return reportAccepted(u, out, p.fullName, p.htmlURL)
+}
+
+// provisionAcceptedRepo brings a just-created (or partially-provisioned)
+// student repo to a healthy, autogradable state and is safe to re-run:
+//
+//  1. Grant the founder `admin` (PUT collaborators is an upsert).
+//  2. Land .classroom50.yaml + the autograde shim in one Tree commit,
+//     riding out GitHub's post-create git-data lag.
+//  3. Verify the accept marker is readable before declaring success, so
+//     "accepted" always means "will autograde".
+//
+// It reads its inputs from the caller's acceptRepoParams plus the built
+// config; the single caller (acceptIntoRepo) covers both the fresh-create
+// and heal paths. Mirrors the GUI's provisionAcceptedRepo so the CLI and
+// GUI heal a half-finished accept identically.
+func provisionAcceptedRepo(client githubapi.Client, u *ui.UI, verbose bool, p acceptRepoParams, cfg classroomcfg.Config) error {
+	// Founder stays repo `admin` (upsert) so they can manage collaborators
+	// — a group founder adds teammates via `gh student invite`, which only
+	// an admin can do. The org-level lockdown in `gh teacher init` (#112)
+	// defangs the admin's delete/transfer/visibility powers org-wide.
+	if err := inviteUserAsAdmin(client, u, verbose, p.username, p.org, p.repoName); err != nil {
+		return err
+	}
+
+	// DropFiles lands both control files in one Tree commit, waiting out
+	// GitHub's post-create replication lag; the spinner animates
+	// throughout (no numeric counter — the wait has no guaranteed bound).
+	const setupMsg = "Setting up autograder and metadata"
+	setupSp := u.Spinner(setupMsg)
+	setupSp.Start()
+	if err := classroomcfg.DropFiles(client, p.org, p.repoName, p.branch, cfg, p.shim); err != nil {
+		setupSp.Fail(setupMsg)
+		return err
+	}
+	setupSp.Stop("Autograder and metadata configured")
+	if verbose {
+		u.Detail("wrote %s and %s in %s/%s (autograder %q)",
+			classroomcfg.MetadataPath, classroomcfg.AutogradeWorkflowPath, p.org, p.repoName, p.autograderName)
+	}
+
+	// Read-back: a successful commit PATCH isn't proof the repo is
+	// readable yet, so confirm the marker before reporting accepted.
+	if err := verifyProvisioned(client, p.org, p.repoName); err != nil {
+		return err
+	}
+	return nil
+}
+
+// verifyProvisioned confirms the repo is autogradable before accept
+// reports success. DropFiles lands both control files in ONE atomic Tree
+// commit, so checking the accept marker (.classroom50.yaml) alone is
+// sufficient.
+//
+// The read-back uses the CONTENTS API, which can briefly lag the
+// just-landed git-data commit (the same eventual-consistency window
+// WaitForStableBranch absorbs on the branches API). So a single 404 is
+// not definitive: poll with a short backoff and only fail — with an
+// actionable, idempotent-re-run hint — when the marker is still missing.
+func verifyProvisioned(client githubapi.Client, org, repoName string) error {
+	var lastErr error
+	for attempt := range verifyProvisionAttempts {
+		ok, err := repoFileExists(client, org, repoName, classroomcfg.MetadataPath)
+		if err != nil {
+			return fmt.Errorf("verifying %s/%s/%s after setup: %w", org, repoName, classroomcfg.MetadataPath, err)
+		}
+		if ok {
+			return nil
+		}
+		lastErr = fmt.Errorf("%s/%s was created but %s is missing after setup — re-run `gh student accept %s %s %s` to finish provisioning (it is safe to re-run)",
+			org, repoName, classroomcfg.MetadataPath, org, classroomFromRepo(repoName), repoName)
+		if attempt < verifyProvisionAttempts-1 {
+			time.Sleep(time.Duration(attempt+1) * verifyProvisionBackoff)
+		}
+	}
+	return lastErr
+}
+
+// verifyProvisionAttempts / verifyProvisionBackoff bound the read-back
+// poll (~4s total). Vars, not consts, so tests can shrink the backoff.
+var (
+	verifyProvisionAttempts = 5
+	verifyProvisionBackoff  = 400 * time.Millisecond
+)
+
+// repoFileExists reports whether `path` is readable on org/repoName via
+// the contents API. 404 → false; other errors propagate so a transient
+// failure isn't misread as "missing".
+func repoFileExists(client githubapi.Client, org, repoName, path string) (bool, error) {
+	apiPath := fmt.Sprintf("repos/%s/%s/contents/%s",
+		url.PathEscape(org), url.PathEscape(repoName), classroomcfg.EscapeContentPath(path))
+	if err := client.Get(apiPath, nil); err != nil {
+		if classroomcfg.IsHTTPNotFound(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("GET %s: %w", apiPath, err)
+	}
+	return true, nil
+}
+
+// classroomFromRepo recovers the classroom slug from a derived repo name
+// (<classroom>-<assignment>-<username>) for the re-run hint. Best-effort:
+// the hint is advisory, so a non-conforming name just yields the repo
+// name's leading segment.
+func classroomFromRepo(repoName string) string {
+	if i := strings.IndexByte(repoName, '-'); i > 0 {
+		return repoName[:i]
+	}
+	return repoName
 }
 
 // is422AlreadyExists matches "already exists" (case-insensitive) in
@@ -331,30 +510,34 @@ func is422AlreadyExists(httpErr *githubapi.HTTPError) bool {
 	return false
 }
 
-// reportAccepted: success header + clone instructions.
-func reportAccepted(out io.Writer, fullName, htmlURL string) error {
+// reportAccepted: success header + clone instructions on stdout
+// (machine-stable, scriptable). The per-step spinners already rendered
+// the human-channel progress, so this doesn't duplicate the headline
+// onto stderr.
+func reportAccepted(u *ui.UI, out io.Writer, fullName, htmlURL string) error {
 	_, _ = fmt.Fprintf(out, "Assignment accepted: %s\n\n", fullName)
-	return printCloneInstructions(out, htmlURL)
+	return printCloneInstructions(u, out, htmlURL)
 }
 
 // reportAlreadyAccepted: re-run message; the existing repo is
 // never touched.
-func reportAlreadyAccepted(out io.Writer, fullName, htmlURL string) error {
+func reportAlreadyAccepted(u *ui.UI, out io.Writer, fullName, htmlURL string) error {
 	_, _ = fmt.Fprintf(out, "Assignment already accepted: %s\n\n", fullName)
 	_, _ = fmt.Fprintln(out, "Your existing repository contains your latest submissions and commits.")
 	_, _ = fmt.Fprintln(out)
-	return printCloneInstructions(out, htmlURL)
+	return printCloneInstructions(u, out, htmlURL)
 }
 
-// printCloneInstructions: clone block; warns if cwd is inside a
-// Git repo (nested clones are confusing).
-func printCloneInstructions(out io.Writer, htmlURL string) error {
+// printCloneInstructions: clone block on stdout (scriptable); warns on
+// the human channel if cwd is inside a Git repo (nested clones are
+// confusing).
+func printCloneInstructions(u *ui.UI, out io.Writer, htmlURL string) error {
 	root, insideRepo, err := localgit.CurrentGitRoot()
 	if err != nil {
 		return err
 	}
 	if insideRepo {
-		_, _ = fmt.Fprintf(out, "Warning: you are currently inside a Git repository:\n\n  %s\n\n", root)
+		u.Warn("you are currently inside a Git repository (%s) — clone from a parent/workspace directory to avoid nesting repositories", root)
 		_, _ = fmt.Fprintln(out, "Clone from a parent/workspace directory to avoid nesting repositories:")
 	} else {
 		_, _ = fmt.Fprintln(out, "Clone it with:")
@@ -387,7 +570,7 @@ type GeneratedRepo struct {
 // message (template not readable by the student).
 // 422-already-exists → alreadyExisted=true and the PATCH is skipped
 // so re-runs don't disturb an existing repo.
-func createTemplatedPrivateAssignmentRepoInOrg(client githubapi.Client, out io.Writer, username, classroom, assignment, org string, tmpl assignments.TemplateRef) (htmlURL, fullName string, alreadyExisted bool, err error) {
+func createTemplatedPrivateAssignmentRepoInOrg(client githubapi.Client, u *ui.UI, verbose bool, username, classroom, assignment, org string, tmpl assignments.TemplateRef) (htmlURL, fullName string, alreadyExisted bool, err error) {
 	newRepoName := reponame.Name(classroom, assignment, username)
 	createBody, err := json.Marshal(map[string]any{
 		"owner":   org,
@@ -437,12 +620,8 @@ func createTemplatedPrivateAssignmentRepoInOrg(client githubapi.Client, out io.W
 	}
 
 	if verbose {
-		_, _ = fmt.Fprintf(
-			out,
-			"created private repo %s, with issues/projects/wiki disabled: %s\n",
-			updated.FullName,
-			updated.HTMLURL,
-		)
+		u.Detail("created private repo %s, with issues/projects/wiki disabled: %s",
+			updated.FullName, updated.HTMLURL)
 	}
 
 	return updated.HTMLURL, updated.FullName, false, nil
@@ -458,7 +637,7 @@ func createTemplatedPrivateAssignmentRepoInOrg(client githubapi.Client, out io.W
 // disabled like the templated path. 422-already-exists →
 // alreadyExisted=true and the PATCH is skipped so re-runs don't disturb
 // an existing repo.
-func createEmptyPrivateAssignmentRepoInOrg(client githubapi.Client, out io.Writer, username, classroom, assignment, org string) (htmlURL, fullName, defaultBranch string, alreadyExisted bool, err error) {
+func createEmptyPrivateAssignmentRepoInOrg(client githubapi.Client, u *ui.UI, verbose bool, username, classroom, assignment, org string) (htmlURL, fullName, defaultBranch string, alreadyExisted bool, err error) {
 	newRepoName := reponame.Name(classroom, assignment, username)
 	createBody, err := json.Marshal(map[string]any{
 		"name":      newRepoName,
@@ -500,12 +679,8 @@ func createEmptyPrivateAssignmentRepoInOrg(client githubapi.Client, out io.Write
 	}
 
 	if verbose {
-		_, _ = fmt.Fprintf(
-			out,
-			"created empty private repo %s (template-less), with issues/projects/wiki disabled: %s\n",
-			updated.FullName,
-			updated.HTMLURL,
-		)
+		u.Detail("created empty private repo %s (template-less), with issues/projects/wiki disabled: %s",
+			updated.FullName, updated.HTMLURL)
 	}
 
 	return updated.HTMLURL, updated.FullName, defaultBranchOrMain(updated.DefaultBranch), false, nil
@@ -526,21 +701,20 @@ func defaultBranchOrMain(branch string) string {
 	return branch
 }
 
-// inviteUserAsAdmin keeps username as a repo `admin` collaborator. PUT
-// collaborators is an upsert, so re-running is a no-op. Admin (not
-// maintain) is required because only an admin can manage collaborator
-// access — a group founder uses `gh student invite` to add teammates.
-// The org-level member-privilege lockdown in `gh teacher init` (#112)
-// removes the org-wide danger of repo-admin (no delete/transfer/
+// inviteUserAsAdmin keeps username as a repo `admin` collaborator on
+// org/repoName. PUT collaborators is an upsert, so re-running is a no-op.
+// Admin (not maintain) is required because only an admin can manage
+// collaborator access — a group founder uses `gh student invite` to add
+// teammates. The org-level member-privilege lockdown in `gh teacher init`
+// (#112) removes the org-wide danger of repo-admin (no delete/transfer/
 // visibility change), so admin-on-own-repo is safe.
-func inviteUserAsAdmin(client githubapi.Client, out io.Writer, username, classroom, assignment, org string) error {
-	fullRepoName := reponame.Name(classroom, assignment, username)
-	if _, err := githubapi.SetCollaborator(client, org, fullRepoName, username, "admin"); err != nil {
+func inviteUserAsAdmin(client githubapi.Client, u *ui.UI, verbose bool, username, org, repoName string) error {
+	if _, err := githubapi.SetCollaborator(client, org, repoName, username, "admin"); err != nil {
 		return err
 	}
 
 	if verbose {
-		_, _ = fmt.Fprintf(out, "invited %s to %s/%s with admin permission\n", username, org, fullRepoName)
+		u.Detail("invited %s to %s/%s with admin permission", username, org, repoName)
 	}
 
 	return nil

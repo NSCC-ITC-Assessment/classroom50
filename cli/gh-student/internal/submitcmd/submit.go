@@ -18,14 +18,18 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
+	"github.com/foundation50/classroom50-cli-shared/ghui"
 	"github.com/foundation50/classroom50-cli-shared/ghutil"
+	"github.com/foundation50/gh-student/internal/assignments"
 	"github.com/foundation50/gh-student/internal/classroomcfg"
 	"github.com/foundation50/gh-student/internal/githubapi"
 	identitypkg "github.com/foundation50/gh-student/internal/identity"
 	"github.com/foundation50/gh-student/internal/localgit"
+	"github.com/foundation50/gh-student/internal/ui"
 )
 
 func NewCmd() *cobra.Command {
@@ -69,11 +73,13 @@ func NewCmd() *cobra.Command {
 	return cmd
 }
 
-func submitAssignment(_ context.Context, client githubapi.Client, verbose bool, out io.Writer, errOut io.Writer) error {
+func submitAssignment(ctx context.Context, client githubapi.Client, verbose bool, out io.Writer, errOut io.Writer) error {
 	const (
 		remote = "origin"
 		branch = "main"
 	)
+
+	u := ui.New(errOut)
 
 	root, inside, err := localgit.CurrentGitRoot()
 	if err != nil {
@@ -114,7 +120,7 @@ func submitAssignment(_ context.Context, client githubapi.Client, verbose bool, 
 	}
 	defer func() {
 		if err := os.RemoveAll(tmpRoot); err != nil {
-			_, _ = fmt.Fprintf(errOut, "warning: remove temp submit area %s: %v\n", tmpRoot, err)
+			u.Warn("remove temp submit area %s: %v", tmpRoot, err)
 		}
 	}()
 
@@ -126,7 +132,7 @@ func submitAssignment(_ context.Context, client githubapi.Client, verbose bool, 
 	}
 
 	if verbose {
-		_, _ = fmt.Fprintf(out, "Preparing submission snapshot from %s\n", root)
+		u.Detail("Preparing submission snapshot from %s", root)
 	}
 
 	if err := copySubmittableFiles(root, workTree); err != nil {
@@ -135,7 +141,7 @@ func submitAssignment(_ context.Context, client githubapi.Client, verbose bool, 
 
 	if config.Source != nil {
 		if verbose {
-			_, _ = fmt.Fprintf(out, "Fetching latest instructor .gitignore and .github from %s/%s@%s\n",
+			u.Detail("Fetching latest instructor .gitignore and .github from %s/%s@%s",
 				config.Source.Owner,
 				config.Source.Repo,
 				config.Source.Branch,
@@ -154,32 +160,80 @@ func submitAssignment(_ context.Context, client githubapi.Client, verbose bool, 
 		}
 	} else if verbose {
 		// Template-less assignment: no source repo to refresh from.
-		_, _ = fmt.Fprintln(out, "No template source recorded; skipping instructor .gitignore/.github refresh")
+		u.Detail("No template source recorded; skipping instructor .gitignore/.github refresh")
 	}
 
-	if verbose {
-		_, _ = fmt.Fprintf(out, "Pushing submission to %s %s\n", remote, branch)
+	// The push (clone history + commit + push) is the slowest step, so
+	// drive a spinner. Non-verbose: discard git's stdout and buffer its
+	// stderr, surfacing the tail only on failure, so its "Cloning into…"
+	// chatter doesn't scroll the spinner away. Verbose: stream git
+	// directly so its own progress shows.
+	const pushMsg = "Submitting"
+	var (
+		pushOut, pushErr = out, errOut
+		gitErrBuf        bytes.Buffer
+		sp               *ghui.Spinner
+	)
+	if !verbose {
+		pushOut = io.Discard
+		pushErr = &gitErrBuf
+		sp = u.Spinner(pushMsg)
+		sp.Start()
+	} else {
+		u.Detail("Pushing submission to %s %s", remote, branch)
 	}
 
-	if _, err := commitWorkTreeOnRemoteBranch(
+	sha, err := commitWorkTreeOnRemoteBranch(
 		gitDir,
 		workTree,
 		remoteURL,
 		branch,
 		message,
 		identity,
-		out,
-		errOut,
-	); err != nil {
+		pushOut,
+		pushErr,
+	)
+	if err != nil {
+		if sp != nil {
+			sp.Fail(pushMsg)
+		}
+		if tail := lastNonEmptyLine(gitErrBuf.String()); tail != "" {
+			return fmt.Errorf("%w: %s", err, tail)
+		}
 		return err
 	}
+	if sp != nil {
+		sp.Stop("Submission pushed")
+	}
 
-	_, _ = fmt.Fprintf(out, "Submitted %s to %s\n", config.Assignment, remoteURL)
-	_, _ = fmt.Fprintf(out, "Autograde:   %s/actions — the runner tags this commit and publishes the scored release\n", repoHTMLURL)
-	_, _ = fmt.Fprintf(out, "Releases:    %s/releases\n", repoHTMLURL)
+	// Confirmation on stdout: the assignment's full name (falls back to
+	// the slug — see resolveAssignmentName) and the local submission time,
+	// then a link to the submitted commit.
+	displayName := resolveAssignmentName(ctx, repoOwner, config.Classroom, config.Assignment)
+	localTime := time.Now().Local().Format("2006-01-02 15:04:05 MST")
+	_, _ = fmt.Fprintf(out, "Submitted assignment %q at %s\n", displayName, localTime)
+	_, _ = fmt.Fprintf(out, "View your submission at: %s/commit/%s\n", repoHTMLURL, sha)
 
 	return nil
 }
+
+// resolveAssignmentName returns the assignment's full name from the
+// published manifest, falling back to the slug on any error/timeout. The
+// fetch is bounded (assignmentNameTimeout) and runs after the push has
+// already succeeded, so submit never fails — or stalls — over cosmetics.
+func resolveAssignmentName(ctx context.Context, org, classroom, slug string) string {
+	ctx, cancel := context.WithTimeout(ctx, assignmentNameTimeout)
+	defer cancel()
+	entry, err := assignments.FetchEntry(ctx, org, classroom, slug)
+	if err != nil || strings.TrimSpace(entry.Name) == "" {
+		return slug
+	}
+	return entry.Name
+}
+
+// assignmentNameTimeout caps the cosmetic post-push name lookup so a slow
+// Pages CDN can't stall the terminal after the submission already landed.
+const assignmentNameTimeout = 3 * time.Second
 
 func gitOutput(dir string, args ...string) (string, error) {
 	cmd := exec.Command("git", args...)
@@ -460,6 +514,19 @@ func copySubmittableFiles(srcRoot string, dstRoot string) error {
 	}
 
 	return nil
+}
+
+// lastNonEmptyLine returns the last non-empty trimmed line of s, used to
+// surface git's actionable error (e.g. `fatal: ...`) when its stderr was
+// captured to a buffer rather than streamed.
+func lastNonEmptyLine(s string) string {
+	lines := strings.Split(s, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		if t := strings.TrimSpace(lines[i]); t != "" {
+			return t
+		}
+	}
+	return ""
 }
 
 func copyFilePreservingMode(src string, dst string, mode os.FileMode) error {

@@ -29,6 +29,7 @@ import (
 	"github.com/cli/go-gh/v2/pkg/auth"
 	"github.com/spf13/cobra"
 
+	"github.com/foundation50/classroom50-cli-shared/ghui"
 	"github.com/foundation50/gh-teacher/internal/assignment"
 	"github.com/foundation50/gh-teacher/internal/cliutil"
 	"github.com/foundation50/gh-teacher/internal/configrepo"
@@ -280,31 +281,9 @@ func downloadByRoster(client githubapi.Client, out, errOut io.Writer, org, class
 			continue
 		}
 
-		if !quiet {
-			if verbose {
-				_, _ = fmt.Fprintf(out, "Cloning %s\n", repoName)
-			} else {
-				_, _ = fmt.Fprintf(out, "Cloning %s... ", repoName)
-			}
-		}
-
-		if err := cloneOrgRepo(out, errOut, org, repoName, target, quiet, verbose); err != nil {
-			if quiet {
-				_, _ = fmt.Fprintf(errOut, "%s: clone failed: %v\n", repoName, err)
-			} else if verbose {
-				_, _ = fmt.Fprintf(out, "%s: failed: %v\n", repoName, err)
-			} else {
-				_, _ = fmt.Fprintf(out, "Failed: %v\n", err)
-			}
+		if err := cloneWithProgress(out, errOut, org, repoName, target, quiet, verbose); err != nil {
 			failed = append(failed, repoName)
 			continue
-		}
-		if !quiet {
-			if verbose {
-				_, _ = fmt.Fprintf(out, "%s: done\n", repoName)
-			} else {
-				_, _ = fmt.Fprintln(out, "Done")
-			}
 		}
 		clonedNew = append(clonedNew, repoName)
 
@@ -390,32 +369,9 @@ func downloadByPattern(client githubapi.Client, out, errOut io.Writer, org, clas
 			continue
 		}
 
-		if !quiet {
-			if verbose {
-				_, _ = fmt.Fprintf(out, "Cloning %s\n", name)
-			} else {
-				_, _ = fmt.Fprintf(out, "Cloning %s... ", name)
-			}
-		}
-
-		if err := cloneOrgRepo(out, errOut, org, name, target, quiet, verbose); err != nil {
-			if quiet {
-				_, _ = fmt.Fprintf(errOut, "%s: clone failed: %v\n", name, err)
-			} else if verbose {
-				_, _ = fmt.Fprintf(out, "%s: failed: %v\n", name, err)
-			} else {
-				_, _ = fmt.Fprintf(out, "Failed: %v\n", err)
-			}
+		if err := cloneWithProgress(out, errOut, org, name, target, quiet, verbose); err != nil {
 			failed = append(failed, name)
 			continue
-		}
-
-		if !quiet {
-			if verbose {
-				_, _ = fmt.Fprintf(out, "%s: done\n", name)
-			} else {
-				_, _ = fmt.Fprintln(out, "Done")
-			}
 		}
 	}
 
@@ -1052,6 +1008,56 @@ func downloadAssetBytes(token, assetURL string) ([]byte, error) {
 // stderrTailCap bounds non-verbose stderr capture; the error lives
 // at the tail.
 const stderrTailCap = 8 * 1024
+
+// cloneWithProgress clones one repo, rendering progress on the human
+// channel. Interactive: a spinner (a single large repo can take many
+// seconds). Non-TTY / --quiet: the historical stable stdout lines
+// ("Cloning X... Done"), unchanged for piped/CI readers. Verbose: streams
+// git's output with per-line "Cloning X" / "X: done".
+//
+// Returns the clone error (nil on success) so the caller records the
+// failure and continues.
+func cloneWithProgress(out, errOut io.Writer, org, repo, target string, quiet, verbose bool) error {
+	sp := ghui.NewSpinner(errOut, "Cloning "+repo)
+	interactive := sp.Active() && !quiet && !verbose
+
+	// Skip the stdout lines when animating — the spinner shows the same
+	// thing on stderr, and both would duplicate on a shared terminal.
+	if !quiet && !interactive {
+		if verbose {
+			_, _ = fmt.Fprintf(out, "Cloning %s\n", repo)
+		} else {
+			_, _ = fmt.Fprintf(out, "Cloning %s... ", repo)
+		}
+	}
+	if interactive {
+		sp.Start()
+	}
+
+	err := cloneOrgRepo(out, errOut, org, repo, target, quiet, verbose)
+	if err != nil {
+		if interactive {
+			sp.Fail("Cloning " + repo)
+		} else if quiet {
+			_, _ = fmt.Fprintf(errOut, "%s: clone failed: %v\n", repo, err)
+		} else if verbose {
+			_, _ = fmt.Fprintf(out, "%s: failed: %v\n", repo, err)
+		} else {
+			_, _ = fmt.Fprintf(out, "Failed: %v\n", err)
+		}
+		return err
+	}
+	if interactive {
+		sp.Stop("Cloned " + repo)
+	} else if !quiet {
+		if verbose {
+			_, _ = fmt.Fprintf(out, "%s: done\n", repo)
+		} else {
+			_, _ = fmt.Fprintln(out, "Done")
+		}
+	}
+	return nil
+}
 
 // cloneOrgRepo shells out to `gh repo clone`. Verbose streams git's
 // output; otherwise stdout is discarded and the tail of stderr is

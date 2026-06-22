@@ -198,3 +198,21 @@ func TestSetCollaborator(t *testing.T) {
 		})
 	}
 }
+
+// TestWaitForStableBranch pins the post-create branch-stabilization poll
+// the accept flow relies on: a branch that reports the same non-empty SHA
+// on two consecutive reads resolves without error.
+func TestWaitForStableBranch(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/o/r/branches/main", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"commit": map[string]any{"sha": "deadbeef"},
+		})
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	if err := WaitForStableBranch(newTestRESTClient(t, server), "o", "r", "main"); err != nil {
+		t.Fatalf("WaitForStableBranch: %v", err)
+	}
+}
