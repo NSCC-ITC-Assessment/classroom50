@@ -227,6 +227,68 @@ func TestRemoveRosterRow(t *testing.T) {
 	}
 }
 
+func TestUpdateRosterRow(t *testing.T) {
+	base := []RosterRow{
+		{Username: "alice", FirstName: "Alice", LastName: "A", Email: "a@x", Section: "s1", GitHubID: 1},
+		{Username: "bob", FirstName: "Bob", LastName: "B", Email: "b@x", Section: "s1", GitHubID: 2},
+	}
+	// RosterRow is all value fields, so a shallow copy is independent —
+	// UpdateRosterRow's in-place edits won't leak across subtests.
+	clone := func() []RosterRow { return append([]RosterRow(nil), base...) }
+	strptr := func(s string) *string { return &s }
+
+	t.Run("partial patch leaves other fields and github_id intact", func(t *testing.T) {
+		out, found, changed := UpdateRosterRow(clone(), "alice", RosterPatch{Email: strptr("new@x")})
+		if !found || !changed {
+			t.Fatalf("found=%v changed=%v, want both true", found, changed)
+		}
+		got := out[0]
+		if got.Email != "new@x" {
+			t.Errorf("email = %q, want new@x", got.Email)
+		}
+		if got.Username != "alice" || got.FirstName != "Alice" || got.LastName != "A" || got.Section != "s1" || got.GitHubID != 1 {
+			t.Errorf("non-email fields changed: %#v", got)
+		}
+		if out[1] != base[1] {
+			t.Errorf("unrelated row (bob) changed: %#v", out[1])
+		}
+	})
+
+	t.Run("case-insensitive match", func(t *testing.T) {
+		_, found, changed := UpdateRosterRow(clone(), "ALICE", RosterPatch{FirstName: strptr("Alicia")})
+		if !found || !changed {
+			t.Fatalf("ALICE should match alice and change first name (found=%v changed=%v)", found, changed)
+		}
+	})
+
+	t.Run("unknown username is not found", func(t *testing.T) {
+		_, found, changed := UpdateRosterRow(clone(), "ghost", RosterPatch{Email: strptr("x@y")})
+		if found || changed {
+			t.Errorf("found=%v changed=%v, want both false", found, changed)
+		}
+	})
+
+	t.Run("patch equal to current values is no change", func(t *testing.T) {
+		_, found, changed := UpdateRosterRow(clone(), "alice", RosterPatch{Email: strptr("a@x"), Section: strptr("s1")})
+		if !found {
+			t.Fatalf("alice should match")
+		}
+		if changed {
+			t.Errorf("patch identical to current row should report changed=false")
+		}
+	})
+
+	t.Run("empty string clears a field", func(t *testing.T) {
+		out, found, changed := UpdateRosterRow(clone(), "alice", RosterPatch{Email: strptr("")})
+		if !found || !changed {
+			t.Fatalf("found=%v changed=%v, want both true", found, changed)
+		}
+		if out[0].Email != "" {
+			t.Errorf("email = %q, want cleared", out[0].Email)
+		}
+	})
+}
+
 func TestValidateRosterEmail(t *testing.T) {
 	cases := []struct {
 		in      string

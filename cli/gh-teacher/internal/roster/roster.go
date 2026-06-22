@@ -33,6 +33,7 @@ func NewCmd() *cobra.Command {
 			"Subcommands:\n" +
 			"  list    print the roster (table, --json, or --quiet username-only)\n" +
 			"  add     append or upsert one student (resolves github_id, invites to org)\n" +
+			"  update  correct fields on an existing student (roster-only; never invites)\n" +
 			"  remove  remove one student from the roster (does NOT touch org membership)\n" +
 			"  import  bulk upsert from a local CSV (5-column input accepted; github_id auto-filled)\n\n" +
 			"All writes use a single Tree commit on <org>/classroom50's\n" +
@@ -44,6 +45,7 @@ func NewCmd() *cobra.Command {
 	}
 	cmd.AddCommand(rosterListCmd())
 	cmd.AddCommand(rosterAddCmd())
+	cmd.AddCommand(rosterUpdateCmd())
 	cmd.AddCommand(rosterRemoveCmd())
 	cmd.AddCommand(rosterImportCmd())
 	return cmd
@@ -106,6 +108,85 @@ func rosterAddCmd() *cobra.Command {
 	cmd.Flags().StringVar(&lastName, "last-name", "", "Student's last name (written into the last_name column)")
 	cmd.Flags().StringVar(&email, "email", "", "Student's email address (written into the email column; bare local@domain form, e.g. alice@example.edu; optional)")
 	cmd.Flags().StringVar(&section, "section", "", "Section identifier (free-form text, written into the section column)")
+	return cmd
+}
+
+func rosterUpdateCmd() *cobra.Command {
+	var (
+		firstName string
+		lastName  string
+		email     string
+		section   string
+	)
+
+	cmd := &cobra.Command{
+		Use:   "update <org> <classroom> <username>",
+		Short: "Correct one student's details in students.csv",
+		Long: "Update fields on an existing row in\n" +
+			"<org>/classroom50/<classroom>/students.csv, matched by\n" +
+			"<username> (case-insensitive).\n\n" +
+			"Only the flags you pass are changed; every other column —\n" +
+			"including the immutable github_id — is left untouched. This is\n" +
+			"the key difference from `roster add`, which rewrites the whole\n" +
+			"row and blanks any field you don't re-supply.\n\n" +
+			"Roster-only: unlike `roster add`, this never sends an org invite\n" +
+			"and never re-resolves github_id. Pass --email \"\" to clear an\n" +
+			"address.\n\n" +
+			"Errors if <username> isn't already on the roster (add them with\n" +
+			"`gh teacher roster add` first). At least one of --first-name,\n" +
+			"--last-name, --email, or --section is required.",
+		Example: "  gh teacher roster update cs50-fall-2026 cs-principles alice --email alice@example.edu\n" +
+			"  gh teacher roster update cs50-fall-2026 cs-principles alice --first-name Alice --section section-2",
+		Args: cobra.ExactArgs(3),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cmd.SilenceUsage = true
+			org := strings.TrimSpace(args[0])
+			classroom := strings.TrimSpace(args[1])
+			username := strings.TrimSpace(args[2])
+			if org == "" || classroom == "" || username == "" {
+				return errors.New("org, classroom, and username must all be non-empty")
+			}
+			if err := validate.ShortName(classroom, "classroom"); err != nil {
+				return err
+			}
+
+			// Only flags actually passed (Changed) join the patch; an
+			// unset flag leaves its column alone.
+			var patch configrepo.RosterPatch
+			if cmd.Flags().Changed("first-name") {
+				v := strings.TrimSpace(firstName)
+				patch.FirstName = &v
+			}
+			if cmd.Flags().Changed("last-name") {
+				v := strings.TrimSpace(lastName)
+				patch.LastName = &v
+			}
+			if cmd.Flags().Changed("email") {
+				v := strings.TrimSpace(email)
+				if err := configrepo.ValidateRosterEmail(v); err != nil {
+					return err
+				}
+				patch.Email = &v
+			}
+			if cmd.Flags().Changed("section") {
+				v := strings.TrimSpace(section)
+				patch.Section = &v
+			}
+			if patch.FirstName == nil && patch.LastName == nil && patch.Email == nil && patch.Section == nil {
+				return errors.New("nothing to update — pass --first-name, --last-name, --email, and/or --section")
+			}
+
+			client, err := githubapi.RequireAuthClient(cmd)
+			if err != nil {
+				return err
+			}
+			return runRosterUpdate(client, cmd.OutOrStdout(), org, classroom, username, patch)
+		},
+	}
+	cmd.Flags().StringVar(&firstName, "first-name", "", "New first name (first_name column)")
+	cmd.Flags().StringVar(&lastName, "last-name", "", "New last name (last_name column)")
+	cmd.Flags().StringVar(&email, "email", "", "New email address (email column; bare local@domain form; pass \"\" to clear)")
+	cmd.Flags().StringVar(&section, "section", "", "New section identifier (section column)")
 	return cmd
 }
 
@@ -296,6 +377,54 @@ func runRosterAdd(client githubapi.Client, out, errOut io.Writer, org, classroom
 	return nil
 }
 
+// runRosterUpdate edits an existing roster row only: it never invites or
+// re-resolves github_id. A patch matching the current row is a no-op; an
+// unknown username is an error (not a silent append).
+func runRosterUpdate(client githubapi.Client, out io.Writer, org, classroom, username string, patch configrepo.RosterPatch) error {
+	branch, err := configrepo.ResolveConfigRepoBranch(client, org)
+	if err != nil {
+		return err
+	}
+
+	var noChange bool
+	build := func(parentSHA string) (map[string]string, error) {
+		noChange = false
+		rows, err := configrepo.LoadRoster(client, org, classroom, parentSHA)
+		if err != nil {
+			return nil, err
+		}
+		next, found, changed := configrepo.UpdateRosterRow(rows, username, patch)
+		if !found {
+			return nil, fmt.Errorf("%s not in %s roster — add them with `gh teacher roster add %s %s %s` first",
+				username, classroom, org, classroom, username)
+		}
+		if !changed {
+			// nil map → CommitTree skips the commit.
+			noChange = true
+			return nil, nil
+		}
+		data, err := configrepo.EncodeRoster(next)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]string{configrepo.RosterFilePath(classroom): string(data)}, nil
+	}
+
+	message := fmt.Sprintf("roster: update %s in %s (gh teacher roster update)", username, classroom)
+	if _, err := configwrite.CommitTree(client, org, configrepo.ConfigRepoName, branch, message, build); err != nil {
+		return err
+	}
+
+	if noChange {
+		_, _ = fmt.Fprintf(out, "%s/%s/%s: %s already up to date (no changes)\n",
+			org, configrepo.ConfigRepoName, configrepo.RosterFilePath(classroom), username)
+		return nil
+	}
+	_, _ = fmt.Fprintf(out, "%s/%s/%s: updated %s\n",
+		org, configrepo.ConfigRepoName, configrepo.RosterFilePath(classroom), username)
+	return nil
+}
+
 func runRosterRemove(client githubapi.Client, out io.Writer, org, classroom, username string) error {
 	branch, err := configrepo.ResolveConfigRepoBranch(client, org)
 	if err != nil {
@@ -344,6 +473,10 @@ func runRosterRemove(client githubapi.Client, out io.Writer, org, classroom, use
 			}
 			_, _ = fmt.Fprintf(out, "%s: removed %s from classroom team %s\n", org, username, team.Slug)
 		}
+		// Org removal is a separate, deliberate step (no cascade); point
+		// the teacher at the command that does it.
+		_, _ = fmt.Fprintf(out, "  to also remove %s from the org: gh teacher remove %s %s\n",
+			username, org, username)
 	} else {
 		_, _ = fmt.Fprintf(out, "%s/%s/%s: %s not in roster, nothing to do\n",
 			org, configrepo.ConfigRepoName, configrepo.RosterFilePath(classroom), username)

@@ -214,6 +214,45 @@ func RemoveRosterRow(rows []RosterRow, username string) ([]RosterRow, bool) {
 	return rows, false
 }
 
+// RosterPatch carries the fields a roster update may change. A nil field
+// is left untouched; username and github_id are never changed.
+type RosterPatch struct {
+	FirstName *string
+	LastName  *string
+	Email     *string
+	Section   *string
+}
+
+// UpdateRosterRow applies p to the row matching username (case-insensitive,
+// like UpsertRosterRow/RemoveRosterRow), leaving username and github_id
+// untouched. Returns the slice, whether a row matched, and whether any value
+// actually changed (so the caller can no-op a patch that already matches).
+func UpdateRosterRow(rows []RosterRow, username string, p RosterPatch) (out []RosterRow, found, changed bool) {
+	for i := range rows {
+		if !strings.EqualFold(rows[i].Username, username) {
+			continue
+		}
+		if p.FirstName != nil && rows[i].FirstName != *p.FirstName {
+			rows[i].FirstName = *p.FirstName
+			changed = true
+		}
+		if p.LastName != nil && rows[i].LastName != *p.LastName {
+			rows[i].LastName = *p.LastName
+			changed = true
+		}
+		if p.Email != nil && rows[i].Email != *p.Email {
+			rows[i].Email = *p.Email
+			changed = true
+		}
+		if p.Section != nil && rows[i].Section != *p.Section {
+			rows[i].Section = *p.Section
+			changed = true
+		}
+		return rows, true, changed
+	}
+	return rows, false, false
+}
+
 // ValidateRosterEmail: empty is valid. Non-empty must parse via
 // net/mail.ParseAddress in bare `local@domain` form; the display-name
 // form (`Alice <alice@example.edu>`) is rejected so name metadata
