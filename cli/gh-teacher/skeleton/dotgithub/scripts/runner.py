@@ -146,6 +146,14 @@ MAX_FETCH_BYTES = 10 * 1024 * 1024
 # metadata.go) -- keep in lockstep.
 ACCEPT_MARKER_PATH = ".classroom50.yaml"
 
+# `_baseline_scan` source discriminator. SOURCE_OPENABLE yield a usable
+# Feedback PR base (accept commit or root fallback); the others skip.
+SOURCE_ACCEPT = "accept"
+SOURCE_ROOT = "root"
+SOURCE_GIT_ERROR = "git-error"
+SOURCE_NONE = "none"
+SOURCE_OPENABLE = (SOURCE_ACCEPT, SOURCE_ROOT)
+
 # Control paths allowed_files enforcement (issue #169) never removes,
 # even under a bare `*`. Lockstep with submit.go's isControlPath, pinned
 # from both sides by the shared fixture
@@ -531,30 +539,54 @@ def validate_submitted_by(value: Any, filename: str) -> str | None:
 def _baseline_scan(workspace: pathlib.Path) -> tuple[str | None, str]:
     """Resolve the student's baseline commit and how it was found.
 
-    Returns (sha, source) where source is:
-      - "accept": the accept commit -- the commit that introduced
-        `.classroom50.yaml` (ACCEPT_MARKER_PATH). A trusted baseline.
-      - "root":   fell back to the repo's root commit (no commit added
-        `.classroom50.yaml`) -- a best-effort baseline.
-      - "none":   history unavailable (sha is None).
+    Returns (sha, source) where source is one of the SOURCE_* constants:
+      - SOURCE_ACCEPT:    the commit that introduced `.classroom50.yaml`
+        (ACCEPT_MARKER_PATH). A trusted baseline.
+      - SOURCE_ROOT:      the repo's root commit (no commit added the
+        marker) -- a best-effort baseline.
+      - SOURCE_GIT_ERROR: git ran but failed -- e.g. the "dubious
+        ownership" guard in a container, or an un-deepenable shallow
+        clone. History might exist; we couldn't read it. Distinct from
+        SOURCE_NONE so the caller can warn accurately.
+      - SOURCE_NONE:      no history to resolve -- git is unavailable or
+        the workspace is not a git repo.
+    sha is None for everything except SOURCE_ACCEPT / SOURCE_ROOT.
     """
 
     def git(*args: str) -> subprocess.CompletedProcess[str]:
+        # `-c safe.directory=*` keeps the scan independent of the
+        # runner OS/container. In a container the checkout is owned by
+        # the host runner user but git runs as a different UID over a
+        # bind mount, tripping git's "dubious ownership" guard.
+        # actions/checkout's safe.directory exception is written under a
+        # temporary HOME that's restored before runner.py runs, so it's
+        # invisible here. Setting it per-invocation avoids relying on
+        # global config/HOME.
         return subprocess.run(
-            ["git", "-C", str(workspace), *args],
+            ["git", "-c", "safe.directory=*", "-C", str(workspace), *args],
             capture_output=True, text=True, timeout=120, check=False,
         )
 
     try:
+        # Is this a git repo at all? A git-less tarball checkout is
+        # SOURCE_NONE; a real repo git refuses to read is SOURCE_GIT_ERROR.
+        inside = git("rev-parse", "--git-dir")
+        if inside.returncode != 0:
+            low = inside.stderr.lower()
+            if "not a git repository" in low or "no such file" in low:
+                return None, SOURCE_NONE
+            # Repo exists but git won't read it (dubious ownership,
+            # corruption, locked index): history may exist.
+            return None, SOURCE_GIT_ERROR
         shallow = git("rev-parse", "--is-shallow-repository")
         if shallow.returncode != 0:
-            return None, "none"
+            return None, SOURCE_GIT_ERROR
         if shallow.stdout.strip() == "true":
             # Depth-1 checkout (workflows predating fetch-depth: 0):
             # deepen, or the graft boundary would pose as the root.
             # checkout's persisted credentials authenticate the fetch.
             if git("fetch", "--quiet", "--unshallow", "origin").returncode != 0:
-                return None, "none"
+                return None, SOURCE_GIT_ERROR
         # Earliest commit that ADDED the marker wins so a later re-add
         # (delete then restore) can't move the baseline forward and hide
         # work from the review diff. --diff-filter=A selects additions,
@@ -564,28 +596,27 @@ def _baseline_scan(workspace: pathlib.Path) -> tuple[str | None, str]:
             "log", "--reverse", "--first-parent", "--diff-filter=A",
             "--format=%H", "HEAD", "--", ACCEPT_MARKER_PATH,
         )
-        # A failed marker query is history-unavailable, not "marker
-        # absent" -- return "none" (like the other git calls) so a
-        # transient git error doesn't silently degrade to the root
-        # fallback and make the skip warning misreport a structural cause.
+        # A failed marker query is history-unreadable, not "marker
+        # absent" -- return SOURCE_GIT_ERROR so a transient git error
+        # doesn't silently degrade to the root fallback.
         if added.returncode != 0:
-            return None, "none"
+            return None, SOURCE_GIT_ERROR
         for line in added.stdout.splitlines():
             sha = line.strip()
             if sha:
-                return sha, "accept"
+                return sha, SOURCE_ACCEPT
         # No commit added the marker (hand-created repo): fall back to
         # the root commit for the best-effort review link.
         log = git("log", "--reverse", "--first-parent", "--format=%H", "HEAD")
         if log.returncode != 0:
-            return None, "none"
+            return None, SOURCE_GIT_ERROR
         for line in log.stdout.splitlines():
             sha = line.strip()
             if sha:
-                return sha, "root"
-        return None, "none"
+                return sha, SOURCE_ROOT
+        return None, SOURCE_NONE
     except (OSError, subprocess.SubprocessError):
-        return None, "none"
+        return None, SOURCE_NONE
 
 
 def baseline_sha(workspace: pathlib.Path) -> str | None:
@@ -598,14 +629,26 @@ def baseline_sha(workspace: pathlib.Path) -> str | None:
     return _baseline_scan(workspace)[0]
 
 
-def feedback_base_sha(workspace: pathlib.Path) -> str | None:
-    """Trusted baseline for the Feedback PR's frozen base branch: the
-    accept commit, or None. Unlike baseline_sha, never falls back to the
-    root commit -- the base is frozen into a long-lived branch, so an
-    unresolvable accept commit must skip the PR rather than freeze a
-    wrong base."""
-    sha, source = _baseline_scan(workspace)
-    return sha if source == "accept" else None
+def feedback_base_outcome(
+    workspace: pathlib.Path,
+    scan: tuple[str | None, str] | None = None,
+) -> tuple[str | None, str]:
+    """(feedback-PR-base-sha, scan-source) for `main()`, which needs both
+    the base AND the trust signal. Same (sha, source) as `_baseline_scan`,
+    but forces a null sha for non-openable sources so the caller's gate is
+    a simple `sha is not None`: SOURCE_ACCEPT / SOURCE_ROOT open (root
+    warns it's untrusted), SOURCE_GIT_ERROR / SOURCE_NONE skip.
+
+    A reviewable diff against the root commit beats no Feedback PR at all,
+    and the untrusted-baseline warning tells the teacher to verify.
+
+    `scan` lets a caller that already ran `_baseline_scan` (e.g. main(),
+    which also needs the review-link baseline) reuse that result instead
+    of re-walking history -- the scan issues several sequential git calls,
+    so a second walk doubles the worst-case time against the job ceiling.
+    """
+    sha, source = scan if scan is not None else _baseline_scan(workspace)
+    return (sha, source) if source in SOURCE_OPENABLE else (None, source)
 
 
 def _is_control_path(rel: str) -> bool:
@@ -790,17 +833,47 @@ def append_removed_files_note(workspace: pathlib.Path, removed: list[str]) -> No
         print(f"runner: could not append removed-files note to {RELEASE_BODY_FILENAME}: {exc}", file=sys.stderr)
 
 
-def no_baseline_warning() -> str:
-    """The GitHub workflow annotation emitted when no trusted baseline
-    resolves and the Feedback PR step will skip. Kept as a pure helper
-    so the `::warning::` prefix (which routes it to GitHub's annotation
-    stream rather than a plain log line) is unit-testable -- a regression
-    in that prefix silently degrades the skip back into an unscannable
-    log line."""
+def no_baseline_warning(source: str = SOURCE_NONE) -> str:
+    """GitHub workflow annotation when no baseline resolves and the
+    Feedback PR step will SKIP. A pure helper so the `::warning::` prefix
+    (which routes it to GitHub's annotation stream) is unit-testable.
+
+    Only unopenable sources reach here (SOURCE_ROOT opens the PR with
+    `untrusted_baseline_warning` instead). `source` names the cause:
+    SOURCE_GIT_ERROR = git couldn't read history (a baseline may exist);
+    SOURCE_NONE = not a git repo / no history to anchor a base to.
+    """
+    prefix = "::warning title=classroom50 Feedback PR::"
+    if source == SOURCE_GIT_ERROR:
+        return (
+            f"{prefix}could not read git history to resolve the Feedback PR "
+            "baseline; a baseline may exist but git could not read it (e.g. a "
+            "container's 'dubious ownership' guard). The Feedback PR step will "
+            "skip. See the runner log above for the git error."
+        )
     return (
-        "::warning title=classroom50 Feedback PR::no trusted baseline "
-        f"found -- no commit in history added {ACCEPT_MARKER_PATH}, so the "
-        "Feedback PR step will skip. Was this repo created by an accept flow?"
+        f"{prefix}no git history found to anchor the Feedback PR baseline "
+        "(not a git repository), so the Feedback PR step will skip. Was this "
+        "repo created by an accept flow?"
+    )
+
+
+def untrusted_baseline_warning() -> str:
+    """GitHub workflow annotation when the Feedback PR opened against the
+    repo's root commit instead of the trusted accept commit (no commit
+    detected as ADDING `.classroom50.yaml`). The PR is still useful; the
+    teacher just gets a heads-up that the frozen base may include
+    starter/plumbing work, so the diff could be larger than usual.
+
+    A `::warning::` annotation (not a plain log) so the caveat shows in
+    the run summary. Pure helper for the same testability reason as
+    `no_baseline_warning`."""
+    return (
+        "::warning title=classroom50 Feedback PR::opened the Feedback PR "
+        f"against the repo's root commit -- no commit was detected as adding "
+        f"{ACCEPT_MARKER_PATH}, so this baseline is UNTRUSTED and the review "
+        "diff may include starter/plumbing files. Verify the repo was created "
+        "by an accept flow if the diff looks larger than expected."
     )
 
 
@@ -1651,7 +1724,12 @@ def main() -> int:
     username = username_from_repo(repository, classroom, assignment, actor)
     commit_link = commit_url(server_url, repository, sha)
     release_link = release_url(server_url, repository, submission)
-    base_sha = baseline_sha(workspace)
+    # Resolve the baseline once: both the review-compare link and the
+    # Feedback PR gate need it, and the scan issues several sequential
+    # git calls, so a second walk would double the worst-case time
+    # against the grade job's 15-minute ceiling.
+    baseline_scan = _baseline_scan(workspace)
+    base_sha = baseline_scan[0]
     review_link = review_url(server_url, repository, base_sha, sha)
     if base_sha is None:
         print("runner: no baseline commit found; review link falls back to the commit view")
@@ -1662,17 +1740,18 @@ def main() -> int:
     # when grading fails (teachers review failing work too). The step
     # itself is the gate: it opens the PR only when the assignment opted
     # in (feedback-pr) and there's a diff (baseline-sha != head-sha).
-    # The Feedback PR base uses the *trusted* baseline (the accept
-    # commit, never the root-commit fallback): the base is frozen into a
-    # long-lived branch, so an unresolvable baseline skips the PR rather
-    # than freezing a wrong/oversized base.
-    fb_base_sha = feedback_base_sha(workspace)
+    # The base is the accept commit when detected, else the root commit:
+    # a root fallback still opens the PR but warns it's UNTRUSTED; only
+    # an unresolvable baseline (git unreadable / not a repo) skips.
+    fb_base_sha, fb_source = feedback_base_outcome(workspace, baseline_scan)
     append_sha_outputs(github_output, fb_base_sha, sha)
-    if fb_base_sha is None:
-        # Visible annotation (not a plain log) so a skipped Feedback PR
-        # is diagnosable without reading raw job logs. A warning, not an
-        # error: the Feedback PR step is opt-in.
-        print(no_baseline_warning())
+    if fb_source == SOURCE_ROOT:
+        print(untrusted_baseline_warning())
+    elif fb_base_sha is None:
+        # No baseline -> the step skips. Visible annotation (not a plain
+        # log) so a skipped Feedback PR is diagnosable. A warning, not an
+        # error: the step is opt-in.
+        print(no_baseline_warning(fb_source))
 
     print(
         f"runner: classroom={classroom!r} assignment={assignment!r} "

@@ -510,6 +510,17 @@ jobs:
       - id: autograde
         run: |
           set -euo pipefail
+          # Re-assert the checkout as safe before git-dependent steps. In
+          # a container the bind-mounted repo is owned by the host runner
+          # user but git runs as a different UID, tripping git's "dubious
+          # ownership" guard. actions/checkout's own entry was written
+          # under a now-restored temporary HOME, so set it again here (under
+          # the runtime HOME) so runner.py can read history. Guard the
+          # --add so repeated runs on a persistent-HOME (self-hosted)
+          # runner don't accumulate duplicate lines in ~/.gitconfig.
+          SAFE_DIR="${GITHUB_WORKSPACE:-$PWD}"
+          git config --global --get-all safe.directory 2>/dev/null | grep -qxF "$SAFE_DIR" \
+            || git config --global --add safe.directory "$SAFE_DIR" || true
           RUNNER_SCRIPT="${RUNNER_TEMP:-/tmp}/classroom50-runner.py"
           curl -fsSL --max-time 30 --retry 3 --retry-delay 2 --retry-all-errors \
                "${PAGES_BASE_URL}/runner.py" -o "$RUNNER_SCRIPT"

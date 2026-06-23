@@ -295,48 +295,41 @@ class TestBaselineSha:
         assert ag.baseline_sha(clone) == shas[1]
 
 
-class TestFeedbackBaseSha:
-    # feedback_base_sha is the *trusted* baseline for the Feedback PR's
-    # frozen base branch: it returns the accept commit (the commit that
-    # introduced .classroom50.yaml), and (unlike baseline_sha) does NOT
-    # fall back to the root commit.
-    def test_returns_accept_commit_when_marker_present(self, tmp_path):
-        shas = _make_repo(tmp_path / "repo", [
-            "Initial commit",
-            ACCEPT,
-            "Submit hello",
-        ])
-        assert ag.feedback_base_sha(tmp_path / "repo") == shas[1]
+class TestFeedbackBaseOutcome:
+    # feedback_base_outcome returns (sha, source) in one scan so main()
+    # can freeze the PR base AND choose the annotation. "accept"/"root"
+    # yield a non-None sha (both open the PR); "git-error"/"none" yield
+    # None (both skip).
+    def test_accept_marker_yields_sha_and_accept_source(self, tmp_path):
+        shas = _make_repo(tmp_path / "repo", ["Initial commit", ACCEPT, "Submit"])
+        assert ag.feedback_base_outcome(tmp_path / "repo") == (shas[1], "accept")
 
-    def test_none_when_marker_absent_no_root_fallback(self, tmp_path):
-        # A hand-created repo without the accept marker: baseline_sha
-        # would fall back to the root, but feedback_base_sha must NOT —
-        # freezing a wrong base into a long-lived branch is worse than
-        # skipping the Feedback PR.
-        _make_repo(tmp_path / "repo", [
-            "Initial commit",
-            "Submit hello",
-        ])
-        assert ag.feedback_base_sha(tmp_path / "repo") is None
+    def test_marker_absent_yields_root_sha_and_root_source(self, tmp_path):
+        # The root commit is an openable base (with an untrusted warning),
+        # so it returns a non-None sha.
+        shas = _make_repo(tmp_path / "repo", ["Initial commit", "Submit"])
+        assert ag.feedback_base_outcome(tmp_path / "repo") == (shas[0], "root")
 
-    def test_none_when_history_unavailable(self, tmp_path):
+    def test_non_repo_yields_none_and_none_source(self, tmp_path):
         (tmp_path / "plain").mkdir()
-        assert ag.feedback_base_sha(tmp_path / "plain") is None
+        assert ag.feedback_base_outcome(tmp_path / "plain") == (None, "none")
 
-    def test_earliest_marker_add_wins(self, tmp_path):
-        repo = tmp_path / "repo"
-        repo.mkdir()
-        _git(repo, "init", "-q", "-b", "main")
-        (repo / "f0.txt").write_text("0\n")
-        _git(repo, "add", "-A"); _git(repo, "commit", "-q", "-m", "Initial commit")
-        (repo / ag.ACCEPT_MARKER_PATH).write_text("classroom: x\n")
-        _git(repo, "add", "-A"); _git(repo, "commit", "-q", "-m", "Accept x/y")
-        accept_sha = _git(repo, "rev-parse", "HEAD").stdout.strip()
-        _git(repo, "rm", "-q", ag.ACCEPT_MARKER_PATH)
-        _git(repo, "commit", "-q", "-m", "Submit")
-        (repo / ag.ACCEPT_MARKER_PATH).write_text("classroom: x\n")
-        _git(repo, "add", "-A"); _git(repo, "commit", "-q", "-m", "Restore")
-        assert ag.feedback_base_sha(repo) == accept_sha
+    def test_git_failure_yields_none_and_git_error_source(self, tmp_path, monkeypatch):
+        # Dubious-ownership case: a real repo git refuses to read. sha is
+        # None (skip), source is "git-error".
+        _make_repo(tmp_path / "repo", ["Initial commit", ACCEPT])
+        real_run = subprocess.run
+
+        def fake_run(cmd, *args, **kwargs):
+            if isinstance(cmd, (list, tuple)) and cmd[0] == "git":
+                return subprocess.CompletedProcess(
+                    cmd, 128, stdout="",
+                    stderr="fatal: detected dubious ownership in repository",
+                )
+            return real_run(cmd, *args, **kwargs)
+
+        monkeypatch.setattr(ag.subprocess, "run", fake_run)
+        assert ag.feedback_base_outcome(tmp_path / "repo") == (None, "git-error")
 
 
 class TestNoBaselineWarning:
@@ -350,21 +343,64 @@ class TestNoBaselineWarning:
             "::warning title=classroom50 Feedback PR::"
         )
 
-    def test_names_the_marker_path(self):
-        # The message must name the missing marker so the reader knows
-        # *why* no baseline resolved.
-        assert ag.ACCEPT_MARKER_PATH in ag.no_baseline_warning()
+    def test_git_error_source_is_also_a_warning_annotation(self):
+        assert ag.no_baseline_warning("git-error").startswith(
+            "::warning title=classroom50 Feedback PR::"
+        )
+
+    def test_names_the_marker_path_for_git_error(self):
+        # "none" names the marker; "git-error" intentionally doesn't (it's
+        # about git failing, not a missing file).
+        assert ag.ACCEPT_MARKER_PATH not in ag.no_baseline_warning("none")
+        assert "could not read git history" in ag.no_baseline_warning("git-error")
+
+    def test_none_source_reports_no_git_history(self):
+        # "none" = not a git repository; no commit to anchor a base. Must
+        # NOT claim a commit "added" the marker.
+        msg = ag.no_baseline_warning("none")
+        assert "no git history found" in msg
+        assert "accept flow" in msg
+
+    def test_git_error_does_not_blame_a_missing_accept_commit(self):
+        # A git failure must NOT claim the accept commit is missing -- the
+        # baseline may exist; git just couldn't read it.
+        msg = ag.no_baseline_warning("git-error")
+        assert "could not read git history" in msg
+        assert "not a git repository" not in msg
 
     def test_is_a_single_line(self):
         # An embedded newline would split the annotation, breaking the
-        # `::warning::` parse and the diagnosability the prefix buys.
+        # `::warning::` parse.
         assert "\n" not in ag.no_baseline_warning()
+        assert "\n" not in ag.no_baseline_warning("git-error")
+
+
+class TestUntrustedBaselineWarning:
+    # Emitted when the Feedback PR opened against the root commit (no
+    # accept commit detected) -- a heads-up, not a skip.
+    def test_is_a_github_warning_annotation(self):
+        assert ag.untrusted_baseline_warning().startswith(
+            "::warning title=classroom50 Feedback PR::"
+        )
+
+    def test_signals_opened_against_root_and_untrusted(self):
+        msg = ag.untrusted_baseline_warning()
+        assert "root commit" in msg
+        assert "UNTRUSTED" in msg
+        # Must NOT say the step skipped -- the PR opened.
+        assert "skip" not in msg.lower()
+
+    def test_names_the_marker_path(self):
+        assert ag.ACCEPT_MARKER_PATH in ag.untrusted_baseline_warning()
+
+    def test_is_a_single_line(self):
+        assert "\n" not in ag.untrusted_baseline_warning()
 
 
 class TestBaselineScanSource:
-    # _baseline_scan returns (sha, source); source drives feedback_base_sha
-    # (only "accept" is trusted). These pin the source discriminator
-    # directly rather than only through feedback_base_sha.
+    # _baseline_scan returns (sha, source); source drives both the
+    # feedback base and main()'s annotation. These pin the discriminator
+    # directly.
     def test_accept_marker_source_is_accept(self, tmp_path):
         shas = _make_repo(tmp_path / "repo", [
             "Initial commit",
@@ -380,12 +416,11 @@ class TestBaselineScanSource:
         ])
         assert ag._baseline_scan(tmp_path / "repo") == (shas[0], "root")
 
-    def test_failed_marker_query_yields_none_not_root(self, tmp_path, monkeypatch):
-        # A *failed* marker query (transient git error) must surface as
-        # "none" (history unavailable), NOT silently degrade to the root
-        # fallback -- otherwise feedback_base_sha would skip with a
-        # warning that wrongly blames a missing accept commit. Make only
-        # the --diff-filter=A marker query fail; let other git calls pass.
+    def test_failed_marker_query_yields_git_error_not_root(self, tmp_path, monkeypatch):
+        # A failed marker query must surface as "git-error", NOT degrade
+        # to "root" -- git-error skips the PR, "root" would open it
+        # against the wrong commit and mislabel the cause. Fail only the
+        # --diff-filter=A query; let other git calls pass.
         shas = _make_repo(tmp_path / "repo", [
             "Initial commit",
             ACCEPT,
@@ -399,8 +434,48 @@ class TestBaselineScanSource:
             return real_run(cmd, *args, **kwargs)
 
         monkeypatch.setattr(ag.subprocess, "run", fake_run)
-        assert ag._baseline_scan(tmp_path / "repo") == (None, "none")
-        assert ag.feedback_base_sha(tmp_path / "repo") is None
+        assert ag._baseline_scan(tmp_path / "repo") == (None, ag.SOURCE_GIT_ERROR)
+        assert ag.feedback_base_outcome(tmp_path / "repo") == (None, ag.SOURCE_GIT_ERROR)
+
+    def test_git_error_when_rev_parse_fails(self, tmp_path, monkeypatch):
+        # Dubious-ownership case: git and the repo are real, but every
+        # git command exits non-zero. The first call (rev-parse --git-dir)
+        # fails with a non-"not a git repository" error, so the scan must
+        # report SOURCE_GIT_ERROR.
+        shas = _make_repo(tmp_path / "repo", ["Initial commit", ACCEPT])
+        real_run = subprocess.run
+
+        def fake_run(cmd, *args, **kwargs):
+            if isinstance(cmd, (list, tuple)) and cmd[0] == "git":
+                return subprocess.CompletedProcess(
+                    cmd, 128, stdout="",
+                    stderr="fatal: detected dubious ownership in repository",
+                )
+            return real_run(cmd, *args, **kwargs)
+
+        monkeypatch.setattr(ag.subprocess, "run", fake_run)
+        assert ag._baseline_scan(tmp_path / "repo") == (None, ag.SOURCE_GIT_ERROR)
+        assert ag.feedback_base_outcome(tmp_path / "repo") == (None, ag.SOURCE_GIT_ERROR)
+
+    def test_git_calls_pass_safe_directory(self, tmp_path, monkeypatch):
+        # Every git invocation must carry `-c safe.directory=*` so
+        # baseline resolution works inside a container where git's
+        # dubious-ownership guard would otherwise fail every call.
+        _make_repo(tmp_path / "repo", ["Initial commit", ACCEPT])
+        seen = []
+        real_run = subprocess.run
+
+        def spy_run(cmd, *args, **kwargs):
+            if isinstance(cmd, (list, tuple)) and cmd[0] == "git":
+                seen.append(list(cmd))
+            return real_run(cmd, *args, **kwargs)
+
+        monkeypatch.setattr(ag.subprocess, "run", spy_run)
+        ag._baseline_scan(tmp_path / "repo")
+        assert seen, "expected at least one git invocation"
+        for cmd in seen:
+            joined = " ".join(cmd)
+            assert "safe.directory=*" in joined, f"missing safe.directory in: {joined}"
 
 
 # ---------------------------------------------------------------------------

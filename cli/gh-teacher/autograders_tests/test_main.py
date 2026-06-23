@@ -105,6 +105,7 @@ def harness(tmp_path, monkeypatch):
         autograder_rc: int = 0,
         subprocess_raises: OSError | None = None,
         baseline: str | None = None,
+        baseline_source: str | None = None,
     ) -> int:
         """Invoke runner.main() with stubbed fetch + subprocess."""
         def fake_fetch(url: str):
@@ -119,12 +120,18 @@ def harness(tmp_path, monkeypatch):
 
         monkeypatch.setattr(ag, "fetch_url", fake_fetch)
 
-        # Workspace isn't a git repo; tests set the baseline directly
-        # (real git behavior: test_runner.py::TestBaselineSha /
-        # TestFeedbackBaseSha). feedback_base_sha mirrors baseline here —
-        # the harness baseline stands in for the trusted accept commit.
-        monkeypatch.setattr(ag, "baseline_sha", lambda workspace: baseline)
-        monkeypatch.setattr(ag, "feedback_base_sha", lambda workspace: baseline)
+        # Workspace isn't a git repo; tests set the baseline directly.
+        # `baseline_source` overrides the scan outcome to exercise the
+        # accept / root / git-error / none branches; defaults to "accept"
+        # when a baseline is set, else "none". main() resolves the scan
+        # once via _baseline_scan and derives both the review-link
+        # baseline and the Feedback PR outcome from it, so stub that
+        # single seam and let the real baseline_sha / feedback_base_outcome
+        # logic (incl. the null-sha gate for non-openable sources) run.
+        eff_source = baseline_source or ("accept" if baseline else "none")
+        monkeypatch.setattr(
+            ag, "_baseline_scan", lambda workspace: (baseline, eff_source)
+        )
 
         def fake_subprocess_run(cmd, cwd, env, check):
             if subprocess_raises is not None:
@@ -335,6 +342,76 @@ class TestReviewLink:
         assert result["review"] == (
             "https://github.com/cs-test/cs-test-hello-alice/compare/base999...abc123"
         )
+
+
+# ---------------------------------------------------------------------------
+# main() — Feedback PR baseline annotations + gate output
+# ---------------------------------------------------------------------------
+
+
+class TestFeedbackPrBaselineGate:
+    """main() emits baseline-sha (the open/skip gate) and the right
+    annotation per scan outcome: accept opens silently, root opens with
+    an untrusted-baseline warning, git-error/none skip."""
+
+    def _fake_writes(self, harness):
+        def writes():
+            (harness["workspace"] / "result.json").write_text(json.dumps(_v1_payload(
+                classroom="cs-test", assignment="hello", username="alice",
+                submission="submit/2026-06-01T14-32-05Z-a1b2c3d",
+            )))
+        return writes
+
+    def test_accept_baseline_opens_silently(self, harness, capsys):
+        rc = harness["run"](
+            bundle_response=_build_tarball({"hello/autograder.py": "# grader"}),
+            autograder_writes=self._fake_writes(harness),
+            baseline="base999", baseline_source="accept",
+        )
+        assert rc == 0
+        _, _, gh_output = _read_outputs(harness)
+        assert "baseline-sha=base999" in gh_output  # gate: PR opens
+        out = capsys.readouterr().out
+        assert "untrusted" not in out.lower()
+        assert "Feedback PR step will skip" not in out
+
+    def test_root_baseline_opens_with_untrusted_warning(self, harness, capsys):
+        # A root baseline still emits baseline-sha (PR opens) but warns
+        # it's untrusted.
+        rc = harness["run"](
+            bundle_response=_build_tarball({"hello/autograder.py": "# grader"}),
+            autograder_writes=self._fake_writes(harness),
+            baseline="root111", baseline_source="root",
+        )
+        assert rc == 0
+        _, _, gh_output = _read_outputs(harness)
+        assert "baseline-sha=root111" in gh_output  # gate: PR still opens
+        out = capsys.readouterr().out
+        assert ag.untrusted_baseline_warning() in out
+
+    def test_git_error_skips_with_git_error_warning(self, harness, capsys):
+        rc = harness["run"](
+            bundle_response=_build_tarball({"hello/autograder.py": "# grader"}),
+            autograder_writes=self._fake_writes(harness),
+            baseline=None, baseline_source="git-error",
+        )
+        assert rc == 0
+        _, _, gh_output = _read_outputs(harness)
+        assert "baseline-sha=" not in gh_output  # gate: PR skips
+        out = capsys.readouterr().out
+        assert "could not read git history" in out
+
+    def test_no_repo_skips_with_no_history_warning(self, harness, capsys):
+        rc = harness["run"](
+            bundle_response=_build_tarball({"hello/autograder.py": "# grader"}),
+            autograder_writes=self._fake_writes(harness),
+            baseline=None, baseline_source="none",
+        )
+        assert rc == 0
+        _, _, gh_output = _read_outputs(harness)
+        assert "baseline-sha=" not in gh_output  # gate: PR skips
+        out = capsys.readouterr().out
+        assert "no git history found" in out
 
 
 # ---------------------------------------------------------------------------
