@@ -295,6 +295,200 @@ class TestBaselineSha:
         assert ag.baseline_sha(clone) == shas[1]
 
 
+class TestIsAcceptanceCommit:
+    # True only when the trusted accept commit is the tip; everything
+    # uncertain fails open (False -> grade).
+
+    def _head(self, path):
+        return _git(path, "rev-parse", "HEAD").stdout.strip()
+
+    def test_templated_repo_accept_commit_is_tip(self, tmp_path):
+        # Templated repo, default branch main: squashed template + accept
+        # on top -> accept commit is the tip.
+        shas = _make_repo(tmp_path / "repo", ["Initial commit", ACCEPT])
+        assert ag.is_acceptance_commit(tmp_path / "repo", shas[1]) is True
+
+    def test_submission_on_top_of_accept_grades(self, tmp_path):
+        repo = tmp_path / "repo"
+        shas = _make_repo(repo, ["Initial commit", ACCEPT, "Submit hello"])
+        assert ag.is_acceptance_commit(repo, self._head(repo)) is False
+        assert ag.is_acceptance_commit(repo, shas[1]) is True
+
+    def test_template_less_auto_init_then_accept_is_tip(self, tmp_path):
+        # auto_init README commit + accept on top -> accept commit is the tip.
+        shas = _make_repo(tmp_path / "repo", ["Initial commit", ACCEPT])
+        assert ag.is_acceptance_commit(tmp_path / "repo", shas[1]) is True
+
+    def test_empty_submit_right_after_accept_grades(self, tmp_path):
+        # submit uses --allow-empty, so HEAD advances past accept.
+        repo = tmp_path / "repo"
+        _make_repo(repo, ["Initial commit", ACCEPT])
+        _git(repo, "commit", "-q", "--allow-empty", "-m", "Submit hello")
+        assert ag.is_acceptance_commit(repo, self._head(repo)) is False
+
+    def test_non_main_default_first_main_submission_grades(self, tmp_path):
+        # master-default template: accept on master (no run), first submit
+        # creates main with a commit on top -> first run is a submission.
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        _git(repo, "init", "-q", "-b", "master")
+        (repo / "starter.txt").write_text("x\n")
+        _git(repo, "add", "-A"); _git(repo, "commit", "-q", "-m", "Initial commit")
+        (repo / ag.ACCEPT_MARKER_PATH).write_text("classroom: x\n")
+        _git(repo, "add", "-A"); _git(repo, "commit", "-q", "-m", "Accept x/y")
+        _git(repo, "checkout", "-q", "-b", "main")
+        _git(repo, "commit", "-q", "--allow-empty", "-m", "Submit hello")
+        assert ag.is_acceptance_commit(repo, self._head(repo)) is False
+
+    def test_accept_commit_subject_is_irrelevant(self, tmp_path):
+        # Detected by the added marker, not the subject (ACCEPT uses GUI wording).
+        shas = _make_repo(tmp_path / "repo", ["Initial commit", ACCEPT])
+        assert ag.is_acceptance_commit(tmp_path / "repo", shas[1]) is True
+
+    def test_root_commit_marker_repo_is_acceptance(self, tmp_path):
+        # Root commit adds the marker -> it is the accept commit.
+        shas = _make_repo(tmp_path / "repo", [ACCEPT])
+        assert ag.is_acceptance_commit(tmp_path / "repo", shas[0]) is True
+
+    def test_hand_created_repo_without_marker_grades(self, tmp_path):
+        # No marker -> SOURCE_ROOT, not a trusted accept -> grade.
+        shas = _make_repo(tmp_path / "repo", ["Initial commit"])
+        assert ag.is_acceptance_commit(tmp_path / "repo", shas[0]) is False
+
+    def test_re_added_marker_does_not_skip(self, tmp_path):
+        # earliest-add-wins: a re-add can't move the accept commit to HEAD.
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        _git(repo, "init", "-q", "-b", "main")
+        (repo / "f0.txt").write_text("0\n")
+        _git(repo, "add", "-A"); _git(repo, "commit", "-q", "-m", "Initial commit")
+        (repo / ag.ACCEPT_MARKER_PATH).write_text("classroom: x\n")
+        _git(repo, "add", "-A"); _git(repo, "commit", "-q", "-m", "Accept x/y")
+        _git(repo, "rm", "-q", ag.ACCEPT_MARKER_PATH)
+        _git(repo, "commit", "-q", "-m", "Oops removed config")
+        (repo / ag.ACCEPT_MARKER_PATH).write_text("classroom: x\n")
+        _git(repo, "add", "-A"); _git(repo, "commit", "-q", "-m", "Restore config")
+        assert ag.is_acceptance_commit(repo, self._head(repo)) is False
+
+    def test_empty_head_sha_grades(self, tmp_path):
+        _make_repo(tmp_path / "repo", ["Initial commit", ACCEPT])
+        assert ag.is_acceptance_commit(tmp_path / "repo", "") is False
+
+    def test_non_repo_grades(self, tmp_path):
+        # No history -> SOURCE_NONE -> grade.
+        (tmp_path / "plain").mkdir()
+        assert ag.is_acceptance_commit(tmp_path / "plain", "deadbeef") is False
+
+    def test_git_error_grades(self, tmp_path, monkeypatch):
+        # Unreadable history -> SOURCE_GIT_ERROR -> grade.
+        _make_repo(tmp_path / "repo", ["Initial commit", ACCEPT])
+        head = self._head(tmp_path / "repo")
+        real_run = subprocess.run
+
+        def fake_run(cmd, *args, **kwargs):
+            if isinstance(cmd, (list, tuple)) and cmd[0] == "git":
+                return subprocess.CompletedProcess(
+                    cmd, 128, stdout="",
+                    stderr="fatal: detected dubious ownership in repository",
+                )
+            return real_run(cmd, *args, **kwargs)
+
+        monkeypatch.setattr(ag.subprocess, "run", fake_run)
+        assert ag.is_acceptance_commit(tmp_path / "repo", head) is False
+
+    def test_accept_commit_with_extra_work_at_tip_grades(self, tmp_path):
+        # Amended/squashed accept: the marker-introducing commit is the
+        # tip AND adds real work. Skipping it would silently drop the
+        # work, so the setup-files-only guard fails open -> grade.
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        _git(repo, "init", "-q", "-b", "main")
+        (repo / ag.ACCEPT_MARKER_PATH).write_text("classroom: x\n")
+        (repo / "solution.py").write_text("print('graded work')\n")
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-q", "-m", "Accept x/y (and sneak in work)")
+        assert ag.is_acceptance_commit(repo, self._head(repo)) is False
+
+    def test_accept_commit_adding_marker_and_workflow_is_acceptance(self, tmp_path):
+        # The real accept commit lands BOTH setup paths atomically
+        # (ACCEPT_COMMIT_PATHS); the guard must still treat that as
+        # acceptance, not as extra work.
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        _git(repo, "init", "-q", "-b", "main")
+        (repo / ag.ACCEPT_MARKER_PATH).write_text("classroom: x\n")
+        wf = repo / ".github" / "workflows"
+        wf.mkdir(parents=True)
+        (wf / "autograde.yaml").write_text("name: Autograde\n")
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-q", "-m", "Initialize .classroom50.yaml and autograde workflow")
+        assert ag.is_acceptance_commit(repo, self._head(repo)) is True
+
+    def test_setup_only_guard_git_error_grades(self, tmp_path, monkeypatch):
+        # The accept commit is the tip, but reading its touched paths
+        # errors -> fail open (grade) rather than skip on partial info.
+        repo = tmp_path / "repo"
+        shas = _make_repo(repo, ["Initial commit", ACCEPT])
+        real_run = subprocess.run
+
+        def fake_run(cmd, *args, **kwargs):
+            # Only the `git show` path-listing fails; _baseline_scan's
+            # earlier calls succeed so we reach the guard.
+            if (isinstance(cmd, (list, tuple)) and "show" in cmd
+                    and "--name-only" in cmd):
+                return subprocess.CompletedProcess(cmd, 128, stdout="", stderr="boom")
+            return real_run(cmd, *args, **kwargs)
+
+        monkeypatch.setattr(ag.subprocess, "run", fake_run)
+        assert ag.is_acceptance_commit(repo, shas[1]) is False
+    # `runner.py --detect-acceptance`: writes is-acceptance to
+    # $GITHUB_OUTPUT from cwd, always exits 0.
+    def _run(self, repo, head_sha, tmp_path, monkeypatch):
+        out = tmp_path / "ghout"
+        out.write_text("")
+        monkeypatch.chdir(repo)
+        monkeypatch.setenv("GITHUB_SHA", head_sha)
+        monkeypatch.setenv("GITHUB_OUTPUT", str(out))
+        rc = ag.detect_acceptance_mode()
+        return rc, out.read_text()
+
+    def test_acceptance_commit_emits_true(self, tmp_path, monkeypatch):
+        repo = tmp_path / "repo"
+        shas = _make_repo(repo, ["Initial commit", ACCEPT])
+        rc, text = self._run(repo, shas[1], tmp_path, monkeypatch)
+        assert rc == 0
+        assert "is-acceptance=true\n" in text
+
+    def test_submission_emits_false(self, tmp_path, monkeypatch):
+        repo = tmp_path / "repo"
+        _make_repo(repo, ["Initial commit", ACCEPT, "Submit hello"])
+        head = _git(repo, "rev-parse", "HEAD").stdout.strip()
+        rc, text = self._run(repo, head, tmp_path, monkeypatch)
+        assert rc == 0
+        assert "is-acceptance=false\n" in text
+
+    def test_main_dispatches_on_flag(self, tmp_path, monkeypatch):
+        # The flag short-circuits before main()'s env checks.
+        repo = tmp_path / "repo"
+        shas = _make_repo(repo, ["Initial commit", ACCEPT])
+        out = tmp_path / "ghout"
+        out.write_text("")
+        monkeypatch.chdir(repo)
+        monkeypatch.setenv("GITHUB_SHA", shas[1])
+        monkeypatch.setenv("GITHUB_OUTPUT", str(out))
+        monkeypatch.setattr(ag.sys, "argv", ["runner.py", "--detect-acceptance"])
+        assert ag.main() == 0
+        assert "is-acceptance=true\n" in out.read_text()
+
+    def test_no_output_path_does_not_crash(self, tmp_path, monkeypatch):
+        repo = tmp_path / "repo"
+        shas = _make_repo(repo, ["Initial commit", ACCEPT])
+        monkeypatch.chdir(repo)
+        monkeypatch.setenv("GITHUB_SHA", shas[1])
+        monkeypatch.delenv("GITHUB_OUTPUT", raising=False)
+        assert ag.detect_acceptance_mode() == 0
+
+
 class TestFeedbackBaseOutcome:
     # feedback_base_outcome returns (sha, source) in one scan so main()
     # can freeze the PR base AND choose the annotation. "accept"/"root"

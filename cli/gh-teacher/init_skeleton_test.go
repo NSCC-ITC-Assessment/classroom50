@@ -167,10 +167,56 @@ func TestSkeletonFiles_AutogradeRunner(t *testing.T) {
 		"submission-tag", "runs-on", "container",
 		"python", "node", "java", "go", "apt",
 		"base-url", "classroom", "assignment",
+		// is-acceptance gates the whole skip-the-acceptance-commit path;
+		// a dropped output would make every gate below read empty and
+		// re-grade the acceptance commit.
+		"is-acceptance",
 	} {
 		if _, ok := outputsMap[out]; !ok {
 			t.Errorf("setup.outputs missing %q", out)
 		}
+	}
+
+	// === acceptance-commit skip wiring ===
+	// The acceptance commit (the one that introduced .classroom50.yaml,
+	// student-authored, so it fires this workflow) has nothing to grade.
+	// The setup `acceptance` step detects it via the Pages-fetched
+	// runner.py and emits is-acceptance; the tag/read steps and the grade
+	// job are gated off it. A silent revert of any of these would re-grade
+	// every acceptance commit and republish the spurious 0/0 release —
+	// exactly what this guard exists to prevent.
+	//
+	// grade is gated at the job level (set-latest needs grade, so it skips
+	// transitively).
+	if got, _ := nested(doc, "jobs", "grade", "if"); got != "needs.setup.outputs.is-acceptance != 'true'" {
+		t.Errorf("grade.if = %v, want \"needs.setup.outputs.is-acceptance != 'true'\" (acceptance-commit skip)", got)
+	}
+	// The setup checkout must use full history: _baseline_scan walks back
+	// to the commit that added .classroom50.yaml, and a shallow clone
+	// hides it (the un-deepenable case fails open to grade, but a silent
+	// regression here would make detection unreliable).
+	if !strings.Contains(body, "fetch-depth: 0") {
+		t.Errorf("autograde-runner.yaml setup checkout missing fetch-depth: 0 (acceptance scan needs full history)")
+	}
+	// The tag and read steps are step-gated off the same detection so the
+	// acceptance commit produces no submit/* tag and no metadata read.
+	if !strings.Contains(body, "if: steps.acceptance.outputs.is-acceptance != 'true'") {
+		t.Errorf("autograde-runner.yaml tag/read steps not gated on the acceptance detection")
+	}
+	// Branch trigger only — a tag push is always a submission, so the
+	// detection step must not run on tag pushes (its absence leaves
+	// is-acceptance empty, which the != 'true' gates treat as grade).
+	if !strings.Contains(body, "if: github.ref_type == 'branch'") {
+		t.Errorf("autograde-runner.yaml acceptance step not restricted to branch pushes")
+	}
+	// Fail open: both the fetch-failure branch and the run-failure branch
+	// of the detection step must write is-acceptance=false so an uncertain
+	// detection grades rather than dropping a real submission.
+	if !strings.Contains(body, `echo "is-acceptance=false" >> "$GITHUB_OUTPUT"`) {
+		t.Errorf("autograde-runner.yaml acceptance step missing the fail-open is-acceptance=false fallback")
+	}
+	if !strings.Contains(body, "--detect-acceptance") {
+		t.Errorf("autograde-runner.yaml acceptance step doesn't invoke runner.py --detect-acceptance")
 	}
 
 	// === set-latest job: serialized + commit-time-based ===

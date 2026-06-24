@@ -12,9 +12,10 @@
 # This file should not be edited.
 #
 # Triggers:
-#   • push to main      — every commit grades; the runner creates
-#                         the submit/<UTC-timestamp>-<short-sha>
-#                         tag itself
+#   • push to main      — every commit grades (except the acceptance
+#                         commit, which the runner detects and skips);
+#                         the runner creates the
+#                         submit/<UTC-timestamp>-<short-sha> tag itself
 #   • push of submit/*  — manual or web-UI tag pushes work too;
 #                         the runner reuses the pushed tag
 

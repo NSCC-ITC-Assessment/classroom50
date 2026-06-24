@@ -146,6 +146,20 @@ MAX_FETCH_BYTES = 10 * 1024 * 1024
 # metadata.go) -- keep in lockstep.
 ACCEPT_MARKER_PATH = ".classroom50.yaml"
 
+# The full set of paths the accept commit lands, atomically, in one Tree
+# commit. Mirrors classroomcfg.DropFiles (cli/gh-student/internal/
+# classroomcfg/metadata.go), which commits exactly MetadataPath +
+# AutogradeWorkflowPath -- keep in lockstep. is_acceptance_commit uses
+# this to fail open when the tip accept commit also adds non-setup files
+# (e.g. an amended/squashed commit carrying real work), so that work is
+# graded rather than silently skipped.
+ACCEPT_COMMIT_PATHS = frozenset(
+    {
+        ACCEPT_MARKER_PATH,
+        ".github/workflows/autograde.yaml",
+    }
+)
+
 # `_baseline_scan` source discriminator. SOURCE_OPENABLE yield a usable
 # Feedback PR base (accept commit or root fallback); the others skip.
 SOURCE_ACCEPT = "accept"
@@ -627,6 +641,65 @@ def baseline_sha(workspace: pathlib.Path) -> str | None:
     view. Used for the review compare link, which tolerates the root
     fallback."""
     return _baseline_scan(workspace)[0]
+
+
+def is_acceptance_commit(workspace: pathlib.Path, head_sha: str) -> bool:
+    """Whether head_sha is the bare acceptance commit: the commit that
+    introduced `.classroom50.yaml` (SOURCE_ACCEPT) with nothing on top.
+
+    The setup job calls this to skip tagging + grading + the release for
+    the student's accept (no work to grade yet). True only when the
+    trusted accept commit is the tip; a submission stacks a fresh commit
+    (submit uses `--allow-empty`), so head_sha != accept_sha. Fails open
+    (False) on a root fallback, git error, empty head_sha, or no accept
+    commit, so an uncertain case grades.
+
+    As a final guard, the tip accept commit must touch ONLY the known
+    setup paths (`ACCEPT_COMMIT_PATHS`). A student can rewrite history so
+    the marker-introducing commit is also the tip yet carries real work
+    (e.g. `git commit --amend` adding a solution then a force-push, or a
+    squash). Skipping such a commit would silently drop gradeable work,
+    so an accept commit that touches anything outside the setup set fails
+    open (False -> grade). A git error reading the commit's paths also
+    fails open.
+    """
+    if not head_sha:
+        return False
+    accept_sha, source = _baseline_scan(workspace)
+    if not (source == SOURCE_ACCEPT and accept_sha == head_sha):
+        return False
+    return _accept_commit_is_setup_only(workspace, head_sha)
+
+
+def _accept_commit_is_setup_only(workspace: pathlib.Path, head_sha: str) -> bool:
+    """True only when every path the commit touches is in the known
+    setup set (`ACCEPT_COMMIT_PATHS`). Fails open (False -> grade) on any
+    git error or an empty path list, so a commit we can't fully inspect
+    is treated as a submission rather than silently skipped.
+    """
+
+    def git(*args: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            ["git", "-c", "safe.directory=*", "-C", str(workspace), *args],
+            capture_output=True, text=True, timeout=120, check=False,
+        )
+
+    try:
+        # Names of every path the commit changed vs its parent (root
+        # commit: vs the empty tree). -r recurses, --no-renames keeps
+        # paths literal, -z NUL-delimits so unusual filenames survive.
+        changed = git(
+            "show", "--no-renames", "--name-only", "--format=", "-r", "-z",
+            head_sha,
+        )
+        if changed.returncode != 0:
+            return False
+        paths = [p for p in changed.stdout.split("\0") if p]
+        if not paths:
+            return False
+        return all(p in ACCEPT_COMMIT_PATHS for p in paths)
+    except (OSError, subprocess.SubprocessError):
+        return False
 
 
 def feedback_base_outcome(
@@ -1695,7 +1768,32 @@ def finalize_result(finalize: Finalizer, *, is_group: bool) -> int:
 # ---------------------------------------------------------------------------
 
 
+def detect_acceptance_mode() -> int:
+    """`runner.py --detect-acceptance`: write is-acceptance=true|false to
+    $GITHUB_OUTPUT for the setup job's skip gate. Always exits 0; fails
+    open (False) on any uncertainty.
+    """
+    workspace = pathlib.Path.cwd()
+    head_sha = os.environ.get("GITHUB_SHA", "").strip()
+    is_acceptance = is_acceptance_commit(workspace, head_sha)
+    github_output = os.environ.get("GITHUB_OUTPUT")
+    if github_output:
+        with open(github_output, "a") as fh:
+            fh.write(f"is-acceptance={'true' if is_acceptance else 'false'}\n")
+    if is_acceptance:
+        print(
+            "::notice::acceptance commit detected — nothing to grade yet; "
+            "submit work (gh student submit) to be graded"
+        )
+    else:
+        print("runner: not an acceptance commit; grading proceeds")
+    return 0
+
+
 def main() -> int:
+    if "--detect-acceptance" in sys.argv[1:]:
+        return detect_acceptance_mode()
+
     pages_base_url = os.environ.get("PAGES_BASE_URL", "").strip()
     classroom = os.environ.get("CLASSROOM", "").strip()
     assignment = os.environ.get("ASSIGNMENT", "").strip()

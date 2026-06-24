@@ -37,6 +37,9 @@ jobs:
   setup:
     runs-on: ubuntu-latest
     outputs:
+      # 'true' -> pushed commit is the acceptance commit; skip the tag/read
+      # steps and the grade job (no submission tag, no release).
+      is-acceptance:  ${{ steps.acceptance.outputs.is-acceptance }}
       submission-tag: ${{ steps.read.outputs.submission-tag }}
       runs-on:        ${{ steps.read.outputs.runs-on }}
       container:      ${{ steps.read.outputs.container }}
@@ -53,16 +56,73 @@ jobs:
       allowed-files:  ${{ steps.read.outputs.allowed-files }}
     steps:
       - uses: actions/checkout@v6
+        with:
+          # Full history -- the acceptance check walks back to the commit
+          # that added .classroom50.yaml; a shallow clone hides it.
+          fetch-depth: 0
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
       - run: python3 -m pip install --quiet --user pyyaml
+
+      # === Skip the acceptance commit ===
+      # The accept commit (adds .classroom50.yaml + the shim, student-
+      # authored, so it fires this workflow) has nothing to grade. Detect
+      # it via the Pages-fetched runner.py and skip the tag/read steps and
+      # grade job. Branch trigger only (a tag push is always a submission).
+      # Fails open (grades) on a fetch failure.
+      - id: acceptance
+        if: github.ref_type == 'branch'
+        env:
+          REPO_OWNER: ${{ github.repository_owner }}
+          GITHUB_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          BASE_URL="https://${REPO_OWNER}.github.io/classroom50"
+          RUNNER_SCRIPT="${RUNNER_TEMP:-/tmp}/classroom50-runner.py"
+          if curl -fsSL --max-time 30 --retry 3 --retry-delay 2 --retry-all-errors \
+               "${BASE_URL}/runner.py" -o "$RUNNER_SCRIPT"; then
+            # Fail open on a fetched-but-unrunnable runner.py too (invalid
+            # 200 body, syntax error, missing python3): a non-zero detect
+            # exit must grade, not fail the setup job and drop a real
+            # submission. detect_acceptance_mode already exits 0 for every
+            # in-process outcome; this guards the can't-execute case.
+            python3 "$RUNNER_SCRIPT" --detect-acceptance || {
+              echo "::warning::acceptance detection errored; grading proceeds"
+              echo "is-acceptance=false" >> "$GITHUB_OUTPUT"
+            }
+          else
+            echo "::warning::could not fetch runner.py for acceptance check; grading proceeds"
+            echo "is-acceptance=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # === Acceptance-skip commit status ===
+      # A graded run posts a classroom50/autograde commit status (the
+      # grade job's `always()` step); an acceptance skip otherwise posts
+      # nothing, so a client polling the commit-status API can't tell
+      # "skipped because acceptance" from "hasn't run yet". Post an
+      # explicit success status here to keep that polling channel at
+      # parity with the human's check mark (mirrors the Feedback PR
+      # status fallback). Best-effort: never fail the job over it.
+      - name: Acceptance-skip commit status
+        if: steps.acceptance.outputs.is-acceptance == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          gh api "repos/${GITHUB_REPOSITORY}/statuses/${GITHUB_SHA}" \
+            -f state="success" \
+            -f context="classroom50/autograde" \
+            -f description="acceptance commit — nothing to grade yet; run gh student submit" \
+            -f target_url="$RUN_URL" >/dev/null 2>&1 || true
 
       # === Tag the submission ===
       # Branch trigger: create submit/<UTC-timestamp>-<short-sha> at
       # the pushed SHA. Tag trigger: reuse the pushed tag. Tags pushed
       # with github.token don't fire workflows (anti-recursion).
       - id: tag
+        if: steps.acceptance.outputs.is-acceptance != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           REF: ${{ github.ref }}
@@ -107,6 +167,7 @@ jobs:
       # cli/gh-teacher/runtime.go (runtime block) and
       # cli/gh-teacher/tests.go (declarative tests block).
       - id: read
+        if: steps.acceptance.outputs.is-acceptance != 'true'
         env:
           SUBMISSION_TAG: ${{ steps.tag.outputs.tag }}
           REPO_OWNER: ${{ github.repository_owner }}
@@ -430,6 +491,8 @@ jobs:
 
   grade:
     needs: setup
+    # Skip for the acceptance commit (set-latest needs grade, so it skips too).
+    if: needs.setup.outputs.is-acceptance != 'true'
     runs-on:   ${{ fromJSON(needs.setup.outputs.runs-on) }}
     container: ${{ fromJSON(needs.setup.outputs.container) }}
     timeout-minutes: 15
