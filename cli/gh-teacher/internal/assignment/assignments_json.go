@@ -370,18 +370,14 @@ func (r *RunsOn) UnmarshalJSON(data []byte) error {
 	}
 }
 
-// keyword. `Credentials.Password` must be a `${{ secrets.NAME }}`
-// reference at write time (raw tokens are rejected so they can't
-// land in git history) — see SecretRefPattern in runtime.go.
+// ContainerSpec is the `runtime.container` block: the image to grade
+// in, plus an optional `User`.
 //
-// KNOWN LIMITATION: private-image pulls via Credentials are
-// unverified end-to-end. The runtime block flows to the grade job
-// via `container: ${{ fromJSON(...) }}` and GHA does not
-// re-evaluate `${{ }}` expressions inside fromJSON-derived data,
-// so the literal text `${{ secrets.NAME }}` reaches docker login
-// as the password. See ValidateContainerCredentials in runtime.go
-// for the full note. Public images (no Credentials) work as
-// designed.
+// The image must be publicly pullable: the grade job runs inside the
+// student repo (admin'd by the student), where GitHub Actions provides
+// no way to deliver a private-registry pull secret safely, so private
+// images are out of scope. Use a public image (e.g. a public
+// ghcr.io/<org>/<name>) for grading.
 //
 // `User` is an internal field translated to `container.options:
 // --user <value>` at runtime — Actions doesn't accept
@@ -390,14 +386,8 @@ func (r *RunsOn) UnmarshalJSON(data []byte) error {
 // writes to the runner's temp dir under `/__w/_temp/`. Setting
 // `user: root` (or `user: 0`) is the standard workaround.
 type ContainerSpec struct {
-	Image       string          `json:"image"`
-	Credentials *ContainerCreds `json:"credentials,omitempty"`
-	User        string          `json:"user,omitempty"`
-}
-
-type ContainerCreds struct {
-	Username string `json:"username"`
-	Password string `json:"password"`
+	Image string `json:"image"`
+	User  string `json:"user,omitempty"`
 }
 
 // AssignmentsFilePath is the config-repo-relative path to a classroom's

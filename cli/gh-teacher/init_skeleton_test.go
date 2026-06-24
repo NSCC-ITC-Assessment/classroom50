@@ -212,10 +212,12 @@ func TestSkeletonFiles_AutogradeRunner(t *testing.T) {
 	// runtime.container.user → container.options translation must use
 	// an explicit allow-list build (`emitted = {"image": image}` etc.)
 	// rather than copying unknown keys through. Mirrors Go's
-	// `assignment.ContainerSpec` + DisallowUnknownFields.
+	// `assignment.ContainerSpec` + DisallowUnknownFields. Only `image`
+	// and `user` are container keys — private registry auth is out of
+	// scope for this model, so images must be publicly pullable.
 	for _, want := range []string{
 		`_RUNTIME_KEYS = {"runs-on", "container", "python", "node", "java", "go", "apt"}`,
-		`_CONTAINER_KEYS = {"image", "credentials", "user"}`,
+		`_CONTAINER_KEYS = {"image", "user"}`,
 		`emitted = {"image": image}`,
 		`emitted["options"] = f"--user {user}"`,
 	} {
@@ -306,7 +308,6 @@ func TestRegexParity_GoVsInlinePython(t *testing.T) {
 		{"assignment.LanguageVersionPattern", assignment.LanguageVersionPattern.String()},
 		{"assignment.AptPackagePattern", assignment.AptPackagePattern.String()},
 		{"assignment.ContainerImagePattern", assignment.ContainerImagePattern.String()},
-		{"assignment.SecretRefPattern", assignment.SecretRefPattern.String()},
 		{"assignment.ContainerUserPattern", assignment.ContainerUserPattern.String()},
 		{"assignment.RunsOnLabelPattern", assignment.RunsOnLabelPattern.String()},
 	}

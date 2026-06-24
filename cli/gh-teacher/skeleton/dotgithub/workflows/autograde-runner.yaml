@@ -120,7 +120,6 @@ jobs:
           _LANG = re.compile(r"^[A-Za-z0-9._+-]{1,32}$")
           _APT  = re.compile(r"^[a-z0-9][a-z0-9.+-]{0,63}$")
           _IMAGE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,255}$")
-          _SECRET_REF = re.compile(r"^\$\{\{\s*secrets\.[A-Za-z_][A-Za-z0-9_]*\s*\}\}$")
           _USER = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]{0,31}(?::[A-Za-z0-9_][A-Za-z0-9_.-]{0,31})?$")
           _RUNS_ON_LABEL = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
           _DEFAULT_RUNS_ON = "ubuntu-latest"
@@ -312,8 +311,11 @@ jobs:
                   fail("runtime.container must be an object")
               # Same allow-list discipline at the container level —
               # closes the "smuggle --privileged via container.options"
-              # vector. Mirror Go's containerSpec exactly.
-              _CONTAINER_KEYS = {"image", "credentials", "user"}
+              # vector. Mirror Go's containerSpec exactly. Only `image`
+              # and `user` are accepted; private registries can't be
+              # used for autograding (no safe way to deliver a pull
+              # secret to a student repo), so images must be public.
+              _CONTAINER_KEYS = {"image", "user"}
               c_extras = set(container) - _CONTAINER_KEYS
               if c_extras:
                   fail(f"runtime.container has unsupported keys: {sorted(c_extras)}")
@@ -331,14 +333,6 @@ jobs:
               for lbl in runs_on_labels:
                   if lbl.startswith("macos-") or lbl.startswith("windows-"):
                       fail(f"runtime.runs-on {lbl!r} invalid with container: GitHub Actions runs containers on Ubuntu hosts only")
-              creds = container.get("credentials")
-              if creds is not None:
-                  if not isinstance(creds, dict) or not creds.get("username") or not creds.get("password"):
-                      fail("runtime.container.credentials must include both username and password")
-                  if not isinstance(creds["username"], str) or not isinstance(creds["password"], str):
-                      fail("runtime.container.credentials.username and .password must both be strings")
-                  if not _SECRET_REF.match(creds["password"]):
-                      fail("runtime.container.credentials.password must reference a GitHub Actions secret using the secrets.<NAME> expression syntax")
               # Translate runtime.container.user to GitHub Actions'
               # container.options: --user <value>. Actions doesn't
               # accept container.user directly, but a non-root container
@@ -352,8 +346,6 @@ jobs:
               # any future schema-skew (e.g., a new GHA container key
               # added by Actions) from flowing through unchecked.
               emitted = {"image": image}
-              if creds is not None:
-                  emitted["credentials"] = creds
               if user is not None:
                   emitted["options"] = f"--user {user}"
               if not runs_on_labels:

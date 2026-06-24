@@ -48,13 +48,6 @@ var AptPackagePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9.+-]{0,63}$`)
 // Actions parses the rest.
 var ContainerImagePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,255}$`)
 
-// SecretRefPattern matches `${{ secrets.NAME }}` — the only shape
-// `runtime.container.credentials.password` accepts.
-// ValidateContainerCredentials rejects every other value because a
-// raw token string in assignments.json would land in the config
-// repo's git history.
-var SecretRefPattern = regexp.MustCompile(`^\$\{\{\s*secrets\.[A-Za-z_][A-Za-z0-9_]*\s*\}\}$`)
-
 // ContainerUserPattern accepts what `docker run --user` accepts:
 // "root", "0", "0:0", "1000:1000", "appuser", "appuser:appgroup".
 // The value flows into `container.options: --user <value>` in the
@@ -191,11 +184,11 @@ func isNonUbuntuHostedLabel(label string) bool {
 	return strings.HasPrefix(label, "macos-") || strings.HasPrefix(label, "windows-")
 }
 
-// ValidateContainer enforces image-string sanity, credential shape,
-// and the `user` shortcut. Image is regex-checked against a
-// permissive but injection-safe character set; credentials must come
-// paired with a `${{ secrets.NAME }}` password (raw strings are
-// rejected); user must match `docker run --user` grammar.
+// ValidateContainer enforces image-string sanity and the `user`
+// shortcut. Image is regex-checked against a permissive but
+// injection-safe character set; user must match `docker run --user`
+// grammar. Only publicly-pullable images are supported (see
+// ContainerSpec).
 func ValidateContainer(c ContainerSpec) error {
 	if c.Image == "" {
 		return errors.New("runtime.container.image must not be empty")
@@ -205,29 +198,6 @@ func ValidateContainer(c ContainerSpec) error {
 	}
 	if c.User != "" && !ContainerUserPattern.MatchString(c.User) {
 		return fmt.Errorf("runtime.container.user %q must match %s (e.g. \"root\", \"0\", \"1000:1000\")", c.User, ContainerUserPattern.String())
-	}
-	if c.Credentials == nil {
-		return nil
-	}
-	return ValidateContainerCredentials(*c.Credentials)
-}
-
-// KNOWN LIMITATION: private-image pulls via runtime.container.credentials
-// are currently UNVERIFIED end-to-end. The setup job's inline Python
-// emits the container block as JSON, and the grade job consumes it
-// via `container: ${{ fromJSON(...) }}`. GitHub Actions does not
-// re-evaluate `${{ }}` expressions inside fromJSON-derived data, so
-// the literal text `${{ secrets.NAME }}` flows through to docker
-// login as the password rather than the secret value. Public images
-// (no credentials) work; private images need a follow-up refactor
-// that splits credentials out of the JSON path. Until then, prefer
-// public registry images.
-func ValidateContainerCredentials(cc ContainerCreds) error {
-	if cc.Username == "" || cc.Password == "" {
-		return errors.New("runtime.container.credentials must include both username and password (use a ${{ secrets.NAME }} reference for password)")
-	}
-	if !SecretRefPattern.MatchString(cc.Password) {
-		return errors.New("runtime.container.credentials.password must be a ${{ secrets.NAME }} reference (raw token strings would land in the repo's git history)")
 	}
 	return nil
 }

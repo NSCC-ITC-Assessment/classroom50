@@ -113,18 +113,6 @@ func TestValidateRuntime_ContainerPaths(t *testing.T) {
 			},
 		},
 		{
-			name: "image with credentials",
-			runtime: RuntimeRef{
-				Container: &ContainerSpec{
-					Image: "ghcr.io/private/grader:latest",
-					Credentials: &ContainerCreds{
-						Username: "cs50-bot",
-						Password: "${{ secrets.GHCR_TOKEN }}",
-					},
-				},
-			},
-		},
-		{
 			name: "container on a self-hosted runner accepted",
 			runtime: RuntimeRef{
 				RunsOn:    RunsOn{"self-hosted", "linux"},
@@ -168,43 +156,6 @@ func TestValidateRuntime_ContainerPaths(t *testing.T) {
 				Container: &ContainerSpec{Image: "ubuntu:24.04;rm"},
 			},
 			wantErr: "characters other than",
-		},
-		{
-			name: "raw password rejected",
-			runtime: RuntimeRef{
-				Container: &ContainerSpec{
-					Image: "ghcr.io/cs50/grader:1",
-					Credentials: &ContainerCreds{
-						Username: "cs50-bot",
-						Password: "ghp_actualtokenvaluedonotuse",
-					},
-				},
-			},
-			wantErr: "${{ secrets.NAME }}",
-		},
-		{
-			name: "credentials missing username rejected",
-			runtime: RuntimeRef{
-				Container: &ContainerSpec{
-					Image: "ghcr.io/cs50/grader:1",
-					Credentials: &ContainerCreds{
-						Password: "${{ secrets.X }}",
-					},
-				},
-			},
-			wantErr: "username and password",
-		},
-		{
-			name: "credentials missing password rejected",
-			runtime: RuntimeRef{
-				Container: &ContainerSpec{
-					Image: "ghcr.io/cs50/grader:1",
-					Credentials: &ContainerCreds{
-						Username: "cs50-bot",
-					},
-				},
-			},
-			wantErr: "username and password",
 		},
 		{
 			name: "user 32-char accepted (boundary)",
