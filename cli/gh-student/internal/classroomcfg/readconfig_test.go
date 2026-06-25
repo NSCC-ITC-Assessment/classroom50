@@ -64,6 +64,18 @@ source:
 		}
 	})
 
+	t.Run("source with owner but no repo/branch is accepted (matches schema/GUI)", func(t *testing.T) {
+		// repo/branch are optional when source is present; only owner is
+		// required. submit degrades gracefully if they're absent.
+		cfg, err := ReadConfig(write(t, "classroom: c\nassignment: a\nsource:\n  owner: o\n"))
+		if err != nil {
+			t.Fatalf("ReadConfig(source owner only): %v", err)
+		}
+		if cfg.Source == nil || cfg.Source.Owner != "o" {
+			t.Errorf("source = %+v, want owner=o", cfg.Source)
+		}
+	})
+
 	cases := []struct {
 		name string
 		body string
@@ -71,8 +83,7 @@ source:
 	}{
 		{"missing classroom", "assignment: hello\nsource:\n  owner: o\n  repo: r\n  branch: main\n", "missing classroom"},
 		{"missing assignment", "classroom: c\nsource:\n  owner: o\n  repo: r\n  branch: main\n", "missing assignment"},
-		{"incomplete source owner", "classroom: c\nassignment: a\nsource:\n  repo: r\n  branch: main\n", "incomplete source"},
-		{"incomplete source branch", "classroom: c\nassignment: a\nsource:\n  owner: o\n  repo: r\n", "incomplete source"},
+		{"source present but missing owner", "classroom: c\nassignment: a\nsource:\n  repo: r\n  branch: main\n", "missing source.owner"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

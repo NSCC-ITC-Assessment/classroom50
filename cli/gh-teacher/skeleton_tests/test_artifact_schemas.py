@@ -561,3 +561,84 @@ class TestClassroomSchema:
     ])
     def test_malformed_rejected(self, doc):
         assert _errs(CLASSROOM_V, doc) != []
+
+
+# --- repo-config/v1 ----------------------------------------------------------
+
+REPO_CONFIG_V = _validator("repo-config-v1.schema.json")
+
+_REPO_CONFIG_V1 = {
+    "schema": "classroom50/repo-config/v1",
+    "classroom": "cs-principles",
+    "assignment": "hello",
+    "owner": {"username": "alice", "id": 12345, "accepted_at": "2026-06-01T14:33:11Z"},
+    "source": {"owner": "cs50", "owner_id": 99, "repo": "hello-template", "branch": "main"},
+}
+
+
+class TestRepoConfigSchema:
+    # .classroom50.yaml is written by BOTH the gh-student CLI and the web GUI.
+    # All keys except classroom/assignment are optional (pre-v1 files predate
+    # schema/owner/source-id), and the schema is intentionally open (the GUI
+    # reader ignores unknown keys; historical files may carry legacy blocks).
+
+    def test_full_v1_accepted(self):
+        assert _errs(REPO_CONFIG_V, _REPO_CONFIG_V1) == []
+
+    def test_owner_id_null_accepted(self):
+        doc = {**_REPO_CONFIG_V1, "owner": {"username": "alice", "id": None}}
+        assert _errs(REPO_CONFIG_V, doc) == []
+
+    def test_source_owner_id_null_accepted(self):
+        doc = {
+            **_REPO_CONFIG_V1,
+            "source": {"owner": "cs50", "owner_id": None, "repo": "t", "branch": "main"},
+        }
+        assert _errs(REPO_CONFIG_V, doc) == []
+
+    def test_pre_v1_minimal_accepted(self):
+        # An older CLI-authored file: just identity, no schema/owner/source.
+        assert _errs(REPO_CONFIG_V, {"classroom": "cs-principles", "assignment": "hello"}) == []
+
+    def test_pre_v1_with_legacy_key_accepted(self):
+        # Historical files carried since-removed top-level blocks (config:,
+        # autograde:). The open schema must still validate them, matching the
+        # Go ReadConfig which tolerates unknown keys.
+        doc = {"classroom": "cs", "assignment": "hello", "config": {"x": 1}, "autograde": True}
+        assert _errs(REPO_CONFIG_V, doc) == []
+
+    def test_template_less_omits_source_accepted(self):
+        doc = {
+            "schema": "classroom50/repo-config/v1",
+            "classroom": "cs",
+            "assignment": "solo",
+            "owner": {"username": "alice", "id": 7},
+        }
+        assert _errs(REPO_CONFIG_V, doc) == []
+
+    @pytest.mark.parametrize("doc, why", [
+        ({"assignment": "hello"}, "missing classroom"),
+        ({"classroom": "cs"}, "missing assignment"),
+        ({**_REPO_CONFIG_V1, "schema": "classroom50/repo-config/v2"}, "wrong sentinel"),
+        ({**_REPO_CONFIG_V1, "owner": {"username": "alice", "id": "12345"}}, "string id, not number"),
+        ({**_REPO_CONFIG_V1, "source": {"owner": "cs50", "owner_id": "99"}}, "string owner_id"),
+        ({**_REPO_CONFIG_V1, "owner": {"id": 1}}, "owner missing username"),
+        ({**_REPO_CONFIG_V1, "owner": {"username": "", "id": 1}}, "empty owner username"),
+        ({"classroom": "", "assignment": "hello"}, "empty classroom"),
+    ])
+    def test_malformed_rejected(self, doc, why):
+        assert _errs(REPO_CONFIG_V, doc) != [], f"expected rejection: {why}"
+
+    def test_render_shape_validates_parity_pin(self):
+        # Parity pin (mirrors test_results_v1_payload_required_matches_result_v1):
+        # a dict mirroring the CLI's Render() field set for a full v1 Config must
+        # validate, so a Go-side field rename not reflected here surfaces in CI.
+        # (pytest can't invoke Go's Render(); metadata_test.go pins the Go side.)
+        rendered_shape = {
+            "schema": "classroom50/repo-config/v1",
+            "classroom": "cs-principles",
+            "assignment": "hello",
+            "owner": {"username": "alice", "id": 12345, "accepted_at": "2026-06-01T14:33:11Z"},
+            "source": {"owner": "cs50", "owner_id": 99, "repo": "hello-template", "branch": "main"},
+        }
+        assert _errs(REPO_CONFIG_V, rendered_shape) == []

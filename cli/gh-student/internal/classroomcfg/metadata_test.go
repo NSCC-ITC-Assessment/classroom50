@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -109,6 +111,106 @@ func TestRenderClassroomMetadata_PreservesNumericLookingSlugs(t *testing.T) {
 	}
 	if !strings.Contains(string(out), `classroom: "2026"`) {
 		t.Errorf("classroom should be double-quoted to preserve string type, got:\n%s", out)
+	}
+}
+
+func TestRenderClassroomMetadata_V1IdentityRoundTrips(t *testing.T) {
+	ownerID := int64(12345)
+	srcOwnerID := int64(99)
+	cfg := Config{
+		Schema:     SchemaRepoConfigV1,
+		Classroom:  "cs-principles",
+		Assignment: "hello",
+		Owner: &Identity{
+			Username:   "alice",
+			ID:         &ownerID,
+			AcceptedAt: "2026-06-01T14:33:11Z",
+		},
+		Source: &Source{
+			Owner:   "cs50",
+			OwnerID: &srcOwnerID,
+			Repo:    "hello-template",
+			Branch:  "main",
+		},
+	}
+	out, err := Render(cfg)
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+
+	for _, want := range []string{
+		`schema: "classroom50/repo-config/v1"`,
+		`username: "alice"`,
+		`accepted_at: "2026-06-01T14:33:11Z"`,
+	} {
+		if !strings.Contains(string(out), want) {
+			t.Errorf("expected %q in rendered metadata, got:\n%s", want, out)
+		}
+	}
+
+	var round Config
+	if err := yaml.Unmarshal(out, &round); err != nil {
+		t.Fatalf("round-trip parse: %v", err)
+	}
+	if !reflect.DeepEqual(round, cfg) {
+		t.Errorf("round-trip mismatch:\n got: %#v\nwant: %#v", round, cfg)
+	}
+}
+
+func TestRenderClassroomMetadata_IDsRenderAsUnquotedNumbers(t *testing.T) {
+	// id/owner_id must encode as YAML numbers (or null), never quoted
+	// strings, so typed parses (the web GUI's reader) agree.
+	ownerID := int64(12345)
+	srcOwnerID := int64(99)
+	withIDs := Config{
+		Classroom:  "cs-principles",
+		Assignment: "hello",
+		Owner:      &Identity{Username: "alice", ID: &ownerID},
+		Source:     &Source{Owner: "cs50", OwnerID: &srcOwnerID, Repo: "t", Branch: "main"},
+	}
+	out, err := Render(withIDs)
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	body := string(out)
+	if !strings.Contains(body, "id: 12345") || strings.Contains(body, `id: "12345"`) {
+		t.Errorf("owner.id should render as an unquoted number, got:\n%s", body)
+	}
+	if !strings.Contains(body, "owner_id: 99") || strings.Contains(body, `owner_id: "99"`) {
+		t.Errorf("source.owner_id should render as an unquoted number, got:\n%s", body)
+	}
+
+	// A nil id pointer renders as YAML null.
+	nilID := Config{
+		Classroom:  "cs-principles",
+		Assignment: "hello",
+		Owner:      &Identity{Username: "alice", ID: nil},
+	}
+	out, err = Render(nilID)
+	if err != nil {
+		t.Fatalf("Render(nil id): %v", err)
+	}
+	if !strings.Contains(string(out), "id: null") {
+		t.Errorf("a nil owner.id should render as `id: null`, got:\n%s", out)
+	}
+}
+
+func TestReadConfig_PreV1BodyParsesWithoutNewFields(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, MetadataPath)
+	body := "classroom: \"cs-principles\"\nassignment: \"hello\"\n"
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	cfg, err := ReadConfig(path)
+	if err != nil {
+		t.Fatalf("ReadConfig(pre-v1): %v", err)
+	}
+	if cfg.Schema != "" {
+		t.Errorf("pre-v1 Schema = %q, want empty", cfg.Schema)
+	}
+	if cfg.Owner != nil {
+		t.Errorf("pre-v1 Owner = %+v, want nil", cfg.Owner)
 	}
 }
 

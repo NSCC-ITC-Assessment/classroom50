@@ -3,13 +3,16 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/foundation50/classroom50-cli-shared/ghutil"
 	"github.com/foundation50/gh-student/internal/assignments"
+	"github.com/foundation50/gh-student/internal/classroomcfg"
 	"github.com/foundation50/gh-student/internal/ui"
 )
 
@@ -362,11 +365,14 @@ func TestAcceptIntoRepo_SelfHealFork(t *testing.T) {
 
 	baseParams := func() acceptRepoParams {
 		var errBuf bytes.Buffer
+		ownerID := int64(4242)
 		return acceptRepoParams{
 			org:            org,
 			classroom:      "cs-principles",
 			assignment:     "hello",
 			username:       "alice",
+			ownerID:        &ownerID,
+			acceptedAt:     "2026-06-01T14:33:11Z",
 			repoName:       repoName,
 			branch:         "main",
 			shim:           "shim-content",
@@ -418,6 +424,7 @@ func TestAcceptIntoRepo_SelfHealFork(t *testing.T) {
 			collaboratorPut bool
 			treeWrite       bool
 			refPatched      bool
+			blobBodies      []string
 		)
 		mux := http.NewServeMux()
 		// Marker: absent until the heal commit lands, present afterward.
@@ -451,7 +458,9 @@ func TestAcceptIntoRepo_SelfHealFork(t *testing.T) {
 		mux.HandleFunc("/repos/"+org+"/"+repoName+"/git/commits/parent", func(w http.ResponseWriter, _ *http.Request) {
 			_ = json.NewEncoder(w).Encode(map[string]any{"tree": map[string]string{"sha": "parent-tree"}})
 		})
-		mux.HandleFunc("/repos/"+org+"/"+repoName+"/git/blobs", func(w http.ResponseWriter, _ *http.Request) {
+		mux.HandleFunc("/repos/"+org+"/"+repoName+"/git/blobs", func(w http.ResponseWriter, r *http.Request) {
+			body, _ := io.ReadAll(r.Body)
+			blobBodies = append(blobBodies, string(body))
 			_ = json.NewEncoder(w).Encode(map[string]string{"sha": "blob"})
 		})
 		mux.HandleFunc("/repos/"+org+"/"+repoName+"/git/trees", func(w http.ResponseWriter, _ *http.Request) {
@@ -480,6 +489,30 @@ func TestAcceptIntoRepo_SelfHealFork(t *testing.T) {
 		}
 		if !strings.Contains(out.String(), "already accepted") {
 			t.Errorf("a healed already-existing repo still reports already-accepted:\n%s", out.String())
+		}
+		// The healed commit must carry the repo-config v1 identity shape;
+		// one of the uploaded blobs is the rendered .classroom50.yaml.
+		var sawV1Marker bool
+		for _, raw := range blobBodies {
+			var blob struct {
+				Content string `json:"content"`
+			}
+			if json.Unmarshal([]byte(raw), &blob) != nil {
+				continue
+			}
+			decoded, err := ghutil.DecodeContentsBase64(blob.Content)
+			if err != nil {
+				continue
+			}
+			body := string(decoded)
+			if strings.Contains(body, classroomcfg.SchemaRepoConfigV1) &&
+				strings.Contains(body, `username: "alice"`) &&
+				strings.Contains(body, "\n  id: 4242\n") {
+				sawV1Marker = true
+			}
+		}
+		if !sawV1Marker {
+			t.Errorf("healed .classroom50.yaml must carry the v1 schema sentinel + owner identity; blobs:\n%v", blobBodies)
 		}
 	})
 

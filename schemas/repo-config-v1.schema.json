@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/foundation50/classroom50/main/schemas/repo-config-v1.schema.json",
+  "title": "classroom50/repo-config/v1",
+  "description": "Machine-readable schema for the .classroom50.yaml committed into each accepted assignment repo. Written by both the gh-student CLI (cli/gh-student/internal/classroomcfg/metadata.go) and the web GUI (classroom50-web). All keys except classroom/assignment are optional for back-compat with pre-v1 files, which predate the schema/owner/source-id keys. Intentionally NOT a closed object: the GUI reader (Classroom50YamlSchema) ignores unknown keys, and historical files may carry since-removed top-level blocks, so additionalProperties is left open.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["classroom", "assignment"],
+  "properties": {
+    "schema": {
+      "const": "classroom50/repo-config/v1",
+      "description": "Versioned sentinel. Optional (pre-v1 files omit it); when present it must pin this exact value."
+    },
+    "classroom": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Classroom slug; one of the two always-required identity fields."
+    },
+    "assignment": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Assignment slug; one of the two always-required identity fields."
+    },
+    "owner": {
+      "type": "object",
+      "required": ["username"],
+      "additionalProperties": true,
+      "description": "Repo owner identity (the acceptor). Records both the mutable login and the immutable numeric id so the binding survives a username rename.",
+      "properties": {
+        "username": {
+          "type": "string",
+          "minLength": 1,
+          "description": "GitHub login of the owner/acceptor."
+        },
+        "id": {
+          "type": ["integer", "null"],
+          "description": "Immutable numeric GitHub user id; null when unresolved. A null means identity is not stabilized — a future cross-check must fall back to the username, never silently pass."
+        },
+        "accepted_at": {
+          "type": "string",
+          "description": "UTC instant of the accept commit (RFC3339). Client-generated and server-unattested: for human provenance only, not an authoritative time source for deadline/ordering/audit decisions."
+        }
+      }
+    },
+    "source": {
+      "type": "object",
+      "required": ["owner"],
+      "additionalProperties": true,
+      "description": "Template repo coordinates so `gh student submit` can re-fetch instructor files. Absent for a template-less assignment.",
+      "properties": {
+        "owner": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Template owner login (org or user)."
+        },
+        "owner_id": {
+          "type": ["integer", "null"],
+          "description": "Template owner's immutable numeric id; null when the best-effort lookup failed."
+        },
+        "repo": {
+          "type": "string",
+          "description": "Template repo name."
+        },
+        "branch": {
+          "type": "string",
+          "description": "Template branch."
+        }
+      }
+    }
+  }
+}

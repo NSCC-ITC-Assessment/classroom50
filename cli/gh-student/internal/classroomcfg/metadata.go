@@ -36,6 +36,12 @@ const MetadataPath = ".classroom50.yaml"
 // written at accept time.
 const AutogradeWorkflowPath = ".github/workflows/autograde.yaml"
 
+// SchemaRepoConfigV1: versioned sentinel stamped into `.classroom50.yaml`
+// at accept time (classroom50-cli#185). Readers treat it as optional —
+// pre-v1 files predate it — but new accepts always write it so future
+// shape changes are detectable. Mirrors the web GUI's emitted value.
+const SchemaRepoConfigV1 = "classroom50/repo-config/v1"
+
 // Config is the on-disk shape of `.classroom50.yaml`. classroom +
 // assignment identify the submission; source.* records the template repo
 // so `gh student submit` can re-fetch the latest instructor `.gitignore`
@@ -46,18 +52,34 @@ const AutogradeWorkflowPath = ".github/workflows/autograde.yaml"
 // org (security-pinned at workflow runtime) and the classroom slug, so no
 // `config:` block is needed on disk.
 type Config struct {
-	Classroom  string  `yaml:"classroom"`
-	Assignment string  `yaml:"assignment"`
-	Source     *Source `yaml:"source,omitempty"`
+	Schema     string    `yaml:"schema,omitempty"`
+	Classroom  string    `yaml:"classroom"`
+	Assignment string    `yaml:"assignment"`
+	Owner      *Identity `yaml:"owner,omitempty"`
+	Source     *Source   `yaml:"source,omitempty"`
+}
+
+// Identity records a GitHub account by both its mutable login and its
+// immutable numeric id (classroom50-cli#185), so a username rename never
+// breaks the repo<->student binding. ID is a pointer so it renders as a
+// YAML number (or null when unresolved), never a quoted string. AcceptedAt
+// is the UTC instant of the accept commit; the owner is the acceptor, so it
+// lives here rather than in a separate accepted_by block.
+type Identity struct {
+	Username   string `yaml:"username"`
+	ID         *int64 `yaml:"id"`
+	AcceptedAt string `yaml:"accepted_at,omitempty"`
 }
 
 // Source: source.* block (template repo). Submit reads instructor-side
 // `.gitignore` / `.github/` from here. Absent for a template-less
-// assignment.
+// assignment. OwnerID is the template owner's immutable id (org or user),
+// resolved best-effort at accept time and null when the lookup failed.
 type Source struct {
-	Owner  string `yaml:"owner"`
-	Repo   string `yaml:"repo"`
-	Branch string `yaml:"branch"`
+	Owner   string `yaml:"owner"`
+	OwnerID *int64 `yaml:"owner_id,omitempty"`
+	Repo    string `yaml:"repo"`
+	Branch  string `yaml:"branch"`
 }
 
 // Render serializes cfg as double-quoted YAML. Used by accept to drop the
@@ -167,8 +189,11 @@ func IsHTTPNotFound(err error) bool {
 // ReadConfig reads and validates a `.classroom50.yaml` at path. The
 // classroom/assignment identity is always required. The source.* template
 // block is optional (a template-less assignment has none); when present,
-// all three fields must be set so submit's instructor-file refresh has a
-// complete ref.
+// only source.owner is required — this matches the published
+// repo-config-v1 JSON Schema and the web GUI reader, which mark
+// source.repo/source.branch optional. submit guards on Source != nil and
+// degrades gracefully (a 404 on the instructor-file fetch is tolerated) if
+// repo/branch are absent, so the reader need not reject such a file.
 func ReadConfig(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -186,9 +211,8 @@ func ReadConfig(path string) (*Config, error) {
 	if config.Assignment == "" {
 		return nil, fmt.Errorf("missing assignment in %s", path)
 	}
-	if config.Source != nil &&
-		(config.Source.Owner == "" || config.Source.Repo == "" || config.Source.Branch == "") {
-		return nil, fmt.Errorf("incomplete source.owner/source.repo/source.branch (omit the whole source block for a template-less assignment): %s", path)
+	if config.Source != nil && config.Source.Owner == "" {
+		return nil, fmt.Errorf("source block present but missing source.owner (omit the whole source block for a template-less assignment): %s", path)
 	}
 
 	return &config, nil

@@ -222,10 +222,13 @@ func checkAcceptableMode(assignment, mode string) error {
 func acceptAssignment(cmd *cobra.Command, client githubapi.Client, u *ui.UI, out io.Writer, org, classroom, assignment string) error {
 	verbose, _ := cmd.Flags().GetBool("verbose")
 
-	username, err := getAuthedUsername(client)
+	// The acceptor owns the repo, so capture their immutable id and the
+	// accept time alongside the login (classroom50-cli#185).
+	username, ownerID, err := githubapi.CurrentUser(client)
 	if err != nil {
-		return fmt.Errorf("retrieving authed username: %w", err)
+		return fmt.Errorf("retrieving authed user: %w", err)
 	}
+	acceptedAt := time.Now().UTC().Format(time.RFC3339)
 
 	// 1) Look up the assignment entry on the published Pages site
 	//    (no token; publish-pages keeps the JSON public). The entry
@@ -290,10 +293,19 @@ func acceptAssignment(cmd *cobra.Command, client githubapi.Client, u *ui.UI, out
 	if hasTemplate {
 		htmlURL, fullName, alreadyExisted, err = createTemplatedPrivateAssignmentRepoInOrg(client, u, verbose, username, classroom, assignment, org, *entry.Template)
 		commitBranch = entry.Template.Branch
+		// Resolve the template owner's immutable id best-effort: a rename of
+		// the template org/user shouldn't break submit's instructor-file
+		// re-fetch. A failed lookup is non-fatal — leave owner_id null rather
+		// than abort the accept (classroom50-cli#185).
+		templateOwnerID := lookupUserID(client, entry.Template.Owner)
+		if templateOwnerID == nil && verbose {
+			u.Detail("could not resolve template owner id for %q; recording source.owner_id as null", entry.Template.Owner)
+		}
 		cfgSource = &classroomcfg.Source{
-			Owner:  entry.Template.Owner,
-			Repo:   entry.Template.Repo,
-			Branch: entry.Template.Branch,
+			Owner:   entry.Template.Owner,
+			OwnerID: templateOwnerID,
+			Repo:    entry.Template.Repo,
+			Branch:  entry.Template.Branch,
 		}
 	} else {
 		var defaultBranch string
@@ -311,6 +323,8 @@ func acceptAssignment(cmd *cobra.Command, client githubapi.Client, u *ui.UI, out
 		classroom:      classroom,
 		assignment:     assignment,
 		username:       username,
+		ownerID:        &ownerID,
+		acceptedAt:     acceptedAt,
 		repoName:       repoName,
 		branch:         commitBranch,
 		source:         cfgSource,
@@ -331,6 +345,8 @@ func acceptAssignment(cmd *cobra.Command, client githubapi.Client, u *ui.UI, out
 type acceptRepoParams struct {
 	org, classroom, assignment string
 	username, repoName, branch string
+	ownerID                    *int64
+	acceptedAt                 string
 	source                     *classroomcfg.Source
 	shim, autograderName       string
 	fullName, htmlURL          string
@@ -374,9 +390,15 @@ func acceptIntoRepo(client githubapi.Client, u *ui.UI, verbose bool, out io.Writ
 	// Provision (or repair) the repo. Every step is idempotent, so this is
 	// safe whether the repo was just created or is being healed.
 	cfg := classroomcfg.Config{
+		Schema:     classroomcfg.SchemaRepoConfigV1,
 		Classroom:  p.classroom,
 		Assignment: p.assignment,
-		Source:     p.source,
+		Owner: &classroomcfg.Identity{
+			Username:   p.username,
+			ID:         p.ownerID,
+			AcceptedAt: p.acceptedAt,
+		},
+		Source: p.source,
 	}
 	if err := provisionAcceptedRepo(client, u, verbose, p, cfg); err != nil {
 		return err
@@ -547,9 +569,18 @@ func printCloneInstructions(u *ui.UI, out io.Writer, htmlURL string) error {
 	return nil
 }
 
-func getAuthedUsername(client githubapi.Client) (string, error) {
-	login, _, err := githubapi.CurrentUser(client)
-	return login, err
+// lookupUserID resolves a GitHub login to its immutable numeric id via
+// GET /users/{username}, best-effort: any failure (404, transient 5xx,
+// rate-limit) returns nil so the caller records owner_id as null rather
+// than aborting the accept (classroom50-cli#185).
+func lookupUserID(client githubapi.Client, username string) *int64 {
+	var user struct {
+		ID int64 `json:"id"`
+	}
+	if err := client.Get(fmt.Sprintf("users/%s", url.PathEscape(username)), &user); err != nil {
+		return nil
+	}
+	return &user.ID
 }
 
 type GeneratedRepo struct {
